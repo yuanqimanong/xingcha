@@ -224,7 +224,40 @@ class TestAgentPath:
             assert r.status_code == 200
             raw = b"".join(r.iter_bytes()).decode()
         assert raw.strip().endswith("data: [DONE]")
-        assert '"content":"hi"' in raw.replace(" ", "")
+        assert "012" in raw
+
+    def test_agent_streaming_stays_on_catalog_price(
+        self,
+        wired,  # noqa: F811
+        settings: Settings,
+        upstream: FakeUpstream,
+    ):
+        """**已知限制：Agent 真流式拿不到上游实价。**
+
+        钩子必须跳过 event-stream（读 body 就把流吃掉了），而流式的实价在最后一帧
+        里，那一帧是被 pydantic-ai 消费掉的——它把 usage 解析出来，但 ``cost`` 是
+        float，又被 ``isinstance(v, int)`` 过滤了。
+
+        所以这里落的是目录估价。写成一条断言而不是注释：将来谁真把这条链路补上，
+        这个测试会红，正好提醒他改文档；在那之前，谁也不会误以为流式的费用是实价。
+
+        对账影响有限——直通路径的流式仍然能拿到实价（尾帧嗅探），而 Agent 的主要
+        用法（结构化抽取）根本不支持流式。
+        """
+        client, token = wired
+        upstream.report_cost = UPSTREAM_COST
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "chat", "messages": [{"role": "user", "content": "x"}], "stream": True},
+            headers=auth(token),
+        ) as r:
+            b"".join(r.iter_bytes())
+        client.__exit__(None, None, None)
+
+        row = usage_rows(settings)[-1]
+        assert row["cost_source"] == C.CostSource.CATALOG.value
+        assert Decimal(row["cost_usd"]) != Decimal(UPSTREAM_COST)
 
 
 # =============================================================================

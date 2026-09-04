@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     #: 整轮墙钟上限（秒）。``Agent.run`` 没有 timeout 参数，只能靠 ``asyncio.timeout``。
     run_timeout: float = Field(default=900.0, gt=0)
 
+    #: 真流式的 delta 合并窗口（秒）。``None`` = 不合并，逐 token 发帧。
+    #:
+    #: 不合并的话一次长回答会产生上千个 SSE 帧，每帧都是一次 JSON 序列化加一次
+    #: ``send``——在 1GB 的机器上这是实打实的开销，而人眼分不出 0.05s 的差别。
+    stream_debounce_seconds: float | None = Field(default=0.05, gt=0)
+
     #: 每个 token 的速率限制。直通路径与 Agent 路径**共用**这一套。
     rate_limit_per_minute: int = Field(default=120, ge=1)
     rate_limit_concurrent: int = Field(default=8, ge=1)

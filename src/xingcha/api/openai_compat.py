@@ -10,21 +10,29 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from .. import contract as C
 from ..contract import ModelKind, ModelRefInvalid, classify_model
 from ..core.builder import BuildOptions
 from ..core.upstream import UpstreamNotConfigured
-from ..errors import ModelInvalid, ModelNotFound, ParamUnsupported, StreamUnsupported, XingchaError
+from ..errors import (
+    ModelInvalid,
+    ModelNotFound,
+    ParamUnsupported,
+    StreamUnsupported,
+    UpstreamError,
+    XingchaError,
+)
 from ..services import agent as agent_svc
 from ..services import run as run_svc
 from .passthrough import execute_forward, forward_headers, read_body_capped
 from .runlog_mw import RunTracker
+from .sse import SameTaskEventStream
 
 log = logging.getLogger(__name__)
 
@@ -287,6 +295,16 @@ async def _run_agent(
     tracker.rec.agent_version = resolved.version
     tracker.rec.tier = resolved.tier.value
 
+    async def fail(e: XingchaError) -> None:
+        tracker.finish_error(e.error_type.value, _status_for(e))
+        # 失败也要落用量：一次重试耗尽的调用照样花了钱，不记就等于账单少报。
+        tracker.rec.schema_violations = rt.counters.violations
+        tracker.rec.schema_retries = rt.counters.retries
+        await tracker.submit()
+
+    if wants_streaming:
+        return await _stream_agent(request, rt, tracker, prompt, extra_instructions, fail)
+
     try:
         outcome = await run_svc.execute(
             rt,
@@ -295,27 +313,68 @@ async def _run_agent(
             run_timeout=state.settings.run_timeout,
         )
     except XingchaError as e:
-        tracker.finish_error(e.error_type.value, _status_for(e))
-        # 失败也要落用量：一次重试耗尽的调用照样花了钱，不记就等于账单少报。
-        tracker.rec.schema_violations = rt.counters.violations
-        tracker.rec.schema_retries = rt.counters.retries
-        await tracker.submit()
+        await fail(e)
         raise
 
     _absorb(tracker, outcome, state.catalog, state.cost_sink)
     tracker.finish_ok()
     await tracker.submit()
-
-    if wants_streaming:
-        frames = run_svc.to_sse_frames(outcome, model=requested_model, run_id=tracker.rec.id)
-
-        async def gen() -> AsyncIterator[bytes]:
-            for f in frames:
-                yield f.encode("utf-8")
-
-        return StreamingResponse(gen(), media_type="text/event-stream")
-
     return JSONResponse(run_svc.to_openai_response(outcome, model=requested_model))
+
+
+async def _stream_agent(
+    request: Request,
+    rt: Any,
+    tracker: RunTracker,
+    prompt: str,
+    extra_instructions: str | None,
+    fail: Callable[[XingchaError], Awaitable[None]],
+) -> Response:
+    """真流式（纯文本 Agent）。
+
+    **第一帧要在构造 StreamingResponse 之前拉出来。** ``run_stream()`` 的进入动作
+    会真的发出上游请求，所以这一拉能把连不上、401、模型不存在这类故障变成一个
+    正常的 502/40x JSON；等 ``StreamingResponse`` 一构造，200 就提交了，之后所有
+    失败只能表达成"流没有以 [DONE] 结尾"。
+    """
+    state = request.app.state.xc
+
+    async def settle(outcome: run_svc.RunOutcome, aborted: Exception | None) -> None:
+        _absorb(tracker, outcome, state.catalog, state.cost_sink)
+        if aborted is None:
+            tracker.finish_ok()
+        else:
+            tracker.finish_error(C.ErrorType.UPSTREAM_ERROR.value, C.RunStatus.UPSTREAM_ERROR.value)
+        await tracker.submit()
+
+    gen = run_svc.stream_frames(
+        rt,
+        prompt=prompt,
+        extra_instructions=extra_instructions,
+        run_timeout=state.settings.run_timeout,
+        model=tracker.rec.model,
+        run_id=tracker.rec.id,
+        debounce=state.settings.stream_debounce_seconds,
+        on_outcome=settle,
+    )
+
+    try:
+        first = await anext(gen)
+    except StopAsyncIteration:  # pragma: no cover - 生成器至少发一帧
+        await gen.aclose()
+        raise UpstreamError(502, log_detail="流式生成器一帧未发") from None
+    except XingchaError as e:
+        await gen.aclose()
+        await fail(e)
+        raise
+
+    async def body() -> AsyncIterator[bytes]:
+        yield first.encode("utf-8")
+        async for frame in gen:
+            yield frame.encode("utf-8")
+
+    # 不是 StreamingResponse：它在子任务里迭代，而并发闸按任务记账。见 api/sse.py。
+    return SameTaskEventStream(body(), request=request)
 
 
 def _status_for(e: XingchaError) -> str:

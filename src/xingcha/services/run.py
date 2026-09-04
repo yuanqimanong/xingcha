@@ -17,14 +17,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
 
@@ -234,16 +236,13 @@ async def execute(
     rt.counters.provider_noncompliance = 0
     rt.counters.last_error = ""
 
-    kwargs: dict[str, Any] = {"usage_limits": rt.limits}
-    if extra_instructions:
-        kwargs["instructions"] = extra_instructions
-
     # 两阶段的用量要**累加**，否则第一步（自由推理，往往是更贵的一步）的 token
     # 完全不进账单——那正好是这一档比 T1 贵一倍的原因所在。
     stage_one: Any = None
 
-    try:
+    with map_errors(rt, run_timeout):
         async with asyncio.timeout(run_timeout):
+            kwargs = run_kwargs(rt, extra_instructions)
             if rt.reason_agent is not None:
                 # 阶段一：不加任何格式约束，规避对齐税
                 stage_one = await rt.reason_agent.run(prompt, **kwargs)
@@ -256,6 +255,30 @@ async def execute(
                 result = await rt.agent.run(guarantee.format_prompt(draft), **kwargs)
             else:
                 result = await rt.agent.run(prompt, **kwargs)
+
+    guard_counters(rt.counters, tier=rt.tier)
+    return outcome_from(rt, result, stage_one=stage_one)
+
+
+def run_kwargs(rt: AgentRuntime, extra_instructions: str | None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"usage_limits": rt.limits}
+    if extra_instructions:
+        kwargs["instructions"] = extra_instructions
+    return kwargs
+
+
+@contextlib.contextmanager
+def map_errors(rt: AgentRuntime, run_timeout: float) -> Iterator[None]:
+    """把 pydantic-ai 的异常映射成错误契约。
+
+    命令式与流式**共用这一份**。写两份的话，两条路径迟早在"同一个上游故障返回
+    不同错误码"上分叉——而调用方是按错误码写重试逻辑的。
+
+    注意它必须包在 ``asyncio.timeout`` **外面**：整轮超时是由 timeout 的 ``__aexit__``
+    抛出的，放在里面看不到。
+    """
+    try:
+        yield
     except TimeoutError as e:
         raise RequestTimeout(run_timeout) from e
     except UnexpectedModelBehavior as e:
@@ -275,20 +298,48 @@ async def execute(
             raise UpstreamTimeout(run_timeout) from e
         raise UpstreamError(502, log_detail=f"ModelAPIError: {e}") from e
 
-    guard_counters(rt.counters, tier=rt.tier)
+
+#: "没传" 与 "传了 None" 要能区分——流式的正文可以是空字符串。
+_UNSET: Any = object()
+
+
+def stream_finish_reason(result: Any) -> str | None:
+    """流式结束时上游给出的结束原因。``None`` 表示**没给**。
+
+    这个函数存在的唯一理由是：上游在流中途挂掉时 httpx 与 pydantic-ai
+    **一个异常都不抛**（实测：连接断了，``stream_text`` 的迭代静默结束，
+    ``is_complete`` 照样是 True）。除了"最后那条 ModelResponse 有没有
+    finish_reason"，没有别的判据。
+    """
+    reason = getattr(getattr(result, "response", None), "finish_reason", None)
+    return str(reason) if reason else None
+
+
+def _collect_ids(res: Any) -> list[str]:
+    out = []
+    for m in res.all_messages():
+        rid = getattr(m, "provider_response_id", None)
+        if isinstance(rid, str) and rid:
+            out.append(rid)
+    return out
+
+
+def outcome_from(
+    rt: AgentRuntime, result: Any, *, stage_one: Any = None, output: Any = _UNSET
+) -> RunOutcome:
+    """从 pydantic-ai 的运行结果拼出本项目的用量口径。
+
+    命令式结果与流式结果**都能进这里**：``StreamedRunResult`` 同样有 ``usage``
+    与 ``all_messages()``。两条路径共用一份口径，账单才能一起 SUM。
+
+    ``output`` 用于流式——``StreamedRunResult`` 没有 ``output`` 属性，正文得由调用方
+    把 delta 攒起来传进来。
+    """
     usage = result.usage  # 属性，不是方法
 
-    def collect_ids(res: Any) -> list[str]:
-        out = []
-        for m in res.all_messages():
-            rid = getattr(m, "provider_response_id", None)
-            if isinstance(rid, str) and rid:
-                out.append(rid)
-        return out
-
-    response_ids = collect_ids(result)
+    response_ids = _collect_ids(result)
     if stage_one is not None:
-        response_ids = collect_ids(stage_one) + response_ids
+        response_ids = _collect_ids(stage_one) + response_ids
 
     def total(field: str) -> int:
         value = getattr(usage, field, 0) or 0
@@ -297,7 +348,7 @@ async def execute(
         return value
 
     return RunOutcome(
-        output=result.output,
+        output=result.output if output is _UNSET else output,
         model_id=rt.model_id,
         tier=rt.tier,
         is_structured=rt.is_structured,
@@ -387,30 +438,56 @@ def extension_block(outcome: RunOutcome, run_id: str | None = None) -> dict[str,
     return block
 
 
-def to_sse_frames(outcome: RunOutcome, *, model: str, run_id: str | None = None) -> list[str]:
-    """伪流式的帧序列。
+class SSEFrames:
+    """一次流式响应的帧工厂。
 
-    v0.2 只发一个内容帧，但**帧形状与真流式完全一致**——所以 v0.4 换成真 delta 时
-    对客户端不可见，只是帧数变多了，而帧数变多是兼容的。
+    **帧形状是契约冻结的**（见 CONTRACT §3.7），所以它只能有一个来源。真流式与
+    伪流式都从这里取帧——两条路径各写一份的话，"把伪流式升级成真 delta 对客户端
+    不可见"这个承诺就没有任何东西在守。
 
-    为什么现在就发伪流式而不是对流式请求返回 400：虽然 400→200 是加法，但客户端
-    会为那个 400 **写死绕过逻辑**（探测到就改走非流式），等真流式上线时反而打断它们。
+    ``id`` / ``created`` 在同一次响应的所有帧里必须一致，所以它们是实例状态而不是
+    每帧现算。
     """
-    cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-    created = int(time.time())
 
-    def frame(payload: dict[str, Any]) -> str:
+    __slots__ = ("_base",)
+
+    def __init__(self, *, model: str) -> None:
+        self._base = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+        }
+
+    def _frame(self, payload: dict[str, Any]) -> str:
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
+    def role(self) -> str:
+        return self._frame(
+            {**self._base, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}
+        )
 
-    return [
-        frame({**base, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}),
-        frame({**base, "choices": [{"index": 0, "delta": {"content": outcome.content}}]}),
-        frame({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
-        frame(
+    def content(self, text: str) -> str:
+        return self._frame({**self._base, "choices": [{"index": 0, "delta": {"content": text}}]})
+
+    #: pydantic-ai 的结束原因 → OpenAI 的取值。两边词表不完全一样，而客户端只认
+    #: OpenAI 那套（尤其 ``length``：那是"答案被 max_tokens 砍了"的唯一信号）。
+    FINISH_REASONS: ClassVar[dict[str, str]] = {
+        "stop": "stop",
+        "length": "length",
+        "content_filter": "content_filter",
+        "tool_call": "tool_calls",
+    }
+
+    def finish(self, reason: str = "stop") -> str:
+        return self._frame(
+            {**self._base, "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}
+        )
+
+    def summary(self, outcome: RunOutcome, run_id: str | None) -> str:
+        return self._frame(
             {
-                **base,
+                **self._base,
                 "choices": [],
                 "usage": {
                     "prompt_tokens": outcome.input_tokens,
@@ -419,6 +496,146 @@ def to_sse_frames(outcome: RunOutcome, *, model: str, run_id: str | None = None)
                 },
                 C.EXT_KEY: extension_block(outcome, run_id),
             }
-        ),
+        )
+
+
+def to_sse_frames(outcome: RunOutcome, *, model: str, run_id: str | None = None) -> list[str]:
+    """伪流式的帧序列：一次性把已有结果切成合法的帧序列。
+
+    结构化 Agent 对 ``stream=true`` 直接 400，所以走到这里的只有**真流式失败后的
+    回落**与纯文本以外的情形。纯文本 Agent 自 v0.4 起走真 delta。
+
+    为什么当初就发伪流式而不是对流式请求返回 400：虽然 400→200 是加法，但客户端
+    会为那个 400 **写死绕过逻辑**（探测到就改走非流式），等真流式上线时反而打断它们。
+    """
+    f = SSEFrames(model=model)
+    return [
+        f.role(),
+        f.content(outcome.content),
+        f.finish(),
+        f.summary(outcome, run_id),
         C.SSE_DONE,
     ]
+
+
+# =============================================================================
+# 真流式
+# =============================================================================
+
+
+async def stream_frames(
+    rt: AgentRuntime,
+    *,
+    prompt: str,
+    extra_instructions: str | None,
+    run_timeout: float,
+    model: str,
+    run_id: str | None,
+    debounce: float | None,
+    on_outcome: Callable[[RunOutcome, Exception | None], Awaitable[None]],
+) -> AsyncGenerator[str, None]:
+    """真流式：一边收 delta 一边发帧。
+
+    ------------------------------------------------------------------------
+    为什么整条生命周期在同一个生成器里
+    ------------------------------------------------------------------------
+
+    流式的用量只有在流**结束之后**才知道，而 run 记录与配额结算都要用它。把
+    "开流—发帧—收尾结算"拆到 API 层去编排，就得把一个未关闭的 async CM 跨越响应
+    边界传出去；一旦客户端中途断开，那个 CM 由谁关就成了说不清的事。放在一个词法
+    作用域里，``finally`` 就是答案。
+
+    ``on_outcome(outcome, aborted)`` 是给调用方结算的钩子（落库 + 结算配额）。它在
+    **汇总帧之前**被 await，所以汇总帧里的费用是已经落定的值，而不是一个稍后才成立
+    的承诺。中途失败时 ``aborted`` 非 None，但**照样要结算**——流到一半的调用一样
+    花了钱。客户端提前断开也一样：结算在 ``finally`` 里，那条路径同样会走到。
+
+    整轮墙钟仍由 ``asyncio.timeout`` 兜（与命令式同一个口径）。代价是它可能在生成器
+    挂在 ``yield`` 上时触发，此时取消落在正在 ``send`` 的那一侧，连接直接断——对一次
+    超时来说这正是诚实的表现：客户端收到一个没有 ``[DONE]`` 的截断流。
+
+    ------------------------------------------------------------------------
+    第一帧为什么要 eager 拉
+    ------------------------------------------------------------------------
+
+    ``run_stream()`` 的 ``__aenter__`` 会真的发出请求（实测上游拒连时它立刻抛）。
+    调用方应当在构造 ``StreamingResponse`` **之前**先 ``anext()`` 一次：那一刻状态码
+    还没提交，上游故障还能变成一个正常的 502 JSON；等 200 发出去之后就只能靠
+    "流没有以 [DONE] 结尾"来表达失败了。
+    """
+    frames = SSEFrames(model=model)
+    chunks: list[str] = []
+    result: Any = None
+    outcome: RunOutcome | None = None
+    aborted: Exception | None = None
+    finish_reason = "stop"
+    settled = False
+
+    async def settle() -> RunOutcome | None:
+        """结算一次，且只结算一次。
+
+        放在 ``finally`` 里调，因为**客户端中途断开**这条路径既不走正常收尾也不走
+        异常收尾：生成器被 ``aclose()`` 掉，``yield`` 处抛出 GeneratorExit。不在这里
+        结算的话，那次调用连 run 行都不会有——上游的钱花了，账上一片空白。
+        """
+        nonlocal settled, outcome
+        if settled:
+            return outcome
+        settled = True
+        if result is None:  # 连流都没开起来，交给调用方的错误路径去记
+            return None
+        outcome = outcome_from(rt, result, output="".join(chunks))
+        await on_outcome(outcome, aborted)
+        return outcome
+
+    try:
+        with map_errors(rt, run_timeout):
+            async with asyncio.timeout(run_timeout):
+                kwargs = run_kwargs(rt, extra_instructions)
+                async with rt.agent.run_stream(prompt, **kwargs) as stream:
+                    result = stream
+                    yield frames.role()
+                    try:
+                        async for delta in stream.stream_text(delta=True, debounce_by=debounce):
+                            # 空 delta 不发帧：有些上游会吐空字符串心跳，转发出去只会
+                            # 让客户端多解析几个无意义的帧。
+                            if delta:
+                                chunks.append(delta)
+                                yield frames.content(delta)
+                    except (ModelAPIError, UnexpectedModelBehavior) as e:
+                        aborted = e
+                    else:
+                        reason = stream_finish_reason(stream)
+                        if reason is None:
+                            # **没给 finish_reason 就判截断，不判成功。**
+                            #
+                            # 判成功的话，一次被砍掉一半的回答会带着
+                            # ``finish_reason: "stop"`` 和 ``[DONE]`` 交到客户端手上,
+                            # 它连察觉的机会都没有——静默的数据损坏比一个可检测的
+                            # 失败信号糟得多。
+                            #
+                            # 代价：真有中转不发 finish_reason 的话，它的流式在这里
+                            # 会一律被判失败。那种情况该修中转，或者别用流式。
+                            aborted = UpstreamError(
+                                502, log_detail="上游流没有给出 finish_reason，无法确认完整"
+                            )
+                        else:
+                            finish_reason = SSEFrames.FINISH_REASONS.get(reason, "stop")
+    finally:
+        await settle()
+
+    guard_counters(rt.counters, tier=rt.tier)
+    assert outcome is not None
+
+    if aborted is not None:
+        # 200 已经发出去了，状态码改不了。**不发 [DONE]** 就是给客户端的失败信号——
+        # OpenAI 自己也是这个行为，客户端按"流没有以 [DONE] 结尾"判失败。
+        #
+        # 这里 return 而不是 raise：抛出去只会在 ASGI 层变成一个没人处理的异常，
+        # 客户端看到的字节完全一样，日志却多一堆噪音。花费已经由 settle 记下了。
+        log.warning("流式中途失败，不发 [DONE]：%s", aborted)
+        return
+
+    yield frames.finish(finish_reason)
+    yield frames.summary(outcome, run_id)
+    yield C.SSE_DONE

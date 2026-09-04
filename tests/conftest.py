@@ -47,6 +47,15 @@ class FakeUpstream:
     tool_call_index: int = 0
     #: T1 档下上游实际收到的 response_format，用于断言 schema 被怎样改写。
     native_requests: list[Any] = field(default_factory=list)
+    #: 流式响应吐出的内容分片。测真流式时用它断言"客户端收到的帧数与上游一致"。
+    stream_chunks: list[str] = field(default_factory=lambda: ["0", "1", "2"])
+    #: 分片之间的间隔（秒）。要造出"上游慢、客户端应当边收边显示"的场景就调大它。
+    stream_gap: float = 0.005
+    #: 非 None 时，吐出这么多片之后**直接断开**（不发 usage 帧、不发 [DONE]）。
+    #: 模拟中转在流中途挂掉——这是流式最难处理的一类失败。
+    stream_abort_after: int | None = None
+    #: 流式的结束原因。设成 ``None`` 模拟"中转压根不发 finish_reason 帧"。
+    stream_finish_reason: str | None = "stop"
     #: 非 None 时，每条响应的 usage 里带上这个 ``cost``（模拟中转报账单）。
     #: 默认不带——不是所有中转都报，"不报时回落目录价"也必须被测到。
     report_cost: str | None = None
@@ -61,6 +70,10 @@ class FakeUpstream:
         self.tool_call_index = 0
         self.native_requests = []
         self.report_cost = None
+        self.stream_chunks = ["0", "1", "2"]
+        self.stream_gap = 0.005
+        self.stream_abort_after = None
+        self.stream_finish_reason = "stop"
 
     @property
     def hit_count(self) -> int:
@@ -207,11 +220,33 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
         if payload.get("stream"):
 
             async def gen():
-                for i in range(3):
-                    yield f'data: {{"choices":[{{"delta":{{"content":"{i}"}}}}]}}\n\n'.encode()
-                    await asyncio.sleep(0.005)
                 import json as _json
 
+                for i, piece in enumerate(state.stream_chunks):
+                    if state.stream_abort_after is not None and i >= state.stream_abort_after:
+                        # 抛出去让 uvicorn 直接断连接，而不是优雅收尾——
+                        # "优雅地告诉客户端我失败了"恰恰是真实故障不会做的事。
+                        raise RuntimeError("上游在流中途挂了")
+                    frame = {"choices": [{"delta": {"content": piece}}]}
+                    yield f"data: {_json.dumps(frame)}\n\n".encode()
+                    await asyncio.sleep(state.stream_gap)
+                import json as _json
+
+                # 真实的 OpenAI 流在内容之后先发一个 finish_reason 帧，再（可选）
+                # 发一个只带 usage 的帧。少了 finish_reason 帧，"上游是正常收尾还是
+                # 被截断"就无从判断——而假上游不逼真的话，测出来的就是假的成功。
+                if state.stream_finish_reason is not None:
+                    stop = {
+                        "model": "openai/gpt-5",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": state.stream_finish_reason,
+                            }
+                        ],
+                    }
+                    yield f"data: {_json.dumps(stop)}\n\n".encode()
                 tail = {
                     "model": "openai/gpt-5",
                     "choices": [],

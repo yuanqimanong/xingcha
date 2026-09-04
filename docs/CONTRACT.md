@@ -13,7 +13,7 @@
 |---|---|
 | 契约版本 | **v1** |
 | 协商方式 | `X-Xingcha-Contract` 请求/响应双向头 · `GET /version` |
-| 能力位 | `agents` · `passthrough` · `quota` · `streaming_passthrough` · `structured_output` |
+| 能力位 | `agents` · `passthrough` · `quota` · `streaming_agents` · `streaming_passthrough` · `structured_output` |
 
 
 ## 1 · 路径归属

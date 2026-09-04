@@ -234,13 +234,12 @@ class TestTextAgent:
         assert r.status_code == 200
         assert r.json()["choices"][0]["message"]["content"] == "hi"
 
-    def test_pseudo_streaming_frame_shape(self, wired):
-        """伪流式的帧形状与真流式**完全一致**。
+    def test_streaming_frame_shape(self, wired):
+        """v0.2 冻结的帧形状，v0.4 换成真 delta 之后**逐字未变**。
 
-        所以 v0.4 换成真 delta 时对客户端不可见——只是帧数变多，而帧数变多是兼容的。
-
-        为什么现在就发伪流式而不是返回 400：客户端会为那个 400 写死绕过逻辑
-        （探测到就改走非流式），等真流式上线时反而打断它们。
+        当年发伪流式而不是 400 就是为了这一刻：客户端会为一个 400 写死绕过逻辑
+        （探测到就改走非流式），等真流式上线时反而打断它们。现在帧数变多了，
+        而帧数变多对客户端是兼容的。
         """
         client, token = wired
         with client.stream(
@@ -257,8 +256,13 @@ class TestTextAgent:
 
         payloads = [json.loads(f[6:]) for f in frames[:-1]]
         assert payloads[0]["choices"][0]["delta"] == {"role": "assistant"}
-        assert payloads[1]["choices"][0]["delta"]["content"] == "hi"
-        assert payloads[2]["choices"][0]["finish_reason"] == "stop"
+        assert (
+            "".join(
+                p["choices"][0]["delta"].get("content", "") for p in payloads[1:-1] if p["choices"]
+            )
+            == "012"
+        )
+        assert payloads[-2]["choices"][0]["finish_reason"] == "stop"
         # 汇总帧带 usage 与扩展块
         assert payloads[-1]["usage"]["total_tokens"] >= 0
         assert payloads[-1][C.EXT_KEY]["v"] == C.EXT_SHAPE_VERSION

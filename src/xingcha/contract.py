@@ -45,6 +45,7 @@ FEATURES: Final[frozenset[str]] = frozenset(
         "agents",  # Agent 以 slug 作为 model id 调用
         "structured_output",  # 结构化输出保证（T2 档）
         "streaming_passthrough",  # 直通路径的流式转发
+        "streaming_agents",  # 纯文本 Agent 的真 delta 流式（结构化 Agent 仍为 400）
         "quota",  # 三级主体 × 三窗口的配额执行（Agent 路径）
     }
 )
@@ -422,11 +423,14 @@ USAGE_ON_ERROR: Final = True
 #: SSE 终止行。
 SSE_DONE: Final = "data: [DONE]\n\n"
 
-#: SSE 帧序列。伪流式（v1 的纯文本 Agent）与真流式（v0.4）用**完全相同**的帧形状，
-#: 所以后者上线时对客户端不可见——只是帧数变多了，而帧数变多是兼容的。
+#: SSE 帧序列。**v0.2 的伪流式与 v0.4 的真流式逐字相同**——真流式上线时唯一的可观测
+#: 变化是 ``content`` 帧变多了，而帧数变多对客户端是兼容的。这正是当初发伪流式而不是
+#: 400 的理由：客户端会为一个 400 **写死绕过逻辑**（探测到就改走非流式），等真流式
+#: 上线时反而打断它们。
 #:
-#: 为什么纯文本 Agent 在 v1 就发伪流式而不是 400：虽然 400→200 是加法，但客户端会
-#: 为那个 400 **写死绕过逻辑**（探测到 400 就改走非流式），等真流式上线时反而打断它们。
+#: 中途失败的表达方式也在这里冻结：200 已经发出去之后无法改状态码，所以**不发
+#: ``[DONE]``** 就是失败信号（OpenAI 自己也是这个行为）。调用方应当按"流是否以
+#: ``[DONE]`` 结尾"判成败，而不是只看状态码。
 SSE_FRAME_ORDER: Final[tuple[str, ...]] = (
     "role",  # {"delta": {"role": "assistant"}}
     "content",  # {"delta": {"content": "..."}}  × N

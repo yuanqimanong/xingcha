@@ -168,7 +168,7 @@ class TestTheTwoLineChange:
         )
         assert len(chunks) >= 3
         text = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
-        assert text == "hi"
+        assert text == "012", "上游吐的三片应当原样到达，不多不少"
         assert chunks[0].object == "chat.completion.chunk"
 
     def test_upstream_streaming_passthrough(self, live: OpenAI, upstream: FakeUpstream):
