@@ -8,11 +8,13 @@ double-submit token、Origin/Sec-Fetch-Site 校验。
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
@@ -633,3 +635,270 @@ def mount(app) -> None:
     """挂载后台。静态文件内嵌进 wheel，不走 CDN——离线可用是硬约束。"""
     app.include_router(router)
     app.mount("/admin/static", StaticFiles(directory=str(HERE / "static")), name="xc-static")
+
+
+# =============================================================================
+# Agent
+# =============================================================================
+
+
+def _tier_options() -> list[Any]:
+    """表单里可选的档位。
+
+    只列已实现的：T1 需要先有"strict=True 会静默把可选字段提升为必填"的提示，
+    没有它就开放 T1 等于让用户在不知情的情况下承担对齐税。
+    """
+    from ..core.guarantee import AVAILABLE_TIERS, TIER_INFO
+
+    return [SimpleNamespace(value=t.value, **TIER_INFO[t]) for t in AVAILABLE_TIERS]
+
+
+def _lint_ctx(schema_text: str, tier: str) -> dict[str, Any]:
+    from ..core.schema_guard import SchemaRejected, validate_schema
+    from ..core.schema_lint import lint, summarize
+
+    if not schema_text.strip():
+        return {"hints": [], "summary": "没有定义 schema，按纯文本输出。", "has_warn": False}
+    try:
+        inlined = validate_schema(schema_text)
+    except SchemaRejected as e:
+        return {
+            "hints": [SimpleNamespace(path="", level="warn", message=str(e))],
+            "summary": "schema 不被接受",
+            "has_warn": True,
+        }
+    hints = lint(inlined, tier_is_native=tier == "T1")
+    return {
+        "hints": hints,
+        "summary": summarize(hints),
+        "has_warn": any(h.level == "warn" for h in hints),
+    }
+
+
+@router.get("/agents")
+async def agents_page(request: Request) -> Response:
+    await require_admin(request)
+    state = request.app.state.xc
+    from ..core.guarantee import TIER_INFO
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        pairs = await agent_svc.list_all(s)
+
+    rows = []
+    for row, ver in pairs:
+        spec = json.loads(ver.spec_json) if ver else {}
+        tier = ver.tier if ver else "—"
+        rows.append(
+            SimpleNamespace(
+                slug=row.slug,
+                name=row.name,
+                description=row.description,
+                is_active=row.is_active,
+                model=spec.get("model", "—"),
+                version=ver.version if ver else 0,
+                tier=tier,
+                tier_desc=TIER_INFO.get(C.Tier(tier), {}).get("content", "") if ver else "",
+                structured=bool(ver and ver.out_schema),
+            )
+        )
+    return _render(request, "agents.html", {"agents": rows})
+
+
+def _empty_form() -> Any:
+    return SimpleNamespace(
+        slug="", name="", description="", instructions="", model="", schema="", tier="T2", retries=2
+    )
+
+
+async def _model_choices(state: Any) -> tuple[list[Any], int]:
+    models = state.catalog.all()
+    return models, sum(1 for m in models if m.supports_native_schema)
+
+
+@router.get("/agents/new")
+async def agent_new(request: Request) -> Response:
+    await require_admin(request)
+    models, native = await _model_choices(request.app.state.xc)
+    csrf = await _ensure_csrf_cookie(request)
+    resp = _render(
+        request,
+        "agent_form.html",
+        {
+            "is_new": True,
+            "agent": None,
+            "form": _empty_form(),
+            "action": "/admin/agents/save",
+            "csrf": csrf.value,
+            "models": models,
+            "native_count": native,
+            "tiers": _tier_options(),
+            "versions": [],
+            "hints": [],
+            "error": None,
+            "saved": None,
+        },
+    )
+    csrf.apply(resp)
+    return resp
+
+
+@router.get("/agents/{slug}")
+async def agent_edit(slug: str, request: Request) -> Response:
+    await require_admin(request)
+    state = request.app.state.xc
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        resolved = await agent_svc.resolve(s, slug)
+        vers = await agent_svc.versions(s, resolved.agent_id)
+        version_rows = [
+            SimpleNamespace(
+                version=v.version,
+                tier=v.tier,
+                created=v.created_at[:19],
+                current=v.id == resolved.version_id,
+            )
+            for v in vers
+        ]
+
+    spec = json.loads(resolved.spec_json)
+    form = SimpleNamespace(
+        slug=resolved.slug,
+        name=resolved.name,
+        description=resolved.description or "",
+        instructions=spec.get("instructions", ""),
+        model=spec.get("model", ""),
+        schema=json.dumps(json.loads(resolved.out_schema), ensure_ascii=False, indent=2)
+        if resolved.out_schema
+        else "",
+        tier=resolved.tier.value if resolved.out_schema else "",
+        retries=spec.get("retries", 2),
+    )
+
+    models, native = await _model_choices(state)
+    csrf = await _ensure_csrf_cookie(request)
+    resp = _render(
+        request,
+        "agent_form.html",
+        {
+            "is_new": False,
+            "agent": resolved,
+            "form": form,
+            "action": "/admin/agents/save",
+            "csrf": csrf.value,
+            "models": models,
+            "native_count": native,
+            "tiers": _tier_options(),
+            "versions": version_rows,
+            "error": None,
+            "saved": None,
+            **_lint_ctx(form.schema, form.tier),
+        },
+    )
+    csrf.apply(resp)
+    return resp
+
+
+@router.post("/agents/save")
+async def agent_save(
+    request: Request,
+    slug: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(default=""),
+    instructions: str = Form(...),
+    model: str = Form(...),
+    output_schema: str = Form(default=""),
+    tier: str = Form(default=""),
+    retries: int = Form(default=2),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..errors import XingchaError
+    from ..services import agent as agent_svc
+
+    native_ok = state.catalog.supports_native_schema(model)
+    try:
+        async with state.sessionmaker() as s:
+            result = await agent_svc.save(
+                s,
+                slug=slug.strip(),
+                name=name.strip(),
+                description=description.strip() or None,
+                instructions=instructions,
+                model=model.strip(),
+                schema_text=output_schema,
+                requested_tier=C.Tier(tier) if tier else None,
+                capabilities=None,
+                retries=max(0, min(5, retries)),
+                native_ok=native_ok,
+            )
+            await s.commit()
+    except XingchaError as e:
+        # 表单错误回到表单页并保留用户填的内容——跳到一个错误页会让人白填一遍
+        models, native = await _model_choices(state)
+        csrf = await _ensure_csrf_cookie(request)
+        form = SimpleNamespace(
+            slug=slug,
+            name=name,
+            description=description,
+            instructions=instructions,
+            model=model,
+            schema=output_schema,
+            tier=tier,
+            retries=retries,
+        )
+        resp = _render(
+            request,
+            "agent_form.html",
+            {
+                "is_new": True,
+                "agent": None,
+                "form": form,
+                "action": "/admin/agents/save",
+                "csrf": csrf.value,
+                "models": models,
+                "native_count": native,
+                "tiers": _tier_options(),
+                "versions": [],
+                "hints": [],
+                "error": e.message,
+                "saved": None,
+            },
+        )
+        csrf.apply(resp)
+        return resp
+
+    return security_headers(RedirectResponse(f"/admin/agents/{result.slug}", status_code=303))
+
+
+@router.post("/agents/{slug}/rollback")
+async def agent_rollback(
+    slug: str, request: Request, version: int = Form(...), csrf_token: str = Form(default="")
+) -> Response:
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        resolved = await agent_svc.resolve(s, slug)
+        await agent_svc.rollback(s, resolved.agent_id, version)
+        await s.commit()
+    return security_headers(RedirectResponse(f"/admin/agents/{slug}", status_code=303))
+
+
+@router.post("/agents/lint")
+async def agent_lint(
+    request: Request,
+    output_schema: str = Form(default=""),
+    tier: str = Form(default=""),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """字段命名检查。HTMX 局部刷新，**不阻断保存**——这是建议不是规则。
+
+    CSRF 两条路都接受：页面里 HTMX 走 hx-headers，而表单直接提交时走隐藏字段。
+    只认其中一条会让另一条静默 403，而 403 在 HTMX 局部刷新里表现为"点了没反应"。
+    """
+    await guard_mutation(request, csrf_token)
+    return security_headers(_render(request, "_lint.html", _lint_ctx(output_schema, tier)))

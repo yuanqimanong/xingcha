@@ -1,0 +1,16 @@
+{% if hints %}
+<div class="alert {{ 'warn' if has_warn else 'info' }}">
+  <div class="grow">
+    <div class="alert-title">{{ summary }}</div>
+    <ul style="margin:8px 0 0; padding-left:18px">
+      {% for h in hints %}
+      <li style="margin-bottom:4px">
+        {% if h.path %}<code>{{ h.path }}</code> —— {% endif %}{{ h.message }}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% else %}
+<div class="alert ok"><div>{{ summary }}</div></div>
+{% endif %}

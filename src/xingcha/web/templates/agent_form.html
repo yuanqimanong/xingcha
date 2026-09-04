@@ -1,0 +1,147 @@
+{% extends "_shell.html" %}
+{% block title %}{{ '新建 Agent' if is_new else agent.slug }}{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>{{ '新建 Agent' if is_new else agent.name }}</h1>
+    {% if not is_new %}<p>标识 <code>{{ agent.slug }}</code> · 当前 v{{ agent.version }}。<strong>标识发布后不能改</strong>——调用方的代码里写着它。</p>{% endif %}
+  </div>
+</div>
+
+{% if error %}<div class="alert danger"><div><div class="alert-title">没有保存</div><div style="white-space:pre-wrap">{{ error }}</div></div></div>{% endif %}
+{% if saved %}<div class="alert ok"><div>已保存为 v{{ saved.version }}{% if saved.tier_note %} —— {{ saved.tier_note }}{% endif %}</div></div>{% endif %}
+
+<form method="post" action="{{ action }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+
+  <div class="card mb5">
+    <div class="card-head"><h2>基本</h2></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="field">
+          <label for="slug">标识</label>
+          <input id="slug" name="slug" class="mono" value="{{ form.slug }}" {% if not is_new %}readonly{% endif %}
+                 required pattern="[a-z][a-z0-9]*(-[a-z0-9]+)*" minlength="2" maxlength="48"
+                 placeholder="extract">
+          <div class="hint">这就是对外的 <code>model</code> 值。小写字母、数字与连字符；<strong>发布后不可更改</strong>。</div>
+        </div>
+        <div class="field">
+          <label for="name">名称</label>
+          <input id="name" name="name" value="{{ form.name }}" required maxlength="60" placeholder="合同抽取">
+        </div>
+      </div>
+      <div class="field">
+        <label for="description">说明</label>
+        <input id="description" name="description" value="{{ form.description }}" maxlength="200"
+               placeholder="一句话说明它做什么，会出现在模型列表里">
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb5">
+    <div class="card-head"><h2>提示词与模型</h2></div>
+    <div class="card-body">
+      <div class="field">
+        <label for="instructions">指令</label>
+        <textarea id="instructions" name="instructions" rows="8" required
+                  placeholder="你是一个合同信息抽取助手……">{{ form.instructions }}</textarea>
+      </div>
+      <div class="field">
+        <label for="model">模型</label>
+        <input id="model" name="model" class="mono" value="{{ form.model }}" required list="model-list"
+               placeholder="openai/gpt-5">
+        <datalist id="model-list">
+          {% for m in models %}<option value="{{ m.id }}">{{ m.name or m.id }}</option>{% endfor %}
+        </datalist>
+        <div class="hint">
+          {% if models %}目录里有 {{ models|length }} 个可用模型，其中 {{ native_count }} 个支持原生结构化输出。
+          {% else %}模型目录还没拉到——先在<a href="/admin/settings">设置</a>里配好上游 key。{% endif %}
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field" style="flex:0 1 180px">
+          <label for="retries">校验重试次数</label>
+          <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
+          <div class="hint">最坏情况会调用 <strong>1+{{ form.retries }}</strong> 次模型。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb5">
+    <div class="card-head">
+      <h2>输出</h2>
+      <button type="button" class="btn sm" hx-post="/admin/agents/lint" hx-include="#output_schema,#tier"
+              hx-target="#lint-result" hx-swap="innerHTML" hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+        检查字段命名 <span class="htmx-indicator">…</span>
+      </button>
+    </div>
+    <div class="card-body">
+      <div class="field">
+        <label for="tier">保证档位</label>
+        <select id="tier" name="tier">
+          <option value="">纯文本（不定义 schema）</option>
+          {% for t in tiers %}
+          <option value="{{ t.value }}" {% if form.tier == t.value %}selected{% endif %}>
+            {{ t.value }} · {{ t.name }} —— 形状保证{{ t.shape }}，{{ t.content }}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="hint">
+          档位的代价摆在这里由你选，而不是替你选最强的。
+          <strong>T2</strong> 会在输出不合规时自动重试（成本随重试放大，但不承担对齐税）；
+          <strong>T3</strong> 只把 schema 当提示，不做任何校验。
+        </div>
+      </div>
+      <div class="field">
+        <label for="output_schema">输出 JSON Schema</label>
+        <textarea id="output_schema" name="output_schema" rows="14" class="mono"
+                  placeholder='{&#10;  "type": "object",&#10;  "properties": {&#10;    "客户名称": {"type": "string", "description": "合同甲方的完整名称"}&#10;  },&#10;  "required": ["客户名称"]&#10;}'>{{ form.schema }}</textarea>
+        <div class="hint">
+          顶层必须是 <code>"type": "object"</code>。不支持 <code>pattern</code>（正则会在服务进程里执行，
+          一条灾难性回溯就能让服务停摆）与指向外部的 <code>$ref</code>。留空即纯文本输出。
+        </div>
+      </div>
+      <div id="lint-result">
+        {% if hints %}{% include "_lint.html" %}{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="btn primary" type="submit">{{ '创建' if is_new else '保存为新版本' }}</button>
+    <a class="btn ghost" href="/admin/agents">取消</a>
+  </div>
+</form>
+
+{% if not is_new and versions %}
+<div class="card mt4">
+  <div class="card-head"><h2>版本</h2></div>
+  <div class="card-body flush">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>版本</th><th>档位</th><th>创建</th><th></th></tr></thead>
+        <tbody>
+        {% for v in versions %}
+          <tr>
+            <td class="mono">v{{ v.version }}{% if v.current %} <span class="badge ok">当前</span>{% endif %}</td>
+            <td class="mono small">{{ v.tier }}</td>
+            <td class="mono small dim">{{ v.created }}</td>
+            <td style="text-align:right">
+              {% if not v.current %}
+              <form method="post" action="/admin/agents/{{ agent.slug }}/rollback">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="version" value="{{ v.version }}">
+                <button class="btn sm" type="submit">回滚到这个版本</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

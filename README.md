@@ -30,9 +30,11 @@ client.chat.completions.create(model="extract", messages=[...])
 | 调用记录与费用预估 | ✅ |
 | Web 管理后台 | ✅ |
 | docker compose + Caddy 自动 TLS | ✅ |
-| Agent（提示词 → 可调用的 model id） | v0.2 |
-| 结构化输出保证（四档） | v0.2 / v0.3 |
-| 导出 bundle · 配额 · 多用户 | v0.3 / v0.4 |
+| Agent（提示词 → 可调用的 model id） | ✅ |
+| 结构化输出保证：T2 校验后重试 · T3 仅提示 | ✅ |
+| schema 字段命名建议 | ✅ |
+| T1 原生约束 · T1+ 两阶段 | v0.3 |
+| 导出 bundle · 配额 · 多用户 · 真流式 | v0.3 / v0.4 |
 
 排期与设计依据见 [docs/开发计划.md](docs/开发计划.md)。
 

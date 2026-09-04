@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -315,3 +316,144 @@ def test_admin_unauthenticated_surface_is_minimal(settings: Settings, tmp_path: 
             assert r.status_code == 303, f"{path} 未登录时应当跳转登录页"
         assert c.get("/admin/login").status_code == 200
         assert c.get("/admin/static/style.css").status_code == 200
+
+
+# =============================================================================
+# Agent 表单
+# =============================================================================
+
+
+SCHEMA_TEXT = (
+    '{"type":"object","properties":{"客户名称":{"type":"string","description":"甲方全称"}},'
+    '"required":["客户名称"]}'
+)
+
+
+class TestAgentForm:
+    def _create(self, client: TestClient, **over) -> httpx2.Response:
+        client.get("/admin/agents/new")
+        data = {
+            "slug": "extract",
+            "name": "抽取",
+            "description": "把合同抽成字段",
+            "instructions": "抽取甲方名称",
+            "model": "openai/gpt-5",
+            "output_schema": SCHEMA_TEXT,
+            "tier": "T2",
+            "retries": "2",
+            "csrf_token": csrf_of(client),
+        }
+        data.update(over)
+        return client.post("/admin/agents/save", data=data, follow_redirects=False)
+
+    def test_create_and_list(self, logged_in: TestClient):
+        r = self._create(logged_in)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/agents/extract"
+        body = logged_in.get("/admin/agents").text
+        assert "extract" in body
+        assert "T2 · 结构化" in body
+
+    def test_slug_is_readonly_when_editing(self, logged_in: TestClient):
+        """标识发布后不能改——调用方的代码里写着它。"""
+        self._create(logged_in)
+        body = logged_in.get("/admin/agents/extract").text
+        assert "readonly" in body
+
+    def test_only_implemented_tiers_are_offered(self, logged_in: TestClient):
+        """T1 需要先有"可选字段会被提升为必填"的提示才能安全开放。"""
+        import re
+
+        body = logged_in.get("/admin/agents/new").text
+        assert set(re.findall(r'<option value="(T\w+)"', body)) == {"T2", "T3"}
+
+    def test_editing_creates_a_new_version(self, logged_in: TestClient):
+        self._create(logged_in)
+        self._create(logged_in, instructions="改过的指令")
+        body = logged_in.get("/admin/agents/extract").text
+        assert "v2" in body
+        assert "回滚到这个版本" in body
+
+    def test_bad_schema_returns_to_form_with_content(self, logged_in: TestClient):
+        """跳到一个错误页会让人白填一遍。表单必须原地报错并保留内容。"""
+        r = self._create(
+            logged_in,
+            slug="bad",
+            output_schema='{"type":"object","properties":{"a":{"pattern":"(a+)+"}}}',
+        )
+        assert r.status_code == 200
+        assert "pattern" in r.text
+        assert 'value="bad"' in r.text
+
+    def test_invalid_slug_is_rejected(self, logged_in: TestClient):
+        r = self._create(logged_in, slug="BAD_SLUG")
+        assert r.status_code == 200
+        assert "标识" in r.text
+
+    def test_agent_mutations_need_csrf(self, logged_in: TestClient):
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/save",
+            data={"slug": "x", "name": "x", "instructions": "i", "model": "m"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 403
+
+
+class TestSchemaLint:
+    def test_flags_generic_and_short_names(self, logged_in: TestClient):
+        """字段名本身是一条隐式指令通道——这是只有表单形态才方便提供的功能。"""
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/lint",
+            data={
+                "output_schema": (
+                    '{"type":"object","properties":'
+                    '{"data":{"type":"string"},"id":{"type":"string"}}}'
+                ),
+                "tier": "T2",
+                "csrf_token": csrf_of(logged_in),
+            },
+        )
+        assert r.status_code == 200
+        assert "语义空泛" in r.text
+        assert "太短" in r.text
+
+    def test_stays_quiet_on_good_names(self, logged_in: TestClient):
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/lint",
+            data={"output_schema": SCHEMA_TEXT, "tier": "T2", "csrf_token": csrf_of(logged_in)},
+        )
+        assert "语义空泛" not in r.text
+        assert "太短" not in r.text
+
+    def test_never_blocks_saving(self, logged_in: TestClient):
+        """建议不是规则。一个把建议做成拦截的 lint 会很快被绕过或关掉。"""
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/save",
+            data={
+                "slug": "sloppy",
+                "name": "x",
+                "description": "",
+                "instructions": "i",
+                "model": "openai/gpt-5",
+                "output_schema": '{"type":"object","properties":{"data":{"type":"string"}}}',
+                "tier": "T2",
+                "retries": "2",
+                "csrf_token": csrf_of(logged_in),
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303, "命名不好只该给建议，不该拦住保存"
+
+    def test_accepts_csrf_from_header_too(self, logged_in: TestClient):
+        """页面里 HTMX 走 hx-headers，只认表单字段的话点了会没反应。"""
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/lint",
+            data={"output_schema": SCHEMA_TEXT, "tier": "T2"},
+            headers={"x-csrf-token": csrf_of(logged_in)},
+        )
+        assert r.status_code == 200
