@@ -46,6 +46,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xingcha"]
+# 模板、静态资源与迁移脚本必须进 wheel：后台要离线可用，迁移要能自动跑。
+artifacts = [
+  "src/xingcha/web/templates/*",
+  "src/xingcha/web/static/*",
+  "src/xingcha/db/migrations/**",
+]
 
 [tool.ruff]
 line-length = 100

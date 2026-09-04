@@ -1,0 +1,90 @@
+{% extends "_shell.html" %}
+{% block title %}密钥{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>密钥</h1>
+    <p>调用方用这些密钥访问 <code>/v1</code>。明文<strong>只在签发时显示一次</strong>，库里只存哈希与一个不可推导的标识。</p>
+  </div>
+</div>
+
+{% if issued %}
+<div class="alert ok">
+  <div class="grow">
+    <div class="alert-title">已签发「{{ issued.name }}」—— 这是唯一一次看到明文</div>
+    <div class="reveal mt4">
+      <span class="grow truncate">{{ issued.plaintext }}</span>
+      <button type="button" data-copy="{{ issued.plaintext }}">复制</button>
+    </div>
+    <div class="hint">离开这个页面后无法再取回。丢了就吊销重签，成本很低。</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card mb5">
+  <div class="card-head"><h2>签发新密钥</h2></div>
+  <div class="card-body">
+    <form method="post" action="/admin/keys/issue" class="form-row">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="field">
+        <label for="name">用途</label>
+        <input id="name" name="name" type="text" required maxlength="60" placeholder="例如：本地开发、抽取服务">
+      </div>
+      <div class="field" style="flex:0 1 160px">
+        <label for="days">有效期</label>
+        <select id="days" name="days">
+          <option value="">永不过期</option>
+          <option value="30">30 天</option>
+          <option value="90">90 天</option>
+          <option value="365">1 年</option>
+        </select>
+      </div>
+      <button class="btn primary" type="submit">签发</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>已有密钥</h2></div>
+  <div class="card-body flush">
+    {% if tokens %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>用途</th><th>标识</th><th>状态</th><th>最后使用</th><th>创建</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for t in tokens %}
+          <tr>
+            <td>{{ t.name }}</td>
+            <td class="mono dim">{{ t.display_prefix }}</td>
+            <td>
+              {% if not t.is_active %}<span class="badge neutral">已吊销</span>
+              {% elif t.expired %}<span class="badge warn">已过期</span>
+              {% else %}<span class="badge ok">可用</span>{% endif %}
+            </td>
+            <td class="mono dim small">{{ t.last_used_display }}</td>
+            <td class="mono dim small">{{ t.created_display }}</td>
+            <td style="text-align:right">
+              {% if t.is_active %}
+              <form method="post" action="/admin/keys/revoke" onsubmit="return confirm('吊销后使用这把密钥的调用会立刻开始返回 401。确定吗？')">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="kid" value="{{ t.kid }}">
+                <button class="btn danger sm" type="submit">吊销</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">还没有密钥</div>
+      <div class="small">签发一把，然后把 <code>base_url</code> 指向 <code>{{ public_url }}/v1</code>。</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,48 @@
+# 星槎 · Caddy 配置
+#
+# Caddy 独占 80/443 并自动申请证书；xingcha 容器不映射任何宿主端口。
+
+{
+	# 首次上线把 ACME_CA 指向 staging，链路通了再切正式 CA。
+	# 直接上正式 CA 时一次配置错误就可能撞上速率限制，然后要等一周。
+	acme_ca {$ACME_CA}
+	email {$ACME_EMAIL}
+}
+
+{$XINGCHA_DOMAIN} {
+	encode zstd gzip
+
+	# 请求体上限。**Caddy 默认不限**，而直通层会把 body 整块缓冲成 bytes——
+	# 没有这一行时，一个大 POST 就能打死那个同时承载全部流量、SQLite 写入和
+	# 用量缓冲的单进程。应用侧也有 8MB 的上限，这里留一点余量让应用能返回
+	# 自己的 413 而不是被 Caddy 静默截断。这是准入项 A3。
+	request_body {
+		max_size 10MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		# 上游的 Set-Cookie 已经在应用层用白名单挡掉了，这里是第二道
+		-Server
+	}
+
+	reverse_proxy xingcha:8720 {
+		# 这一跳**需要**真实来源 IP：调用记录与限流都靠它。
+		#
+		# 注意不要照抄"抹除 X-Forwarded-For"那条忠告——那是给「星槎当 OpenRouter
+		# 中转」那一跳用的，抹除客户端 XFF 的职责在 passthrough.py 转发给上游时执行。
+		# 两处方向相反，抄错就会永久失去来源 IP 取证能力。
+		header_up X-Real-IP {remote_host}
+
+		# 长思考模型单次可以跑几分钟，流式响应更久。默认超时会把它们切断。
+		transport http {
+			read_timeout 900s
+			write_timeout 900s
+		}
+
+		# 流式必须逐帧发出，不能缓冲——缓冲等于取消了流式。
+		flush_interval -1
+	}
+}

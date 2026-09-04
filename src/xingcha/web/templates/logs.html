@@ -1,0 +1,40 @@
+{% extends "_shell.html" %}
+{% block title %}调用记录{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>调用记录</h1>
+    <p>Agent 与裸模型直通共用一张表——两条路径花的是同一把上游 key 的钱。</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <form method="get" class="form-row" style="width:100%">
+      <div class="field" style="flex:1 1 200px">
+        <label for="model">模型</label>
+        <input id="model" name="model" type="text" value="{{ filters.model or '' }}" placeholder="模型名（模糊匹配）">
+      </div>
+      <div class="field" style="flex:0 1 150px">
+        <label for="status">状态</label>
+        <select id="status" name="status">
+          <option value="">全部</option>
+          <option value="ok" {% if filters.status == 'ok' %}selected{% endif %}>仅成功</option>
+          <option value="error" {% if filters.status == 'error' %}selected{% endif %}>仅失败</option>
+        </select>
+      </div>
+      <button class="btn" type="submit">筛选</button>
+      {% if filters.model or filters.status %}<a class="btn ghost" href="/admin/logs">清除</a>{% endif %}
+    </form>
+  </div>
+  <div class="card-body flush">
+    {% include "_runs_table.html" %}
+  </div>
+</div>
+
+{% if runs %}
+<div class="row between mt4">
+  <span class="small muted">显示最近 {{ runs|length }} 条，共 {{ total }} 条</span>
+</div>
+{% endif %}
+{% endblock %}

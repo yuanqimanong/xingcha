@@ -1,0 +1,86 @@
+# 星槎 · 生产编排
+#
+# 形态收敛成这一种（不再同时提供 systemd 与裸 Dockerfile 两条路）：三种并列等于把
+# 三套运维范式一起变成事实上的接口，日后砍掉任一种都是毁约。
+#
+# 两个容器：xingcha 与 caddy。**只有 caddy 发布端口**。
+
+name: xingcha
+
+services:
+  xingcha:
+    build: .
+    image: xingcha:local
+    restart: unless-stopped
+
+    # 刻意没有 ports:。
+    #
+    # 这不是疏忽——加一行 `ports: 8720:8720` 会让应用直接暴露在公网上，而且
+    # **Docker 的 DOCKER-USER 链会绕过 ufw**：防火墙规则写了 deny，映射出去的端口
+    # 照样可达。对外只经 Caddy。
+    expose:
+      - "8720"
+
+    environment:
+      XINGCHA_DATA_DIR: /data
+      XINGCHA_HOST: 0.0.0.0
+      XINGCHA_PUBLIC_URL: https://${XINGCHA_DOMAIN}
+      XINGCHA_LOG_LEVEL: ${XINGCHA_LOG_LEVEL:-INFO}
+      # 上游 key **不放这里**。环境变量会进 docker inspect 与 /proc/<pid>/environ。
+      # 首次部署可以临时设一次 XINGCHA_OPENROUTER_API_KEY，星槎会把它加密导入数据库
+      # 并告警，之后从 .env 里删掉。长期配置在后台的设置页改。
+
+    volumes:
+      # 宿主本地磁盘。**不要放网络存储**：SQLite 的 WAL 在那上面会静默降级，
+      # 症状是零星的 database is locked——星槎会在启动时断言 WAL 并拒绝启动，
+      # 但把它放对地方比看着它起不来省事。
+      - ./data:/data
+
+    # 30 秒是折中。设成和 request_timeout(600s) 一样长的话，每次升级要等 10 分钟；
+    # 设成 0 的话，正在跑的调用会被硬切。已对齐的升级档位接受"长请求可能被切断"。
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        # 不限的话日志会涨满磁盘，而整个产品就是一个 SQLite 文件：磁盘一满就是
+        # 写失败 + 迁移失败 + 无法启动，根因却在监控里完全看不见。这是准入项 A8。
+        max-size: "20m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8720/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - xingcha
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      XINGCHA_DOMAIN: ${XINGCHA_DOMAIN}
+      # 首次上线先用 staging CA 走通链路，确认无误再注释掉这一行切正式 CA。
+      # 直接上正式 CA 时，一次配置错误就可能撞上 Let's Encrypt 的速率限制，
+      # 然后要等一周。
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 命名卷持久化证书：重启不重签，也就不会因为反复重启撞上速率限制。
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}登录{% endblock %}
+{% block body %}
+<div class="auth-shell">
+  <form class="auth-card" method="post" action="{{ action }}">
+    <div class="auth-brand">
+      <div class="brand-mark">槎</div>
+      <div>
+        <div class="auth-title">{{ '设置管理员密码' if setup else '星槎' }}</div>
+        <div class="auth-sub">{{ '首次使用，请先设定一个密码' if setup else '管理后台' }}</div>
+      </div>
+    </div>
+
+    {% if error %}
+    <div class="alert danger"><div>{{ error }}</div></div>
+    {% endif %}
+
+    {% if setup %}
+    <div class="alert info">
+      <div>后台暴露在公网上，且能改写上游 base_url。请用一个足够长的独立密码，
+      不要复用其它服务的密码。</div>
+    </div>
+    {% endif %}
+
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field">
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="{{ 'new-password' if setup else 'current-password' }}"
+             required minlength="{{ 12 if setup else 1 }}" autofocus>
+      {% if setup %}<div class="hint">至少 12 位。</div>{% endif %}
+    </div>
+    {% if setup %}
+    <div class="field">
+      <label for="confirm">再输一次</label>
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="12">
+    </div>
+    {% endif %}
+    <button class="btn primary" type="submit" style="width:100%">{{ '设置并登录' if setup else '登录' }}</button>
+  </form>
+</div>
+{% endblock %}

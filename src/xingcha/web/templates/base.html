@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="{{ theme or '' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}星槎{% endblock %} · 星槎</title>
+<link rel="stylesheet" href="/admin/static/style.css">
+<script src="/admin/static/htmx.min.js" defer></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230e6e6e'/><text x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='sans-serif'>槎</text></svg>">
+</head>
+<body>
+{% block body %}{% endblock %}
+<script>
+// 复制到剪贴板。只在一次性密钥展示处用到——那是唯一需要 JS 的交互。
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-copy]');
+  if (!btn) return;
+  try {
+    await navigator.clipboard.writeText(btn.dataset.copy);
+    const old = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  } catch {
+    btn.textContent = '复制失败，请手动选中';
+  }
+});
+</script>
+</body>
+</html>

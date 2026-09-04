@@ -1,0 +1,36 @@
+{% if runs %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th><th>模型</th><th>状态</th>
+        <th class="num">入</th><th class="num">出</th><th class="num">缓存</th>
+        <th class="num">费用 USD</th><th class="num">耗时</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in runs %}
+      <tr>
+        <td class="mono dim nowrap">{{ r.started_at }}</td>
+        <td class="mono truncate" title="{{ r.model }}">{{ r.model }}</td>
+        <td>
+          {% if r.status == 'ok' %}<span class="badge ok">成功</span>
+          {% else %}<span class="badge danger" title="{{ r.error_type or '' }}">{{ r.status }}</span>{% endif %}
+        </td>
+        <td class="num">{{ r.input_tokens }}</td>
+        <td class="num">{{ r.output_tokens }}</td>
+        <td class="num dim">{{ r.cache_read_tokens or '' }}</td>
+        <td class="num" title="来源：{{ r.cost_source }}">{{ r.cost_display }}</td>
+        <td class="num dim">{{ r.latency_display }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty">
+  <div class="empty-title">还没有调用记录</div>
+  <div class="small">用下面这条命令验证链路，成功后这里就会出现第一行：</div>
+  <div class="mt4"><code>curl {{ public_url }}/v1/models -H "Authorization: Bearer sk-xc-1-..."</code></div>
+</div>
+{% endif %}

@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from . import __version__
 from . import contract as C
@@ -37,6 +37,7 @@ from .errors import XingchaError, unhandled_error_handler, xingcha_error_handler
 from .services import setting as setting_svc
 from .services.ratelimit import RateLimiter
 from .services.runlog import UsageBuffer
+from .web import routes as web_routes
 
 log = logging.getLogger(__name__)
 
@@ -162,6 +163,28 @@ async def _not_configured_handler(request: Request, exc: Exception) -> JSONRespo
     )
 
 
+async def _denied_handler(request: Request, exc: Exception) -> Response:
+    """后台的拒绝。未登录跳登录页，其余给一个能看懂的 HTML。
+
+    不走 /v1 的错误契约——那是给 SDK 分支用的 JSON，而这里的读者是浏览器前的人。
+    """
+    assert isinstance(exc, web_routes.Denied)
+    if exc.status == 401:
+        return RedirectResponse("/admin/login", status_code=303)
+    return web_routes.security_headers(
+        HTMLResponse(
+            f"<!doctype html><meta charset=utf-8>"
+            f"<title>操作被拒绝</title>"
+            f"<link rel=stylesheet href=/admin/static/style.css>"
+            f"<div class=auth-shell><div class=auth-card>"
+            f"<div class=auth-title>操作被拒绝</div>"
+            f"<p class='muted small mt4'>{exc.message}</p>"
+            f"<a class='btn mt4' href='/admin'>返回后台</a></div></div>",
+            status_code=exc.status,
+        )
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     logging.basicConfig(
@@ -190,6 +213,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _mount_probes(app)
     app.include_router(v1_api.build_router())
+    web_routes.mount(app)
+    app.add_exception_handler(web_routes.Denied, _denied_handler)
 
     # 必须在路由之前归一化 /v1 路径。见 api/normalize.py：不做这一步，
     # GET /v1/models/ 会静默落进 catch-all 被反代出去。

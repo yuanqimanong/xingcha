@@ -1,0 +1,61 @@
+{% extends "_shell.html" %}
+{% block title %}总览{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>总览</h1>
+    <p>把 <code>base_url</code> 指向这里、填一把 <code>sk-xc-</code> 密钥，业务代码就能调任意上游模型，本地不再需要代理。</p>
+  </div>
+</div>
+
+{% if not upstream_configured %}
+<div class="alert warn">
+  <div>
+    <div class="alert-title">还没有配置上游 key</div>
+    <div>在<a href="/admin/settings">设置</a>里填入 OpenRouter key，或执行
+      <code>xingcha config set openrouter.api_key -</code>。在此之前 <code>/v1</code> 的调用会返回 503。</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">今日调用</div>
+    <div class="stat-value">{{ stats.today_runs }}</div>
+    <div class="stat-hint">近 7 天 {{ stats.week_runs }} 次</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">今日预估费用</div>
+    <div class="stat-value">{{ stats.today_cost }}<small>USD</small></div>
+    <div class="stat-hint">近 7 天 {{ stats.week_cost }} USD</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">今日 token</div>
+    <div class="stat-value">{{ stats.today_tokens }}</div>
+    <div class="stat-hint">入 {{ stats.today_input }} / 出 {{ stats.today_output }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">错误率（近 7 天）</div>
+    <div class="stat-value">{{ stats.error_rate }}<small>%</small></div>
+    <div class="stat-hint">{{ stats.week_errors }} 次失败</div>
+  </div>
+</div>
+
+<div class="alert info mb5">
+  <div>
+    <div class="alert-title">费用一律是预估</div>
+    <div>按上游模型目录的单价计算，与 OpenRouter 账单存在偏差（平台抽成、缓存计价、汇率）。
+      账单以上游官网为准。<strong>v1 不执行配额</strong>——真正的钱刹车请在 OpenRouter 侧给这把 key 单独设一个信用上限。</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>最近调用</h2>
+    <a class="btn sm" href="/admin/logs">查看全部</a>
+  </div>
+  <div class="card-body flush">
+    {% include "_runs_table.html" %}
+  </div>
+</div>
+{% endblock %}

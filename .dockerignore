@@ -1,0 +1,19 @@
+# 构建上下文越小越快，也避免把不该进镜像的东西带进去
+.git/
+.venv/
+data/
+.env
+.env.*
+!deploy/.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
+tests/
+docs/
+deploy/

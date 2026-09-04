@@ -1,0 +1,15 @@
+{% if ok %}
+<div class="alert ok">
+  <div>
+    <div class="alert-title">连接正常</div>
+    <div>上游返回 {{ count }} 个模型{% if native %}，其中 {{ native }} 个支持原生结构化输出{% endif %}。</div>
+  </div>
+</div>
+{% else %}
+<div class="alert danger">
+  <div>
+    <div class="alert-title">连接失败</div>
+    <div>{{ message }}</div>
+  </div>
+</div>
+{% endif %}

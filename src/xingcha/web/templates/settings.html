@@ -1,0 +1,74 @@
+{% extends "_shell.html" %}
+{% block title %}设置{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>设置</h1>
+    <p>上游 key 加密后存在本机数据库里，不落环境变量——环境变量会出现在 <code>docker inspect</code> 与 <code>/proc/&lt;pid&gt;/environ</code>。</p>
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head"><h2>OpenRouter</h2></div>
+  <div class="card-body">
+    <form method="post" action="/admin/settings/upstream">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="field">
+        <label for="api_key">API key</label>
+        <input id="api_key" name="api_key" type="password" class="mono" autocomplete="off"
+               placeholder="{{ masked_key or 'sk-or-v1-...' }}">
+        <div class="hint">
+          {% if masked_key %}当前：<code>{{ masked_key }}</code>。留空表示不修改。{% else %}还没有配置。{% endif %}
+        </div>
+      </div>
+      <div class="field">
+        <label for="base_url">中转地址</label>
+        <input id="base_url" name="base_url" type="text" class="mono" value="{{ base_url }}"
+               placeholder="https://openrouter.ai/api/v1">
+        <div class="hint">
+          只在需要经过自己的中转时才改。必须是 <code>https</code>（本机 <code>127.0.0.1</code> 除外），
+          且不能指向私有网段或云元数据地址——那会把这台机器变成一个带着付费 key 的通用代理。
+        </div>
+      </div>
+      <div class="field">
+        <label for="password">当前密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <div class="hint">改动上游配置需要二次确认身份：这个表单一旦被跨站提交，付费 key 就会被送到攻击者的服务器。</div>
+      </div>
+      <button class="btn primary" type="submit">保存</button>
+    </form>
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head">
+    <h2>连接自检</h2>
+    <button class="btn sm" hx-post="/admin/settings/test" hx-target="#test-result" hx-swap="innerHTML"
+            hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+      测试
+      <span class="htmx-indicator">…</span>
+    </button>
+  </div>
+  <div class="card-body" id="test-result">
+    <p class="muted small">用当前保存的配置向上游要一次模型列表。<strong>不会</strong>把 key 发给尚未保存的地址。</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>运行状况</h2></div>
+  <div class="card-body flush">
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><td>版本</td><td class="mono">{{ version }}</td></tr>
+          <tr><td>对外契约</td><td class="mono">v{{ contract }}</td></tr>
+          <tr><td>上游地址</td><td class="mono">{{ base_url }}</td></tr>
+          <tr><td>模型目录</td><td class="mono">{{ catalog_count }} 个{% if catalog_stale %}（已过期，将自动重试）{% endif %}</td></tr>
+          <tr><td>数据目录</td><td class="mono">{{ data_dir }}</td></tr>
+          <tr><td>数据库版本</td><td class="mono">{{ db_revision }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
