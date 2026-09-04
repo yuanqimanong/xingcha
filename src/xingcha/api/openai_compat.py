@@ -28,6 +28,7 @@ from ..errors import (
     UpstreamError,
     XingchaError,
 )
+from ..obs import tracing as tracing_mod
 from ..services import agent as agent_svc
 from ..services import run as run_svc
 from .passthrough import execute_forward, forward_headers, read_body_capped
@@ -305,21 +306,28 @@ async def _run_agent(
     if wants_streaming:
         return await _stream_agent(request, rt, tracker, prompt, extra_instructions, fail)
 
-    try:
-        outcome = await run_svc.execute(
-            rt,
-            prompt=prompt,
-            extra_instructions=extra_instructions,
-            run_timeout=state.settings.run_timeout,
-        )
-    except XingchaError as e:
-        await fail(e)
-        raise
+    with tracing_mod.run_span(
+        state.tracing, kind="agent", run_id=tracker.rec.id, model=requested_model
+    ) as span:
+        try:
+            outcome = await run_svc.execute(
+                rt,
+                prompt=prompt,
+                extra_instructions=extra_instructions,
+                run_timeout=state.settings.run_timeout,
+            )
+        except XingchaError as e:
+            await fail(e)
+            tracing_mod.record_run(span, tracker.rec)
+            raise
 
-    _absorb(tracker, outcome, state.catalog, state.cost_sink)
-    tracker.finish_ok()
-    await tracker.submit()
-    return JSONResponse(run_svc.to_openai_response(outcome, model=requested_model))
+        _absorb(tracker, outcome, state.catalog, state.cost_sink)
+        tracker.finish_ok()
+        await tracker.submit()
+        tracing_mod.record_run(span, tracker.rec)
+    return JSONResponse(
+        run_svc.to_openai_response(outcome, model=requested_model, run_id=tracker.rec.id)
+    )
 
 
 async def _stream_agent(
@@ -349,6 +357,7 @@ async def _stream_agent(
 
     gen = run_svc.stream_frames(
         rt,
+        tracing=state.tracing,
         prompt=prompt,
         extra_instructions=extra_instructions,
         run_timeout=state.settings.run_timeout,

@@ -533,6 +533,9 @@ async def settings_page(request: Request) -> Response:
     async with state.sessionmaker() as s:
         raw_key = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
         base_url = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_BASE_URL)
+        trace_endpoint = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
+        trace_pk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
+        trace_sk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
 
     from ..db import migrate
 
@@ -548,6 +551,11 @@ async def settings_page(request: Request) -> Response:
             "catalog_stale": state.catalog.is_stale,
             "data_dir": str(state.settings.data_dir.resolve()),
             "db_revision": migrate.current_revision(state.settings.db_path) or "—",
+            "trace_endpoint": trace_endpoint or "",
+            "trace_public_key": trace_pk or "",
+            "trace_has_secret": bool(trace_sk),
+            "trace_on": state.tracing is not None,
+            "trace_include_content": state.settings.trace_include_content,
         },
     )
     csrf.apply(resp)
@@ -591,6 +599,72 @@ async def update_upstream(
     up = state.upstream.config
     if up is not None:
         await state.catalog.refresh(state.upstream.client(), up.api_key)
+
+    return security_headers(RedirectResponse("/admin/settings", status_code=303))
+
+
+@router.post("/settings/trace")
+async def update_trace(
+    request: Request,
+    password: str = Form(...),
+    endpoint: str = Form(default=""),
+    public_key: str = Form(default=""),
+    secret_key: str = Form(default=""),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """改 trace 配置。
+
+    要密码，理由和上游 key 一样：**打开 trace 意味着提示词与模型输出会被送到一个
+    外部地址**。这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本——
+    后果与偷走 key 是同一个量级。
+
+    endpoint 过 SSRF 守卫：它是一个"服务端会主动去打"的地址，和上游地址同类。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+
+    async with state.sessionmaker() as s:
+        admin = await ws.get_admin(s)
+        if admin is None or not ws.verify_password(admin.password_hash, password):
+            raise Denied("密码不正确，未做任何修改。")
+
+        cleaned = endpoint.strip()
+        if cleaned:
+            try:
+                # allow_private：自建 Langfuse 基本就在内网（同一个 docker network
+                # 或者 10.x）。一律拒私有网段会把最主流的自建部署挡死，而挡死之后
+                # 人们会去用托管服务——那正好是更差的隐私结果。
+                # 链路本地（云元数据端点）仍然拒。
+                checked = check_upstream_url(cleaned, allow_private=True)
+            except UnsafeUpstreamURL as e:
+                raise Denied(f"上报地址被拒绝：{e}") from e
+            await setting_svc.set_(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT, checked.url)
+        else:
+            # 清空 endpoint 就是关掉 trace。**凭据一起清掉**——留着一份用不上的
+            # secret key 只是多一处泄漏面。
+            await setting_svc.unset(s, C.SETTING_KEY_TRACE_ENDPOINT)
+            await setting_svc.unset(s, C.SETTING_KEY_TRACE_PUBLIC_KEY)
+            await setting_svc.unset(s, C.SETTING_KEY_TRACE_SECRET_KEY)
+
+        if cleaned and public_key.strip():
+            await setting_svc.set_(
+                s, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY, public_key.strip()
+            )
+        if cleaned and secret_key.strip():
+            await setting_svc.set_(
+                s, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY, secret_key.strip()
+            )
+        await s.commit()
+
+    from ..app import load_tracing
+
+    # 旧管道要先关掉再换新的，否则上一个 BatchSpanProcessor 的后台线程会一直留着。
+    if state.tracing is not None:
+        state.tracing.shutdown()
+        state.tracing = None
+    await load_tracing(state)
+    # Agent 的埋点绑在构造时的 model 上，运行时缓存里那些还挂着旧 provider
+    state.runtimes.clear()
 
     return security_headers(RedirectResponse("/admin/settings", status_code=303))
 

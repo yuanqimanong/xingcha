@@ -215,6 +215,39 @@ class TestUpstreamURLGuard:
         assert "元数据" in str(e.value)
 
 
+class TestGuardPolicySplit:
+    """两处地址的守卫**故意不一样**，且都有理由。
+
+    上游地址会带着付费 key 去打 → 内网一律拒（否则这台机器就是一个带凭证的内网
+    探针）。trace 上报地址不带 key，风险是内容外流 → 允许内网（自建 Langfuse 就在
+    那儿）。**链路本地两处都拒**——那是真正危险的目标。
+    """
+
+    def test_upstream_rejects_private_networks(self):
+        with pytest.raises(UnsafeUpstreamURL) as e:
+            check_upstream_url("http://10.0.0.5/v1")
+        assert "私有网段" in str(e.value)
+
+    def test_trace_allows_private_networks(self):
+        checked = check_upstream_url("http://10.0.0.5:3000/x", allow_private=True)
+        assert checked.host == "10.0.0.5"
+
+    def test_link_local_is_blocked_in_both(self):
+        for kwargs in ({}, {"allow_private": True}):
+            with pytest.raises(UnsafeUpstreamURL) as e:
+                check_upstream_url("http://169.254.169.254/x", **kwargs)  # type: ignore[arg-type]
+            assert "元数据" in str(e.value)
+
+    def test_public_http_is_still_rejected_even_for_trace(self):
+        """放开的只有"内网可以用 http"，公网仍然必须 https。
+
+        不然一个填错的 http://cloud.langfuse.com 会让整份对话内容在链路上明文走。
+        """
+        with pytest.raises(UnsafeUpstreamURL) as e:
+            check_upstream_url("http://1.1.1.1/x", allow_private=True)
+        assert "https" in str(e.value)
+
+
 class TestSettingsMutation:
     def test_requires_password_confirmation(self, logged_in: TestClient):
         """改上游配置是全后台后果最严重的操作，CSRF 三层之外再加一道。"""
@@ -264,6 +297,99 @@ class TestSettingsMutation:
         body = logged_in.get("/admin/settings").text
         assert "sk-or-v1-legit" not in body
         assert "***" in body
+
+
+class TestTraceMutation:
+    """trace 配置与上游 key 同级。
+
+    打开 trace 意味着提示词与模型输出会被送到一个外部地址。这个表单一旦被跨站
+    提交，攻击者就得到了一份**持续到达**的对话副本——后果与偷走 key 是同一个量级，
+    所以守卫也必须同级。
+    """
+
+    def _post(self, client: TestClient, **data):
+        client.get("/admin/settings")
+        return client.post(
+            "/admin/settings/trace",
+            data={"csrf_token": csrf_of(client), **data},
+            follow_redirects=False,
+        )
+
+    def test_requires_password_confirmation(self, logged_in: TestClient):
+        r = self._post(
+            logged_in,
+            password="wrong-password",
+            endpoint="http://10.0.0.5:3000/api/public/otel/v1/traces",
+        )
+        assert r.status_code == 403
+        assert "密码不正确" in r.text
+
+    def test_metadata_endpoint_is_still_blocked(self, logged_in: TestClient):
+        """上报地址是"服务端会主动去打"的地址，云元数据端点一律拒。
+
+        不守的话，这个表单就是一个"让星槎去打云元数据端点"的原语。
+        """
+        r = self._post(logged_in, password=PASSWORD, endpoint="http://169.254.169.254/v1/traces")
+        assert r.status_code == 403
+        assert "元数据" in r.text
+
+    def test_a_self_hosted_langfuse_on_a_private_network_is_allowed(self, logged_in: TestClient):
+        """**自建 Langfuse 基本就在内网**，这条不能被 SSRF 守卫挡死。
+
+        挡死之后人们会去用托管服务——那正好是更差的隐私结果。上游地址的守卫更严
+        （内网一律拒），因为那条链路会带着付费 key；trace 这条不带。
+        """
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            endpoint="http://172.20.0.9:3000/api/public/otel/v1/traces",
+        )
+        assert r.status_code == 303
+
+    def test_valid_config_turns_tracing_on(self, logged_in: TestClient):
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            # 自建 Langfuse 的典型形态：内网 http。这条必须被**放过**。
+            endpoint="http://10.0.0.5:3000/api/public/otel/v1/traces",
+            public_key="pk-lf-1",
+            secret_key="sk-lf-2",
+        )
+        assert r.status_code == 303
+        body = logged_in.get("/admin/settings").text
+        assert "已开启" in body
+        assert "sk-lf-2" not in body, "secret key 绝不能回显到页面上"
+
+    def test_clearing_the_endpoint_also_wipes_the_credentials(self, logged_in: TestClient):
+        """关掉 trace 时凭据一起清掉。
+
+        留着一份用不上的 secret key 只是多一处泄漏面——而"我以为已经关了"恰恰是
+        这种残留最容易发生的场景。
+        """
+        self.test_valid_config_turns_tracing_on(logged_in)
+        r = self._post(logged_in, password=PASSWORD, endpoint="")
+        assert r.status_code == 303
+
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+        assert state.tracing is None
+
+        import asyncio
+
+        from xingcha import contract as C
+        from xingcha.services import setting as setting_svc
+
+        async def read():
+            async with state.sessionmaker() as s:
+                return [
+                    await setting_svc.get(s, state.keyring, k)
+                    for k in (
+                        C.SETTING_KEY_TRACE_ENDPOINT,
+                        C.SETTING_KEY_TRACE_PUBLIC_KEY,
+                        C.SETTING_KEY_TRACE_SECRET_KEY,
+                    )
+                ]
+
+        assert asyncio.run(read()) == [None, None, None]
 
 
 # =============================================================================

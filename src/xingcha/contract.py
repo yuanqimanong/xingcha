@@ -641,6 +641,12 @@ REQUIRED_JOURNAL_MODE: Final = "wal"
 SETTING_KEY_OPENROUTER_API_KEY: Final = "openrouter.api_key"
 SETTING_KEY_OPENROUTER_BASE_URL: Final = "openrouter.base_url"
 
+#: Langfuse 凭据。**走加密存储而不是环境变量**，理由与上游 key 完全相同：
+#: 环境变量会出现在 ``docker inspect`` 与 ``/proc/<pid>/environ`` 里。
+SETTING_KEY_TRACE_ENDPOINT: Final = "trace.endpoint"
+SETTING_KEY_TRACE_PUBLIC_KEY: Final = "trace.public_key"
+SETTING_KEY_TRACE_SECRET_KEY: Final = "trace.secret_key"
+
 #: 官方 OpenRouter 地址。中转时由管理员在设置里改写。
 #:
 #: 注意：``OPENROUTER_BASE_URL`` 这个环境变量**不被 pydantic-ai 读取**（源码里只有

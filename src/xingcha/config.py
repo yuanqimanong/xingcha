@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     #: 多一项，调用方能探测到。
     quota_on_passthrough: bool = False
 
+    # --- 可观测 ---
+    #: trace 里是否包含提示词与模型输出。
+    #:
+    #: **打开意味着这些文本会离开这台机器。** 自建 Langfuse 关起门来看，那正是要的；
+    #: 指向别人家的托管服务，就要先想清楚。默认 True 是因为不含内容的 trace 基本
+    #: 回答不了"提示词改了一版为什么变差"——那是开 trace 的主要理由。
+    trace_include_content: bool = True
+
+    #: 上报到 OTLP 端点的服务名。多环境（staging / prod）共用一个 Langfuse 项目时
+    #: 靠它区分。
+    trace_service_name: str = "xingcha"
+
     # --- Web ---
     #: 会话有效期（小时）。
     session_ttl_hours: int = Field(default=24 * 7, ge=1)

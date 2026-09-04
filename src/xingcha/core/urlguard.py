@@ -37,8 +37,22 @@ class CheckedURL:
     addresses: tuple[str, ...]
 
 
-def _is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
-    """返回拦截原因，安全则返回 None。"""
+def _is_blocked(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_private: bool = False
+) -> str | None:
+    """返回拦截原因，安全则返回 None。
+
+    ``allow_private`` 给 trace 上报地址用。两处的风险不是同一件事：
+
+    - 上游地址会**带着付费 key** 去打，所以内网地址一律拒——那等于把这台机器变成
+      一个带凭证的通用内网探针；
+    - trace 上报地址的风险是"对话内容被送到不该去的地方"，而**自建 Langfuse 基本
+      就在内网**（同一个 docker network、或者 10.x）。一律拒私有网段会把最主流的
+      自建部署挡死，而挡死之后人们会去用托管服务——那正好是更差的隐私结果。
+
+    链路本地（含云元数据端点）**两处都拒**。那才是真正危险的目标，而且没有任何
+    正当理由把 trace 发到 169.254.169.254。
+    """
     # 判定顺序 = 诊断精确度顺序。169.254.0.0/16 同时满足 is_private 与 is_link_local，
     # 而"你指向了云元数据端点"比"你指向了私有网段"信息量大得多——前者说明这台机器
     # 可能正在被用来偷云厂商的实例凭证。更具体的那个必须先判。
@@ -46,18 +60,22 @@ def _is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None
         return "回环地址"
     if ip.is_link_local:
         return "链路本地地址（含云元数据端点 169.254.169.254，能拿到实例凭证）"
-    if ip.is_private:
+    if ip.is_private and not allow_private:
         return "私有网段"
     if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
         return "保留 / 组播 / 未指定地址"
     return None
 
 
-def check_upstream_url(raw: str, *, allow_loopback: bool = True) -> CheckedURL:
-    """校验管理员填写的上游地址。
+def check_upstream_url(
+    raw: str, *, allow_loopback: bool = True, allow_private: bool = False
+) -> CheckedURL:
+    """校验管理员填写的、**服务端会主动去打**的地址。
 
     ``allow_loopback`` 默认开：同机跑中转是常见部署。但它必须是**显式**的回环
     主机名，而不是某个域名恰好解析到回环——后者正是 DNS rebinding 的形态。
+
+    ``allow_private`` 见 :func:`_is_blocked`：只有 trace 上报地址该开。
     """
     raw = (raw or "").strip()
     if not raw:
@@ -87,10 +105,10 @@ def check_upstream_url(raw: str, *, allow_loopback: bool = True) -> CheckedURL:
     except ValueError:
         ip = None
     if ip is not None:
-        reason = _is_blocked(ip)
+        reason = _is_blocked(ip, allow_private=allow_private)
         if reason:
             raise UnsafeUpstreamURL(f"不允许指向{reason}：{host}")
-        if parsed.scheme != "https":
+        if parsed.scheme != "https" and not (allow_private and ip.is_private):
             raise UnsafeUpstreamURL("非本机地址必须用 https —— http 会让上游 key 在链路上明文传输")
         return CheckedURL(url=raw.rstrip("/"), host=host, addresses=(host,))
 
@@ -105,7 +123,7 @@ def check_upstream_url(raw: str, *, allow_loopback: bool = True) -> CheckedURL:
         raise UnsafeUpstreamURL(f"域名 {host} 没有解析出任何地址")
 
     for addr in addresses:
-        reason = _is_blocked(ipaddress.ip_address(addr))
+        reason = _is_blocked(ipaddress.ip_address(addr), allow_private=allow_private)
         if reason:
             raise UnsafeUpstreamURL(
                 f"域名 {host} 解析到了{reason}（{addr}）。这通常意味着 DNS rebinding 攻击，"

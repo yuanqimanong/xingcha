@@ -211,6 +211,10 @@ class TestStructuredAgent:
 
         ext = body[C.EXT_KEY]
         assert ext["v"] == C.EXT_SHAPE_VERSION
+        # run_id 在**成功**的响应里也必须有。5xx 的固定文案是「请把 run_id 提供给
+        # 管理员」，可最需要查的恰恰是"200 但结果可疑"那一类——那时没有抓手就等于
+        # 查不了。契约 §3.6 也把它列进 x_xingcha。
+        assert isinstance(ext["run_id"], str) and len(ext["run_id"]) == 32
         assert ext["tier"] == Tier.T2.value
         assert ext["cost_usd"] is None or isinstance(ext["cost_usd"], str)
         assert ext["cost_source"] in {s.value for s in C.CostSource}

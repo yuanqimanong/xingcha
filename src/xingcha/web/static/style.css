@@ -473,6 +473,25 @@ td.dim {
   color: var(--ink-3);
 }
 
+/* 需要被读到、而不只是被看到的提示。放在表单上方，说明"保存之后会发生什么"。 */
+.notice {
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border-left: 3px solid var(--ink-3);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.notice.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.notice strong {
+  font-weight: 600;
+}
+
 .empty {
   padding: var(--s7) var(--s5);
   text-align: center;

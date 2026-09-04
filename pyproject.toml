@@ -26,6 +26,11 @@ dependencies = [
   "argon2-cffi>=23",
   "python-multipart>=0.0.20",
   "pyyaml>=6.0",
+  # 可观测。做成基础依赖而不是 extra：只多 ~7MB，而做成 extra 就意味着"想开 trace"
+  # 要重建镜像——那和"升级对用户无感"是一个方向上的取舍，配置改一下就能开更好。
+  # 只装 HTTP exporter，不装 grpc（后者会拖进 grpcio，几十 MB）。
+  "opentelemetry-sdk>=1.30",
+  "opentelemetry-exporter-otlp-proto-http>=1.30",
 ]
 
 [project.scripts]

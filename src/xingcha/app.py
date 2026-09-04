@@ -29,12 +29,14 @@ from .api import v1 as v1_api
 from .api.normalize import NormalizeV1Path
 from .bootstrap import prepare
 from .config import Settings, get_settings, warn_unknown_env
+from .core import builder
 from .core.costsink import CostSink
 from .core.models_catalog import ModelsCatalog
 from .core.upstream import UpstreamConfig, UpstreamNotConfigured, UpstreamPool
 from .crypto import Keyring
 from .db.engine import assert_wal, make_engine, make_sessionmaker
 from .errors import XingchaError, unhandled_error_handler, xingcha_error_handler
+from .obs import tracing as tracing_mod
 from .services import setting as setting_svc
 from .services.quota import QuotaService
 from .services.ratelimit import RateLimiter
@@ -65,6 +67,7 @@ class AppState:
         )
         self.usage: UsageBuffer | None = None
         self.quota: QuotaService | None = None
+        self.tracing: Any = None
         #: 上游真实费用的暂存点。见 core/costsink.py。
         self.cost_sink = CostSink()
 
@@ -83,6 +86,40 @@ class AppState:
         from pydantic_ai.concurrency import ConcurrencyLimiter
 
         self.concurrency = ConcurrencyLimiter(settings.max_concurrency, name="xingcha")
+
+
+async def load_tracing(state: AppState) -> None:
+    """从 setting 表读 trace 配置并装配。
+
+    凭据走**加密存储**而不是环境变量，理由与上游 key 一样：环境变量会出现在
+    ``docker inspect`` 与 ``/proc/<pid>/environ`` 里。
+
+    没配 endpoint 就是关闭——这是默认状态。打开意味着提示词与模型输出会离开这台
+    机器，而这个项目存在的理由恰恰是不想让请求经过别人手里，所以它必须是一次显式
+    的决定，不能是升级的副作用。
+    """
+    assert state.keyring is not None
+    async with state.sessionmaker() as session:
+        get = setting_svc.get
+        endpoint = await get(session, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
+        public_key = await get(session, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
+        secret_key = await get(session, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
+
+    if not endpoint:
+        builder.enable_instrumentation(None)
+        return
+
+    headers = (
+        tracing_mod.langfuse_headers(public_key, secret_key) if public_key and secret_key else None
+    )
+    state.tracing = tracing_mod.setup(
+        endpoint=endpoint,
+        headers=headers,
+        service_name=state.settings.trace_service_name,
+        include_content=state.settings.trace_include_content,
+        timeout_seconds=state.settings.request_timeout,
+    )
+    builder.enable_instrumentation(state.tracing)
 
 
 async def load_upstream(state: AppState) -> None:
@@ -151,6 +188,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await load_upstream(state)
 
+    # trace 在上游之后装：它要读加密配置，而那需要 keyring + sessionmaker 都就位。
+    # 装配失败只丢可观测不丢服务，见 obs/tracing.setup。
+    await load_tracing(state)
+
     # 预热模型目录。**这不只是为了首次 /v1/models 快一点**：目录同时是主价源，
     # 不预热的话，一个只调 chat/completions、从不列模型的调用方（也就是绝大多数
     # 业务代码）产生的每一条记录都会是 cost_source=unknown —— 等于没有账单数据。
@@ -176,6 +217,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 而且丢多少无法事后察觉。这是准入项 A9。
         if state.usage is not None:
             await state.usage.close()
+        # 同理，BatchSpanProcessor 攒批后台发，不 flush 就丢掉最后那批——
+        # 而"升级前最后那几次调用"恰好是排查升级问题时最想看的。
+        if state.tracing is not None:
+            state.tracing.shutdown()
         await state.upstream.aclose()
         await engine.dispose()
         log.info("星槎已停止")
@@ -313,6 +358,12 @@ def _mount_probes(app: FastAPI) -> None:
             checks["quota_rules"] = state.quota.rule_count
         if state.usage is not None:
             checks["usage_pending"] = state.usage.pending
+        # trace 报在这里而不是 /version：它是运维事实，不是客户端能力。
+        # 但**"含不含内容"必须能查到**——那关系到提示词有没有离开这台机器。
+        checks["trace"] = "off" if state.tracing is None else "on"
+        if state.tracing is not None:
+            checks["trace_endpoint"] = state.tracing.endpoint
+            checks["trace_includes_content"] = state.tracing.include_content
 
         return JSONResponse(
             status_code=200 if ok else 503,

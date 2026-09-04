@@ -42,6 +42,56 @@
 
 <div class="card mb5">
   <div class="card-head">
+    <h2>可观测（OTel / Langfuse）</h2>
+    {% if trace_on %}<span class="badge ok">已开启</span>{% else %}<span class="badge">未开启</span>{% endif %}
+  </div>
+  <div class="card-body">
+    <p class="muted small mb4">
+      管理面的运行列表回答「跑了几次、花了多少、有没有报错」。它回答不了
+      <strong>「模型到底看到了什么、又吐回了什么」</strong>——而调提示词的时间几乎全花在那个问题上。
+      接上 Langfuse 就能看到每次调用的完整消息、重试与耗时。
+    </p>
+    {% if trace_include_content %}
+    <div class="notice warn mb4">
+      <strong>开启后，提示词与模型输出会被发送到下面这个地址。</strong>
+      自建 Langfuse 关起门来看没问题；指向别人家的托管服务，就等于把对话内容交出去了。
+      不想带内容可以设 <code>XINGCHA_TRACE_INCLUDE_CONTENT=0</code>，但那样最主要的用处也就没了。
+    </div>
+    {% endif %}
+    <form method="post" action="/admin/settings/trace">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="field">
+        <label for="trace_endpoint">OTLP traces 地址</label>
+        <input id="trace_endpoint" name="endpoint" type="text" class="mono" value="{{ trace_endpoint }}"
+               placeholder="https://cloud.langfuse.com/api/public/otel/v1/traces">
+        <div class="hint">
+          要给完整的 traces 入口（自建 Langfuse 是 <code>https://你的域名/api/public/otel/v1/traces</code>）。
+          <strong>留空即关闭</strong>，凭据也会一起清掉。
+        </div>
+      </div>
+      <div class="field">
+        <label for="trace_public_key">Langfuse public key</label>
+        <input id="trace_public_key" name="public_key" type="text" class="mono" autocomplete="off"
+               value="{{ trace_public_key }}" placeholder="pk-lf-...">
+      </div>
+      <div class="field">
+        <label for="trace_secret_key">Langfuse secret key</label>
+        <input id="trace_secret_key" name="secret_key" type="password" class="mono" autocomplete="off"
+               placeholder="{% if trace_has_secret %}已保存，留空表示不修改{% else %}sk-lf-...{% endif %}">
+        <div class="hint">和上游 key 一样加密存在本机数据库里。Basic 头由星槎自己拼，不用手算 base64。</div>
+      </div>
+      <div class="field">
+        <label for="trace_password">当前密码</label>
+        <input id="trace_password" name="password" type="password" autocomplete="current-password" required>
+        <div class="hint">这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本——所以要二次确认身份。</div>
+      </div>
+      <button class="btn primary" type="submit">保存</button>
+    </form>
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head">
     <h2>连接自检</h2>
     <button class="btn sm" hx-post="/admin/settings/test" hx-target="#test-result" hx-swap="innerHTML"
             hx-headers='{"x-csrf-token": "{{ csrf }}"}'>

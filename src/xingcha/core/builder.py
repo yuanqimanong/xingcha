@@ -162,6 +162,31 @@ def make_provider(
     return OpenRouterProvider(openai_client=client)
 
 
+def enable_instrumentation(tracing: Any) -> None:
+    """把 pydantic-ai 的埋点接到我们的 tracer 上。
+
+    这是本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
+    ``instrument_all`` 是全局设置，而星槎的每个 Agent 都是自己构造的，没有一个会
+    单独声明 ``Instrumentation`` 能力——所以全局一次就够，不必逐个 Agent 传。
+
+    埋点做的事就是把每次模型请求的消息与响应记成 span 属性。这也正是"trace 含内容"
+    这个开关真正控制的东西。
+    """
+    from pydantic_ai import Agent
+    from pydantic_ai.models.instrumented import InstrumentationSettings
+
+    if tracing is None:
+        Agent.instrument_all(False)
+        return
+    Agent.instrument_all(
+        InstrumentationSettings(
+            tracer_provider=tracing.provider,
+            include_content=tracing.include_content,
+            include_binary_content=False,  # 图片/音频进 span 会把体积撑爆
+        )
+    )
+
+
 def _strip_prefix(model: str) -> str:
     """表单可能存成 ``openrouter:openai/gpt-5``；provider 已显式给出，去掉前缀。"""
     return model.split(":", 1)[1] if model.startswith("openrouter:") else model

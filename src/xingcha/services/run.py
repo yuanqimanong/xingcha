@@ -43,6 +43,7 @@ from ..errors import (
     UpstreamError,
     UpstreamTimeout,
 )
+from ..obs import tracing as tracing_mod
 from .agent import ResolvedAgent
 
 log = logging.getLogger(__name__)
@@ -396,8 +397,15 @@ def _extra_usage(usage: Any) -> dict[str, Any]:
 # =============================================================================
 
 
-def to_openai_response(outcome: RunOutcome, *, model: str) -> dict[str, Any]:
-    """转成 ``chat.completion``。形状进了契约。"""
+def to_openai_response(
+    outcome: RunOutcome, *, model: str, run_id: str | None = None
+) -> dict[str, Any]:
+    """转成 ``chat.completion``。形状进了契约。
+
+    ``run_id`` 必须带上。契约 §3.6 把它列进 ``x_xingcha``，而 5xx 的固定文案就是
+    「请把 run_id 提供给管理员」——**成功的响应里没有它的话，"这次回答不对，去查一下"
+    根本无从下手**：那正是最需要查的一类调用（200 但结果可疑），而它偏偏没有抓手。
+    """
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
@@ -415,7 +423,7 @@ def to_openai_response(outcome: RunOutcome, *, model: str) -> dict[str, Any]:
             "completion_tokens": outcome.output_tokens,
             "total_tokens": outcome.input_tokens + outcome.output_tokens,
         },
-        C.EXT_KEY: extension_block(outcome),
+        C.EXT_KEY: extension_block(outcome, run_id),
     }
 
 
@@ -533,6 +541,7 @@ async def stream_frames(
     run_id: str | None,
     debounce: float | None,
     on_outcome: Callable[[RunOutcome, Exception | None], Awaitable[None]],
+    tracing: Any = None,
 ) -> AsyncGenerator[str, None]:
     """真流式：一边收 delta 一边发帧。
 
@@ -586,56 +595,75 @@ async def stream_frames(
             return None
         outcome = outcome_from(rt, result, output="".join(chunks))
         await on_outcome(outcome, aborted)
+        # 在 span 还开着的时候写：外层的 with 持有它，而这个 finally 在那个 with 内。
+        # 反过来的话 set_attribute 是**静默的空操作**——span 上什么都没有，
+        # 而代码看起来一切正常。
+        tracing_mod.record_outcome(
+            span,
+            status=C.RunStatus.UPSTREAM_ERROR.value if aborted else C.RunStatus.OK.value,
+            error_type=C.ErrorType.UPSTREAM_ERROR.value if aborted else None,
+            tier=rt.tier.value,
+            cost_usd=outcome.cost_usd,
+            cost_source=outcome.cost_source,
+        )
         return outcome
 
-    try:
-        with map_errors(rt, run_timeout):
-            async with asyncio.timeout(run_timeout):
-                kwargs = run_kwargs(rt, extra_instructions)
-                async with rt.agent.run_stream(prompt, **kwargs) as stream:
-                    result = stream
-                    yield frames.role()
-                    try:
-                        async for delta in stream.stream_text(delta=True, debounce_by=debounce):
-                            # 空 delta 不发帧：有些上游会吐空字符串心跳，转发出去只会
-                            # 让客户端多解析几个无意义的帧。
-                            if delta:
-                                chunks.append(delta)
-                                yield frames.content(delta)
-                    except (ModelAPIError, UnexpectedModelBehavior) as e:
-                        aborted = e
-                    else:
-                        reason = stream_finish_reason(stream)
-                        if reason is None:
-                            # **没给 finish_reason 就判截断，不判成功。**
-                            #
-                            # 判成功的话，一次被砍掉一半的回答会带着
-                            # ``finish_reason: "stop"`` 和 ``[DONE]`` 交到客户端手上,
-                            # 它连察觉的机会都没有——静默的数据损坏比一个可检测的
-                            # 失败信号糟得多。
-                            #
-                            # 代价：真有中转不发 finish_reason 的话，它的流式在这里
-                            # 会一律被判失败。那种情况该修中转，或者别用流式。
-                            aborted = UpstreamError(
-                                502, log_detail="上游流没有给出 finish_reason，无法确认完整"
-                            )
+    # span 必须包住整条生命周期，所以只能在这里开——它是唯一同时看得见"开流"与
+    # "收尾"的词法作用域。在 API 层包 StreamingResponse 的话，span 会在第一帧发出去
+    # 时就关掉，之后所有 delta 与最终的费用都落在 span 外面。
+    #
+    # 它在 try 的**外面**：结算要在 span 还开着的时候发生，否则 set_attribute 是
+    # 静默的空操作——span 上什么都没有，而代码看起来一切正常。
+    with tracing_mod.run_span(tracing, kind="agent", run_id=run_id or "", model=model) as span:
+        try:
+            with map_errors(rt, run_timeout):
+                async with asyncio.timeout(run_timeout):
+                    kwargs = run_kwargs(rt, extra_instructions)
+                    async with rt.agent.run_stream(prompt, **kwargs) as stream:
+                        result = stream
+                        yield frames.role()
+                        try:
+                            async for delta in stream.stream_text(delta=True, debounce_by=debounce):
+                                # 空 delta 不发帧：有些上游会吐空字符串心跳，转发出去
+                                # 只会让客户端多解析几个无意义的帧。
+                                if delta:
+                                    chunks.append(delta)
+                                    yield frames.content(delta)
+                        except (ModelAPIError, UnexpectedModelBehavior) as e:
+                            aborted = e
                         else:
-                            finish_reason = SSEFrames.FINISH_REASONS.get(reason, "stop")
-    finally:
-        await settle()
+                            reason = stream_finish_reason(stream)
+                            if reason is None:
+                                # **没给 finish_reason 就判截断，不判成功。**
+                                #
+                                # 判成功的话，一次被砍掉一半的回答会带着
+                                # ``finish_reason: "stop"`` 和 ``[DONE]`` 交到客户端
+                                # 手上，它连察觉的机会都没有——静默的数据损坏比一个
+                                # 可检测的失败信号糟得多。
+                                #
+                                # 代价：真有中转不发 finish_reason 的话，它的流式在
+                                # 这里会一律被判失败。那种情况该修中转，或别用流式。
+                                aborted = UpstreamError(
+                                    502,
+                                    log_detail="上游流没有给出 finish_reason，无法确认完整",
+                                )
+                            else:
+                                finish_reason = SSEFrames.FINISH_REASONS.get(reason, "stop")
+        finally:
+            await settle()
 
-    guard_counters(rt.counters, tier=rt.tier)
-    assert outcome is not None
+        guard_counters(rt.counters, tier=rt.tier)
+        assert outcome is not None
 
-    if aborted is not None:
-        # 200 已经发出去了，状态码改不了。**不发 [DONE]** 就是给客户端的失败信号——
-        # OpenAI 自己也是这个行为，客户端按"流没有以 [DONE] 结尾"判失败。
-        #
-        # 这里 return 而不是 raise：抛出去只会在 ASGI 层变成一个没人处理的异常，
-        # 客户端看到的字节完全一样，日志却多一堆噪音。花费已经由 settle 记下了。
-        log.warning("流式中途失败，不发 [DONE]：%s", aborted)
-        return
+        if aborted is not None:
+            # 200 已经发出去了，状态码改不了。**不发 [DONE]** 就是给客户端的失败
+            # 信号——OpenAI 自己也是这个行为，客户端按"流没有以 [DONE] 结尾"判失败。
+            #
+            # 这里 return 而不是 raise：抛出去只会在 ASGI 层变成一个没人处理的异常，
+            # 客户端看到的字节完全一样，日志却多一堆噪音。花费已由 settle 记下了。
+            log.warning("流式中途失败，不发 [DONE]：%s", aborted)
+            return
 
-    yield frames.finish(finish_reason)
-    yield frames.summary(outcome, run_id)
-    yield C.SSE_DONE
+        yield frames.finish(finish_reason)
+        yield frames.summary(outcome, run_id)
+        yield C.SSE_DONE

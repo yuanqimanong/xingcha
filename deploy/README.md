@@ -181,6 +181,40 @@ systemctl enable docker
 
 ---
 
+## 可观测（可选）
+
+后台的运行列表回答「跑了几次、花了多少、有没有报错」。它回答不了
+**「模型到底看到了什么、又吐回了什么」**——而调提示词的时间几乎全花在那个问题上。
+
+接上任意 OTLP 端点（Langfuse 最顺手）就能看到每次调用的完整消息、重试与耗时。
+
+**默认关。** 打开意味着提示词与模型输出会离开这台机器：
+
+```bash
+docker compose exec xingcha xingcha config set trace.endpoint -
+# https://你的langfuse域名/api/public/otel/v1/traces
+docker compose exec xingcha xingcha config set trace.public_key -
+docker compose exec xingcha xingcha config set trace.secret_key -
+docker compose restart xingcha
+```
+
+或者在后台「设置 → 可观测」页填（要二次输密码——这个表单被跨站提交一次，攻击者
+就得到一份持续到达的对话副本）。
+
+几点：
+
+- **自建 Langfuse 在内网是允许的**（`http://10.x`、同一个 docker network 都行）。
+  上游地址那条链路会带着付费 key，所以内网一律拒；trace 这条不带 key，拒了反而
+  会把人推向托管服务，那是更差的隐私结果。云元数据端点两处都拒。
+- Langfuse 挂了、地址填错、证书过期——一律只降级成「看不到 trace」，不会影响调用。
+- 不想带内容：`XINGCHA_TRACE_INCLUDE_CONTENT=0`。但那样最主要的用处也就没了。
+- 当前状态在 `/readyz` 里可查（`trace` / `trace_endpoint` / `trace_includes_content`）。
+
+**直通路径不上报。** 它是字节级透明代理，没有可看的提示词——把它的字节塞进 span
+会和「原样转发」这条契约打架。直通的运行记录仍然在后台列表里。
+
+---
+
 ## 备份
 
 ```bash

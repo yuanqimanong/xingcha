@@ -18,7 +18,12 @@ from ..db.models import Setting, utcnow
 log = logging.getLogger(__name__)
 
 #: 哪些 key 是敏感的（加密存储、读取时默认脱敏展示）。
-SECRET_KEYS: frozenset[str] = frozenset({C.SETTING_KEY_OPENROUTER_API_KEY})
+SECRET_KEYS: frozenset[str] = frozenset(
+    {
+        C.SETTING_KEY_OPENROUTER_API_KEY,
+        C.SETTING_KEY_TRACE_SECRET_KEY,
+    }
+)
 
 #: 允许通过 CLI / 管理面设置的 key 闭集。
 #:
@@ -28,6 +33,9 @@ KNOWN_KEYS: frozenset[str] = frozenset(
     {
         C.SETTING_KEY_OPENROUTER_API_KEY,
         C.SETTING_KEY_OPENROUTER_BASE_URL,
+        C.SETTING_KEY_TRACE_ENDPOINT,
+        C.SETTING_KEY_TRACE_PUBLIC_KEY,
+        C.SETTING_KEY_TRACE_SECRET_KEY,
     }
 )
 
