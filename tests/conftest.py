@@ -42,6 +42,9 @@ class FakeUpstream:
     port: int
     requests: list[RecordedRequest] = field(default_factory=list)
     server: Any = None
+    #: Agent 路径按顺序返回的工具调用负载。最后一个会被重复使用。
+    tool_payloads: list[Any] = field(default_factory=list)
+    tool_call_index: int = 0
 
     @property
     def base_url(self) -> str:
@@ -49,6 +52,8 @@ class FakeUpstream:
 
     def reset(self) -> None:
         self.requests.clear()
+        self.tool_payloads = []
+        self.tool_call_index = 0
 
     @property
     def hit_count(self) -> int:
@@ -105,6 +110,48 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def chat(request: Request):
         payload = await request.json()
+
+        # Agent（T2）走 tool 通道：请求里带 tools 时必须回一个 tool_call，
+        # 否则 pydantic-ai 会当成"模型没按要求输出"而重试，测出来的次数全是错的。
+        if payload.get("tools"):
+            import json as _json
+
+            queue = state.tool_payloads or [{"ok": True}]
+            body = queue[min(state.tool_call_index, len(queue) - 1)]
+            state.tool_call_index += 1
+            return JSONResponse(
+                {
+                    "id": "chatcmpl-t",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": payload.get("model"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": f"call-{state.tool_call_index}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": payload["tools"][0]["function"]["name"],
+                                            "arguments": _json.dumps(body),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 6,
+                        "total_tokens": 18,
+                    },
+                }
+            )
+
         if payload.get("stream"):
 
             async def gen():
@@ -122,15 +169,25 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
                 media_type="text/event-stream",
                 headers={"set-cookie": "upstream=1", "x-request-id": "up-1"},
             )
+        # 字段必须齐：OpenAI SDK 会按 ChatCompletion 模型校验响应，缺 created 或
+        # finish_reason 会被判为无效响应——假上游不逼真的话，测出来的是假的失败。
         return JSONResponse(
             {
                 "id": "chatcmpl-1",
                 "object": "chat.completion",
+                "created": 1700000000,
                 "model": payload.get("model"),
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "hi"},
+                        "finish_reason": "stop",
+                    }
+                ],
                 "usage": {
                     "prompt_tokens": 10,
                     "completion_tokens": 5,
+                    "total_tokens": 15,
                     "prompt_tokens_details": {"cached_tokens": 4},
                 },
             },

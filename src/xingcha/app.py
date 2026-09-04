@@ -36,6 +36,7 @@ from .db.engine import assert_wal, make_engine, make_sessionmaker
 from .errors import XingchaError, unhandled_error_handler, xingcha_error_handler
 from .services import setting as setting_svc
 from .services.ratelimit import RateLimiter
+from .services.run import RuntimeCache
 from .services.runlog import UsageBuffer
 from .web import routes as web_routes
 
@@ -62,6 +63,22 @@ class AppState:
         )
         self.usage: UsageBuffer | None = None
 
+        # Agent 运行时按 (agent_id, version) 缓存。版本不可变，所以编辑会产生新
+        # 版本号、旧条目自然不再命中——不需要失效逻辑。
+        self.runtimes = RuntimeCache()
+        #: 构造 Agent 用的 provider。与直通层的 httpx2 客户端分开：那一层不解析
+        #: 上游语义，这一层要走 pydantic-ai 的 model 抽象。
+        self.provider: Any = None
+
+        # **进程级**并发上限。
+        #
+        # 不能给每个 Agent 传 int：max_concurrency 的信号量是每个 Agent 实例私有的
+        # （实测两个各限 1 的 Agent 全局峰值是 2，传同一个 ConcurrencyLimit 配置对象
+        # 也不共享）。必须是同一个 Limiter 实例——注意是 Limiter 不是 Limit。
+        from pydantic_ai.concurrency import ConcurrencyLimiter
+
+        self.concurrency = ConcurrencyLimiter(settings.max_concurrency, name="xingcha")
+
 
 async def load_upstream(state: AppState) -> None:
     """从 setting 表读上游配置并装配客户端。
@@ -82,19 +99,27 @@ async def load_upstream(state: AppState) -> None:
 
     if not api_key:
         await state.upstream.set_config(None)
+        state.provider = None
+        state.runtimes.clear()
         log.warning(
             "尚未配置 OpenRouter key，/v1 调用会返回明确提示。"
             "配置方式：xingcha config set openrouter.api_key -"
         )
         return
 
-    await state.upstream.set_config(
-        UpstreamConfig(
-            api_key=api_key,
-            base_url=base_url or C.OPENROUTER_DEFAULT_BASE_URL,
-            app_url=state.settings.public_url,
-        )
+    cfg = UpstreamConfig(
+        api_key=api_key,
+        base_url=base_url or C.OPENROUTER_DEFAULT_BASE_URL,
+        app_url=state.settings.public_url,
     )
+    await state.upstream.set_config(cfg)
+
+    # provider 换了，缓存里那些 Agent 还指着旧的 client——必须整体丢弃。
+    # 这是 RuntimeCache.clear() 唯一该被调用的地方。
+    from .core.builder import make_provider
+
+    state.provider = make_provider(cfg, timeout=state.settings.request_timeout)
+    state.runtimes.clear()
 
 
 @asynccontextmanager
@@ -270,6 +295,7 @@ def _mount_probes(app: FastAPI) -> None:
         checks["upstream_configured"] = state.upstream.configured
         checks["catalog_models"] = len(state.catalog.all())
         checks["catalog_stale"] = state.catalog.is_stale
+        checks["agent_runtimes_cached"] = len(state.runtimes)
         if state.usage is not None:
             checks["usage_pending"] = state.usage.pending
 

@@ -22,6 +22,7 @@ from .config import get_settings
 from .crypto import Keyring, KeyringInvalid, KeyringMissing
 from .db import migrate
 from .db.engine import StartupRefused, make_engine, make_sessionmaker, session_scope
+from .services import auth as auth_svc
 from .services import setting as setting_svc
 
 app = typer.Typer(
@@ -32,8 +33,10 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="读写服务端配置（上游 key 等）。", no_args_is_help=True)
 db_app = typer.Typer(help="数据库迁移与备份。", no_args_is_help=True)
+token_app = typer.Typer(help="签发、查看与吊销 API 令牌。", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
+app.add_typer(token_app, name="token")
 
 
 def _err(msg: str) -> None:
@@ -46,6 +49,33 @@ def _ok(msg: str) -> None:
 
 def _info(msg: str) -> None:
     typer.secho(f"→ {msg}", fg=typer.colors.CYAN)
+
+
+def _width(text: str) -> int:
+    """字符串在终端里占几列。
+
+    CJK 与全角标点占两列。用 ``len()`` 对齐中文表格会把列撑歪——而这个后台的
+    用途名基本都是中文。
+    """
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def _pad(text: str, columns: int) -> str:
+    """按显示宽度左对齐填充。超宽则截断并留一个空格分隔。"""
+    w = _width(text)
+    if w >= columns:
+        out = ""
+        used = 0
+        for ch in text:
+            cw = _width(ch)
+            if used + cw > columns - 1:
+                break
+            out += ch
+            used += cw
+        return out + " " * (columns - used)
+    return text + " " * (columns - w)
 
 
 #: 这些是「运维需要动手处理」的失败，不是程序缺陷。
@@ -233,6 +263,126 @@ def config_list() -> None:
     for key, is_secret, updated in rows:
         tag = "🔒" if is_secret else "  "
         typer.echo(f"{tag} {key:<28} 更新于 {updated}")
+
+
+# =============================================================================
+# token
+# =============================================================================
+
+
+@token_app.command("issue")
+def token_issue(
+    name: Annotated[str, typer.Argument(help="用途说明，例如「本地开发」。")],
+    days: Annotated[int | None, typer.Option("--days", help="有效期天数。不传则永不过期。")] = None,
+) -> None:
+    """签发一把新令牌。
+
+    **明文只在这一刻打印一次**，之后不可恢复——库里只有哈希与一个不可推导的标识。
+    丢了就吊销重签，成本很低。
+
+    无头部署（没有浏览器）时这是唯一的签发途径。管道友好：
+
+        xingcha token issue ci --days 90 | tail -1 > /run/secrets/xc-key
+    """
+
+    async def run() -> auth_svc.IssuedToken:
+        engine, maker, _ = _bootstrap()
+        try:
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                return await auth_svc.issue(
+                    s, name=name.strip()[:60] or "未命名", expires_at=auth_svc.parse_expiry(days)
+                )
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    issued: auth_svc.IssuedToken = _run(run())
+    _ok(f"已签发「{issued.name}」（{issued.display_prefix}）")
+    typer.secho("  下面这行是明文，只显示这一次：", fg=typer.colors.YELLOW, err=True)
+    # 明文单独走 stdout 且不带任何装饰，方便 `| tail -1` 直接取用；
+    # 提示语走 stderr，这样管道里不会混进人类可读的文字。
+    typer.echo(issued.plaintext)
+
+
+@token_app.command("list")
+def token_list() -> None:
+    """列出全部令牌。**不显示明文**——库里根本没有。"""
+
+    async def run() -> list:
+        engine, maker, _ = _bootstrap()
+        try:
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                rows = await auth_svc.list_tokens(s)
+                # 会话关闭后属性会失效，所以在这里取干净的值出来
+                return [
+                    (
+                        t.name,
+                        t.kid,
+                        t.display_prefix,
+                        t.is_active,
+                        auth_svc.is_expired(t),
+                        t.last_used_at,
+                        t.created_at,
+                    )
+                    for t in rows
+                ]
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    rows = _run(run())
+    if not rows:
+        _info("还没有签发过任何令牌。签发：xingcha token issue <用途>")
+        return
+
+    typer.secho(
+        _pad("用途", 20) + _pad("标识", 26) + _pad("状态", 8) + _pad("最后使用", 22) + "创建",
+        bold=True,
+    )
+    for name, _kid, prefix, active, expired, last_used, created in rows:
+        if not active:
+            state, color = "已吊销", typer.colors.BRIGHT_BLACK
+        elif expired:
+            state, color = "已过期", typer.colors.YELLOW
+        else:
+            state, color = "可用", typer.colors.GREEN
+        typer.secho(
+            _pad(name, 20)
+            + _pad(prefix, 26)
+            + _pad(state, 8)
+            + _pad((last_used or "—")[:19], 22)
+            + created[:19],
+            fg=color,
+        )
+
+
+@token_app.command("revoke")
+def token_revoke(
+    kid: Annotated[str, typer.Argument(help="令牌标识（token list 里那一列）。")],
+    yes: Annotated[bool, typer.Option("--yes", help="跳过确认。")] = False,
+) -> None:
+    """吊销令牌。立刻生效——使用它的调用会马上开始返回 401。
+
+    置为不可用而不是删行：删掉之后历史调用记录就找不到归属了。
+    """
+    # 允许直接粘贴完整的 display_prefix（sk-xc-1-<kid>），省得手动截取
+    if kid.startswith(C.TOKEN_PREFIX):
+        kid = kid.rsplit("-", 1)[-1]
+
+    if not yes:
+        typer.confirm(f"确定吊销 {kid}？使用它的调用会立刻开始返回 401。", abort=True)
+
+    async def run() -> bool:
+        engine, maker, _ = _bootstrap()
+        try:
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                return await auth_svc.revoke(s, kid)
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    if _run(run()):
+        _ok(f"已吊销 {kid}")
+    else:
+        _err(f"没有找到可吊销的令牌 {kid}（不存在，或已经是吊销状态）")
+        raise typer.Exit(1)
 
 
 # =============================================================================

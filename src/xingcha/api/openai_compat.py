@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import contract as C
 from ..contract import ModelKind, ModelRefInvalid, classify_model
+from ..core.builder import BuildOptions
 from ..core.upstream import UpstreamNotConfigured
-from ..errors import ModelInvalid, ModelNotFound, ParamUnsupported
+from ..errors import ModelInvalid, ModelNotFound, ParamUnsupported, StreamUnsupported, XingchaError
+from ..services import agent as agent_svc
+from ..services import run as run_svc
 from .passthrough import execute_forward, forward_headers, read_body_capped
 from .runlog_mw import RunTracker
 
@@ -32,21 +37,6 @@ options_router = APIRouter()
 # =============================================================================
 # GET /v1/models
 # =============================================================================
-
-
-def _agent_row(slug: str, created: int, description: str | None, tier: str) -> dict[str, Any]:
-    return {
-        "id": slug,
-        "object": "model",
-        "created": created,
-        "owned_by": C.OWNED_BY_XINGCHA,
-        C.EXT_KEY: {
-            "v": C.EXT_SHAPE_VERSION,
-            "kind": "agent",
-            "tier": tier,
-            "description": description,
-        },
-    }
 
 
 def _upstream_row(info: Any) -> dict[str, Any]:
@@ -70,9 +60,12 @@ async def _build_model_list(request: Request, owned_by: str | None) -> dict[str,
 
     # --- Agent 行在前 ---
     # 顺序必须冻结：部分客户端取 data[0] 当默认模型，换排序即静默换模型。
-    # M1 还没有 Agent 面，这里是空的；M2 接上 AgentService 后从库里读。
     agent_rows: list[dict[str, Any]] = []
     if owned_by in (None, C.OWNED_BY_XINGCHA):
+        async with state.sessionmaker() as session:
+            agent_rows = [
+                agent_svc.agent_row_for_models_api(a) for a in await agent_svc.list_active(session)
+            ]
         rows.extend(agent_rows)
 
     # --- 上游行在后 ---
@@ -182,8 +175,7 @@ async def chat_completions(request: Request) -> Response:
         raise ModelInvalid(str(e)) from e
 
     if ref.kind is ModelKind.AGENT:
-        # M2 会在这里接上 Agent 面。
-        raise ModelNotFound(model)
+        return await _run_agent(request, ref.value, payload, model)
 
     # 上游裸模型：透明转发。
     if not state.upstream.configured:
@@ -234,3 +226,121 @@ async def options_handler(path: str, request: Request) -> Response:
             "Vary": "Origin",
         }
     return Response(status_code=204, headers=headers)
+
+
+# =============================================================================
+# Agent 调用
+# =============================================================================
+
+
+async def _run_agent(
+    request: Request, slug: str, payload: dict[str, Any], requested_model: str
+) -> Response:
+    """走 Agent：解析 → 取运行时 → 执行 → 转响应。
+
+    结构化 Agent 对 ``stream=true`` **明确返回 400**，而不是流一半 JSON 让客户端
+    解析失败。诚实报错优于假装支持。
+    """
+    state = request.app.state.xc
+    if state.provider is None:
+        raise UpstreamNotConfigured
+
+    async with state.sessionmaker() as session:
+        resolved = await agent_svc.resolve(session, slug)
+
+    wants_streaming = bool(payload.get("stream"))
+    if wants_streaming and resolved.is_structured:
+        raise StreamUnsupported(requested_model)
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ModelInvalid("messages 必须是一个非空数组")
+    prompt, extra_instructions = run_svc.to_prompt(messages)
+
+    rt = await run_svc.get_runtime(
+        resolved,
+        cache=state.runtimes,
+        provider=state.provider,
+        options=BuildOptions(),
+        concurrency=state.concurrency,
+    )
+
+    tracker = RunTracker(request, kind="agent", model=requested_model)
+    tracker.rec.agent_id = resolved.agent_id
+    tracker.rec.agent_version = resolved.version
+    tracker.rec.tier = resolved.tier.value
+
+    try:
+        outcome = await run_svc.execute(
+            rt,
+            prompt=prompt,
+            extra_instructions=extra_instructions,
+            run_timeout=state.settings.run_timeout,
+        )
+    except XingchaError as e:
+        tracker.finish_error(e.error_type.value, _status_for(e))
+        # 失败也要落用量：一次重试耗尽的调用照样花了钱，不记就等于账单少报。
+        tracker.rec.schema_violations = rt.counters.violations
+        tracker.rec.schema_retries = rt.counters.retries
+        await tracker.submit()
+        raise
+
+    _absorb(tracker, outcome, state.catalog)
+    tracker.finish_ok()
+    await tracker.submit()
+
+    if wants_streaming:
+        frames = run_svc.to_sse_frames(outcome, model=requested_model, run_id=tracker.rec.id)
+
+        async def gen() -> AsyncIterator[bytes]:
+            for f in frames:
+                yield f.encode("utf-8")
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    return JSONResponse(run_svc.to_openai_response(outcome, model=requested_model))
+
+
+def _status_for(e: XingchaError) -> str:
+    from ..contract import ErrorType, RunStatus
+
+    return {
+        ErrorType.SCHEMA_VIOLATION: RunStatus.SCHEMA_FAILED.value,
+        ErrorType.REQUEST_TIMEOUT: RunStatus.TIMEOUT.value,
+        ErrorType.UPSTREAM_TIMEOUT: RunStatus.TIMEOUT.value,
+        ErrorType.QUOTA_EXCEEDED: RunStatus.QUOTA.value,
+    }.get(e.error_type, RunStatus.UPSTREAM_ERROR.value)
+
+
+def _absorb(tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any) -> None:
+    """把运行结果写进 run 记录，并按目录价算费用。"""
+    import json as _json
+
+    from .runlog_mw import price
+
+    rec = tracker.rec
+    rec.usage_model = outcome.model_id
+    rec.input_tokens = outcome.input_tokens
+    rec.output_tokens = outcome.output_tokens
+    rec.cache_read_tokens = outcome.cache_read_tokens
+    rec.requests = outcome.requests
+    rec.tool_calls = outcome.tool_calls
+    rec.schema_violations = outcome.schema_violations
+    rec.schema_retries = outcome.schema_retries
+    rec.tier = outcome.tier.value
+    if outcome.extra:
+        rec.extra_json = _json.dumps(outcome.extra, ensure_ascii=False)
+
+    cost, source = price(
+        catalog,
+        outcome.model_id,
+        {
+            "input_tokens": outcome.input_tokens,
+            "output_tokens": outcome.output_tokens,
+            "cache_read_tokens": outcome.cache_read_tokens,
+        },
+    )
+    rec.cost_usd = cost
+    rec.cost_source = source
+    outcome.cost_usd = cost
+    outcome.cost_source = source
