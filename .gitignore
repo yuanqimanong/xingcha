@@ -1,0 +1,27 @@
+# 运行时数据：库、密钥、备份。绝不入库。
+data/
+*.db
+*.db-wal
+*.db-shm
+*.key
+
+# 环境配置：含真实上游 key
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# 编辑器
+.vscode/
+.idea/
