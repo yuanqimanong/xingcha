@@ -60,7 +60,6 @@ from pydantic_ai import (
     UsageLimits,
 )
 
-from .. import contract as C
 from ..contract import Tier
 from .schema_guard import make_validator
 
@@ -229,35 +228,40 @@ TIER_INFO: dict[Tier, dict[str, str]] = {
     Tier.T1: {
         "name": "原生约束",
         "shape": "最强",
-        "content": "有对齐税：格式约束会削弱推理，且可选字段会被上游提升为必填",
+        "content": "有对齐税：格式约束会削弱推理，且**可选字段会被上游提升为必填**",
         "cost": "单次",
+        "needs_native": "yes",
     },
     Tier.T2: {
         "name": "校验后重试",
         "shape": "强",
-        "content": "无对齐税",
-        "cost": f"最坏 1+重试次数 倍（重试 {C.Tier.T2.value} 档默认 2 次即最多 3 倍）",
+        "content": "无对齐税，schema 原样发给上游",
+        "cost": "最坏 1+重试次数 倍（默认重试 2 次即最多 3 倍）",
+        "needs_native": "no",
     },
     Tier.T1P: {
         "name": "两阶段",
         "shape": "最强",
-        "content": "最低",
-        "cost": "约两倍",
+        "content": "最低：先自由推理再格式化，格式约束不参与推理那一步",
+        "cost": "约两倍（两次模型调用）",
+        "needs_native": "yes",
     },
     Tier.T3: {
         "name": "仅提示",
         "shape": "无",
-        "content": "无",
+        "content": "无——schema 只进提示词，输出不合规也照样返回",
         "cost": "单次",
+        "needs_native": "no",
     },
 }
 
 
-#: v0.2 的表单只开放这些档位。
+#: 表单开放的档位。四档全开。
 #:
-#: T1 需要先有自动判档与"可选字段会被提升为必填"的表单提示；没有那两件就开放它，
-#: 等于让用户在不知情的情况下承担对齐税。T1P 需要两阶段编排。
-AVAILABLE_TIERS: tuple[Tier, ...] = (Tier.T2, Tier.T3)
+#: T1 与 T1P 是在自动判档（:func:`resolve_tier` 查目录的 ``structured_outputs``）与
+#: "可选字段会被提升为必填"的表单提示（:func:`t1_rewrites_schema` + schema_lint）
+#: 都到位之后才开放的。缺任何一件就开放 T1，等于让用户在不知情的情况下承担对齐税。
+AVAILABLE_TIERS: tuple[Tier, ...] = (Tier.T1, Tier.T2, Tier.T1P, Tier.T3)
 
 
 def guard_counters(counters: GuaranteeCounters, *, tier: Tier) -> None:
@@ -275,3 +279,32 @@ def guard_counters(counters: GuaranteeCounters, *, tier: Tier) -> None:
             counters.violations,
             counters.retries,
         )
+
+
+# =============================================================================
+# T1+ 两阶段
+# =============================================================================
+
+#: 第二阶段的指令。
+#:
+#: **只做格式化，不允许改事实。** 两阶段的价值是让推理那一步不受格式约束干扰；
+#: 如果第二步顺手"改进"内容，那就等于又引入了一次未受控的生成，反而比 T1 更糟。
+FORMAT_INSTRUCTIONS = (
+    "把下面这段内容整理成规定的结构。\n"
+    "只做格式转换：不要新增事实、不要删改事实、不要补充推测。"
+    "原文里没有的信息，对应字段留空或按 schema 的规则处理。"
+)
+
+
+def format_prompt(draft: str) -> str:
+    return f"{FORMAT_INSTRUCTIONS}\n\n---\n\n{draft}"
+
+
+def two_stage_request_budget(max_retries: int, max_tool_steps: int) -> int:
+    """两阶段的 ``request_limit``。
+
+    两个阶段各自会发请求，而 ``UsageLimits`` 是**按次运行**给的——所以每一阶段的
+    预算要分别算，不能把两阶段的总和塞给其中一个。这里返回的是**单阶段**的值，
+    由 RunService 给两个 agent 各设一份。
+    """
+    return (max_retries + 1) + max_tool_steps

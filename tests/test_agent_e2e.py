@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -433,3 +434,172 @@ def test_unknown_slug_never_reaches_upstream(wired, upstream: FakeUpstream):
     )
     assert r.status_code == 404
     assert upstream.hit_count == 0
+
+
+# =============================================================================
+# T1 与 T1+
+# =============================================================================
+
+
+OPTIONAL_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "score": {"type": "integer"}},
+    "required": ["title"],  # score 是可选的
+}
+
+
+async def _make(session, slug: str, tier: Tier, schema: dict | None) -> None:
+    await agent_svc.save(
+        session,
+        slug=slug,
+        name=slug,
+        description=None,
+        instructions="做事。",
+        model="openai/gpt-5",
+        schema_text=json.dumps(schema) if schema else None,
+        requested_tier=tier,
+        capabilities=None,
+        retries=2,
+        native_ok=True,
+    )
+
+
+@pytest.fixture
+def tiered(settings: Settings, upstream: FakeUpstream) -> Iterator[tuple[TestClient, str]]:
+    settings.ensure_data_dir()
+    migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+    keyring = Keyring.load_or_create(settings.secret_path)
+
+    async def seed() -> str:
+        engine = make_engine(settings.db_path)
+        maker = make_sessionmaker(engine)
+        async with maker() as s:
+            await setting_svc.set_(s, keyring, C.SETTING_KEY_OPENROUTER_API_KEY, "sk-or-v1-fake")
+            await setting_svc.set_(s, keyring, C.SETTING_KEY_OPENROUTER_BASE_URL, upstream.base_url)
+            await _make(s, "native", Tier.T1, OPTIONAL_SCHEMA)
+            await _make(s, "twostage", Tier.T1P, OPTIONAL_SCHEMA)
+            await _make(s, "prompted", Tier.T3, OPTIONAL_SCHEMA)
+            tok = await auth_svc.issue(s, name="t")
+            await s.commit()
+        await engine.dispose()
+        return tok.plaintext
+
+    token = asyncio.run(seed())
+    upstream.reset()
+    with TestClient(create_app(settings)) as client:
+        yield client, token
+
+
+def _call(client: TestClient, token: str, model: str) -> Any:
+    return client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": [{"role": "user", "content": "输入"}]},
+        headers=auth(token),
+    )
+
+
+class TestT1Native:
+    def test_uses_json_schema_response_format(self, tiered, upstream: FakeUpstream):
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 1}]
+        r = _call(client, token, "native")
+        assert r.status_code == 200
+        assert upstream.native_requests, "T1 必须走 response_format 通道"
+        assert upstream.native_requests[0]["json_schema"]["strict"] is True
+
+    def test_optional_fields_are_silently_promoted(self, tiered, upstream: FakeUpstream):
+        """**这是 T1 唯一真正的代价，而且用户在表单上看不出来。**
+
+        strict=True 会把可选字段塞进 required：用户标为可选的 score 变成模型**必须**
+        输出的字段。这条测试把这件事钉住——如果哪天上游改了行为，我们该知道。
+        """
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 1}]
+        _call(client, token, "native")
+
+        sent = upstream.native_requests[0]["json_schema"]["schema"]["required"]
+        assert set(sent) == {"title", "score"}
+        assert OPTIONAL_SCHEMA["required"] == ["title"], "用户定义的其实只有 title"
+
+    def test_still_validates_locally(self, tiered, upstream: FakeUpstream):
+        """T1 下仍然挂本地校验。
+
+        上游没兑现 strict 时（真实发生过），本地校验是最后一道——绝不把脏数据
+        交给调用方。
+        """
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"score": "not-an-int"}]
+        r = _call(client, token, "native")
+        assert r.status_code == 422
+
+
+class TestT1PlusTwoStage:
+    def test_calls_the_model_twice(self, tiered, upstream: FakeUpstream):
+        """先自由推理再格式化。第一步不带任何格式约束，规避对齐税。"""
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 2}]
+        r = _call(client, token, "twostage")
+        assert r.status_code == 200
+        assert upstream.hit_count == 2
+
+    def test_first_stage_has_no_format_constraint(self, tiered, upstream: FakeUpstream):
+        """两阶段的全部意义就在这一条：推理那一步不受格式约束干扰。"""
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 2}]
+        _call(client, token, "twostage")
+
+        first = json.loads(upstream.requests[0].body)
+        second = json.loads(upstream.requests[1].body)
+        assert "response_format" not in first and "tools" not in first
+        assert second.get("response_format", {}).get("type") == "json_schema"
+
+    def test_second_stage_is_told_not_to_change_facts(self, tiered, upstream: FakeUpstream):
+        """第二步顺手"改进"内容的话，就等于又引入一次未受控的生成，比 T1 更糟。"""
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 2}]
+        _call(client, token, "twostage")
+
+        second = json.loads(upstream.requests[1].body)
+        text = json.dumps(second["messages"], ensure_ascii=False)
+        assert "不要新增事实" in text
+
+    def test_usage_covers_both_stages(self, tiered, upstream: FakeUpstream):
+        """两阶段的用量必须**累加**。
+
+        只记第二步的话，第一步（自由推理，往往是更贵的一步）完全不进账单——
+        而那正是这一档比 T1 贵一倍的原因所在，账单上却看不出来。
+
+        断言的是"两阶段比单阶段贵"这个性质，而不是写死的数字：写死数字的测试在
+        假上游改一次返回值时就会红，而它本该关心的不是那个。
+        """
+        client, token = tiered
+
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 2}]
+        single = _call(client, token, "native").json()["usage"]
+
+        upstream.reset()
+        upstream.tool_payloads = [{"title": "t", "score": 2}]
+        double = _call(client, token, "twostage").json()["usage"]
+
+        assert upstream.hit_count == 2
+        assert double["prompt_tokens"] > single["prompt_tokens"]
+        assert double["completion_tokens"] > single["completion_tokens"]
+
+
+class TestT3Prompted:
+    def test_no_schema_constraint_and_no_validation(self, tiered, upstream: FakeUpstream):
+        """T3 明确不校验——这是设计，不是缺陷。违规数据原样返回。"""
+        client, token = tiered
+        upstream.reset()
+        upstream.tool_payloads = [{"score": "not-an-int"}]
+        r = _call(client, token, "prompted")
+        assert r.status_code == 200
+        assert json.loads(r.json()["choices"][0]["message"]["content"]) == {"score": "not-an-int"}
+        assert upstream.hit_count == 1

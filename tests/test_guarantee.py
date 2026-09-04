@@ -22,7 +22,6 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from xingcha.contract import Tier
 from xingcha.core.guarantee import (
-    AVAILABLE_TIERS,
     TIER_INFO,
     attach_validator,
     limits_for,
@@ -216,10 +215,6 @@ class TestTierResolution:
     def test_default_is_t2(self):
         """不指定时用 T2：它是唯一在所有模型上都成立的强保证。"""
         assert resolve_tier(None, has_schema=True, native_ok=True).tier is Tier.T2
-
-    def test_form_only_offers_implemented_tiers(self):
-        """T1 需要先有"可选字段会被提升为必填"的表单提示才能安全开放。"""
-        assert set(AVAILABLE_TIERS) == {Tier.T2, Tier.T3}
 
     def test_every_tier_has_a_cost_description(self):
         """四档的代价必须都写出来——星槎的价值不是替用户选最强档，

@@ -72,6 +72,11 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", 
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 testpaths = ["tests"]
+markers = [
+  # 干净环境的导出验收要建 venv 装包，慢但必须真跑——它是「低锁定」的唯一证明。
+  # 赶时间时用：pytest -m "not slow"
+  "slow: 需要建虚拟环境或装包的测试",
+]
 
 [tool.pyright]
 include = ["src", "tests"]

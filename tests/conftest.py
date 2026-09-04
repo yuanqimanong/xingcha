@@ -45,6 +45,8 @@ class FakeUpstream:
     #: Agent 路径按顺序返回的工具调用负载。最后一个会被重复使用。
     tool_payloads: list[Any] = field(default_factory=list)
     tool_call_index: int = 0
+    #: T1 档下上游实际收到的 response_format，用于断言 schema 被怎样改写。
+    native_requests: list[Any] = field(default_factory=list)
 
     @property
     def base_url(self) -> str:
@@ -54,6 +56,7 @@ class FakeUpstream:
         self.requests.clear()
         self.tool_payloads = []
         self.tool_call_index = 0
+        self.native_requests = []
 
     @property
     def hit_count(self) -> int:
@@ -110,6 +113,38 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def chat(request: Request):
         payload = await request.json()
+
+        # T1 / T1+ 走 response_format 通道：回一条 JSON 文本而不是工具调用。
+        # 顺带记下线上实际收到的 required，让测试能断言"T1 确实改写了 schema"。
+        rf = payload.get("response_format") or {}
+        # T3 用 json_object（无 schema 约束），T1/T1+ 用 json_schema。两者都回 JSON 文本。
+        if rf.get("type") in ("json_schema", "json_object"):
+            import json as _json
+
+            if rf.get("type") == "json_schema":
+                state.native_requests.append(rf)
+            queue = state.tool_payloads or [{"ok": True}]
+            body = queue[min(state.tool_call_index, len(queue) - 1)]
+            state.tool_call_index += 1
+            return JSONResponse(
+                {
+                    "id": "chatcmpl-n",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": payload.get("model"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": _json.dumps(body, ensure_ascii=False),
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                }
+            )
 
         # Agent（T2）走 tool 通道：请求里带 tools 时必须回一个 tool_call，
         # 否则 pydantic-ai 会当成"模型没按要求输出"而重试，测出来的次数全是错的。

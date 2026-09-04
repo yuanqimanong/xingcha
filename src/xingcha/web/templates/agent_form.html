@@ -111,8 +111,23 @@
   <div class="row">
     <button class="btn primary" type="submit">{{ '创建' if is_new else '保存为新版本' }}</button>
     <a class="btn ghost" href="/admin/agents">取消</a>
+    {% if not is_new %}
+    <span class="grow"></span>
+    <a class="btn" href="/admin/agents/{{ agent.slug }}/export" download>导出</a>
+    {% endif %}
   </div>
 </form>
+
+{% if not is_new %}
+<div class="alert info mt4">
+  <div>
+    <div class="alert-title">随时能带走</div>
+    <div>导出的是一个 zip：<code>agent.yaml</code> 是标准的 pydantic-ai
+      <code>AgentSpec</code>（不是星槎的私有格式），<code>run.py</code> 零星槎依赖，
+      <strong>校验行为一并保留</strong>。里面的 README 如实写了保留与丢失了什么。</div>
+  </div>
+</div>
+{% endif %}
 
 {% if not is_new and versions %}
 <div class="card mt4">

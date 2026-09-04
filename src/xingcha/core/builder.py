@@ -195,9 +195,19 @@ class AgentRuntime:
     limits: UsageLimits
     model_id: str
 
+    #: 两阶段（T1+）的第一阶段：不带任何格式约束，纯自由推理。
+    #:
+    #: 只有 T1+ 有这个。它存在的全部意义是让推理那一步**不受格式约束干扰**——
+    #: 文献显示格式约束会削弱推理，而两阶段把这两件事分开。
+    reason_agent: Agent | None = None
+
     @property
     def is_structured(self) -> bool:
         return self.schema is not None
+
+    @property
+    def is_two_stage(self) -> bool:
+        return self.reason_agent is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +264,28 @@ def build(
 
     counters = attach_validator(agent, tier, schema) if schema is not None else GuaranteeCounters()
 
+    # 两阶段（T1+）：再造一个**不带任何输出约束**的 agent 做第一步。
+    #
+    # 用同一份 spec（同样的指令、同样的模型），只是不传 output_type——那正是
+    # "让推理不受格式约束干扰"的字面实现。文献显示格式约束会削弱推理，两阶段
+    # 把这两件事分开，代价是约两倍的调用成本。
+    reason_agent: Agent | None = None
+    if tier is Tier.T1P and schema is not None:
+        # 要让第一阶段真的**没有**格式约束，必须从 spec 里去掉 output_schema。
+        #
+        # 传 output_type=str 是不够的（实测）：str 正是那个参数的默认值，
+        # pydantic-ai 分不清"显式传了 str"和"根本没传"，于是照样回落到 spec 里的
+        # output_schema、走 tools 通道——第一阶段仍然带着约束，两阶段就白做了。
+        # 这个坑很隐蔽，因为代码读起来完全像是生效了。
+        reason_spec = {k: v for k, v in spec.items() if k != "output_schema"}
+        reason_kwargs = {k: v for k, v in kwargs.items() if k != "output_type"}
+        try:
+            reason_agent = Agent.from_spec(reason_spec, **reason_kwargs)
+        except (ValidationError, ValueError, UserError) as e:
+            raise AgentBuildFailed(f"两阶段的推理 agent 构造失败：{type(e).__name__}: {e}") from e
+
     return AgentRuntime(
+        reason_agent=reason_agent,
         agent=agent,
         tier=tier,
         schema=schema,

@@ -360,12 +360,17 @@ class TestAgentForm:
         body = logged_in.get("/admin/agents/extract").text
         assert "readonly" in body
 
-    def test_only_implemented_tiers_are_offered(self, logged_in: TestClient):
-        """T1 需要先有"可选字段会被提升为必填"的提示才能安全开放。"""
+    def test_all_four_tiers_are_offered_with_their_costs(self, logged_in: TestClient):
+        """四档都列出来，且每一档的代价都写在选项里。
+
+        星槎的价值不是替用户选最强档，而是把权衡摆出来标注代价——竞品无一这么做。
+        """
         import re
 
         body = logged_in.get("/admin/agents/new").text
-        assert set(re.findall(r'<option value="(T\w+)"', body)) == {"T2", "T3"}
+        assert set(re.findall(r'<option value="(T\w+)"', body)) == {"T1", "T2", "T1P", "T3"}
+        assert "对齐税" in body
+        assert "提升为必填" in body
 
     def test_editing_creates_a_new_version(self, logged_in: TestClient):
         self._create(logged_in)
@@ -457,3 +462,33 @@ class TestSchemaLint:
             headers={"x-csrf-token": csrf_of(logged_in)},
         )
         assert r.status_code == 200
+
+
+class TestAgentExport:
+    def test_download_is_a_working_zip(self, logged_in: TestClient):
+        """随时能带走——这是低锁定在后台里的兑现方式。"""
+        import io
+        import zipfile
+
+        TestAgentForm()._create(logged_in)
+        r = logged_in.get("/admin/agents/extract/export")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/zip"
+        assert "extract-v1.zip" in r.headers["content-disposition"]
+
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            names = set(zf.namelist())
+            assert names == {
+                "extract/agent.yaml",
+                "extract/schema.json",
+                "extract/run.py",
+                "extract/README.md",
+            }
+            run_py = zf.read("extract/run.py").decode()
+            assert "xingcha" not in run_py, "导出物不能依赖星槎"
+            readme = zf.read("extract/README.md").decode()
+            assert "丢失" in readme, "README 必须如实写清丢了什么"
+
+    def test_export_needs_login(self, client: TestClient):
+        r = client.get("/admin/agents/extract/export", follow_redirects=False)
+        assert r.status_code == 303

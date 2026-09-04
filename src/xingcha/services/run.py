@@ -30,7 +30,7 @@ from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, Usage
 
 from .. import contract as C
 from ..contract import Tier
-from ..core import builder
+from ..core import builder, guarantee
 from ..core.builder import AgentRuntime, BuildOptions
 from ..core.guarantee import guard_counters
 from ..errors import (
@@ -233,9 +233,24 @@ async def execute(
     if extra_instructions:
         kwargs["instructions"] = extra_instructions
 
+    # 两阶段的用量要**累加**，否则第一步（自由推理，往往是更贵的一步）的 token
+    # 完全不进账单——那正好是这一档比 T1 贵一倍的原因所在。
+    stage_one: Any = None
+
     try:
         async with asyncio.timeout(run_timeout):
-            result = await rt.agent.run(prompt, **kwargs)
+            if rt.reason_agent is not None:
+                # 阶段一：不加任何格式约束，规避对齐税
+                stage_one = await rt.reason_agent.run(prompt, **kwargs)
+                draft = (
+                    stage_one.output
+                    if isinstance(stage_one.output, str)
+                    else json.dumps(stage_one.output, ensure_ascii=False)
+                )
+                # 阶段二：只做格式化，此刻才施加约束
+                result = await rt.agent.run(guarantee.format_prompt(draft), **kwargs)
+            else:
+                result = await rt.agent.run(prompt, **kwargs)
     except TimeoutError as e:
         raise RequestTimeout(run_timeout) from e
     except UnexpectedModelBehavior as e:
@@ -258,16 +273,22 @@ async def execute(
     guard_counters(rt.counters, tier=rt.tier)
     usage = result.usage  # 属性，不是方法
 
+    def total(field: str) -> int:
+        value = getattr(usage, field, 0) or 0
+        if stage_one is not None:
+            value += getattr(stage_one.usage, field, 0) or 0
+        return value
+
     return RunOutcome(
         output=result.output,
         model_id=rt.model_id,
         tier=rt.tier,
         is_structured=rt.is_structured,
-        input_tokens=getattr(usage, "input_tokens", 0) or 0,
-        output_tokens=getattr(usage, "output_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_tokens", 0) or 0,
-        requests=getattr(usage, "requests", 0) or 0,
-        tool_calls=getattr(usage, "tool_calls", 0) or 0,
+        input_tokens=total("input_tokens"),
+        output_tokens=total("output_tokens"),
+        cache_read_tokens=total("cache_read_tokens"),
+        requests=total("requests"),
+        tool_calls=total("tool_calls"),
         schema_violations=rt.counters.violations,
         schema_retries=rt.counters.retries,
         extra=_extra_usage(usage),

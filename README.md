@@ -31,10 +31,10 @@ client.chat.completions.create(model="extract", messages=[...])
 | Web 管理后台 | ✅ |
 | docker compose + Caddy 自动 TLS | ✅ |
 | Agent（提示词 → 可调用的 model id） | ✅ |
-| 结构化输出保证：T2 校验后重试 · T3 仅提示 | ✅ |
+| 结构化输出保证：**四档全实现**（T1 / T2 / T1+ / T3） | ✅ |
 | schema 字段命名建议 | ✅ |
-| T1 原生约束 · T1+ 两阶段 | v0.3 |
-| 导出 bundle · 配额 · 多用户 · 真流式 | v0.3 / v0.4 |
+| 导出 bundle（干净环境验收通过） | ✅ |
+| 配额 · 多用户 · 真流式 · 上游费用对账 | v0.4 |
 
 排期与设计依据见 [docs/开发计划.md](docs/开发计划.md)。
 
@@ -94,6 +94,8 @@ CI 里有一条特别的断言：在 `ALL_PROXY` 指向黑洞的环境下跑全�
 | [docs/开发计划.md](docs/开发计划.md) | 排期、契约冻结清单、公网准入清单。**唯一权威** |
 | [docs/CONTRACT.md](docs/CONTRACT.md) | 对外契约（由常量生成） |
 | [deploy/README.md](deploy/README.md) | 部署 runbook |
+| [docs/客户端兼容.md](docs/客户端兼容.md) | 客户端兼容矩阵（严格区分已验证与未验证） |
+| [docs/UPGRADE.md](docs/UPGRADE.md) | 升级与回滚 |
 | [docs/前期调研.md](docs/前期调研.md) | 立项调研（部分结论已被实机探测推翻，见开发计划 §2） |
 | [docs/代码架构实现.md](docs/代码架构实现.md) | 早期架构设计（同上） |
 

@@ -34,9 +34,11 @@ app = typer.Typer(
 config_app = typer.Typer(help="读写服务端配置（上游 key 等）。", no_args_is_help=True)
 db_app = typer.Typer(help="数据库迁移与备份。", no_args_is_help=True)
 token_app = typer.Typer(help="签发、查看与吊销 API 令牌。", no_args_is_help=True)
+agent_app = typer.Typer(help="查看与导出 Agent。", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
 app.add_typer(token_app, name="token")
+app.add_typer(agent_app, name="agent")
 
 
 def _err(msg: str) -> None:
@@ -383,6 +385,106 @@ def token_revoke(
     else:
         _err(f"没有找到可吊销的令牌 {kid}（不存在，或已经是吊销状态）")
         raise typer.Exit(1)
+
+
+# =============================================================================
+# agent
+# =============================================================================
+
+
+@agent_app.command("list")
+def agent_list() -> None:
+    """列出全部 Agent。"""
+
+    async def run() -> list:
+        engine, maker, _ = _bootstrap()
+        try:
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                import json as _json
+
+                from .services import agent as agent_svc
+
+                out = []
+                for row, ver in await agent_svc.list_all(s):
+                    spec = _json.loads(ver.spec_json) if ver else {}
+                    out.append(
+                        (
+                            row.slug,
+                            row.name,
+                            spec.get("model", "—"),
+                            ver.tier if ver else "—",
+                            bool(ver and ver.out_schema),
+                            ver.version if ver else 0,
+                            row.is_active,
+                        )
+                    )
+                return out
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    rows = _run(run())
+    if not rows:
+        _info("还没有 Agent。在后台新建，或 `xingcha agent apply <file.yaml>`。")
+        return
+    typer.secho(
+        _pad("标识", 20) + _pad("名称", 20) + _pad("模型", 30) + _pad("输出", 14) + "版本",
+        bold=True,
+    )
+    for slug, name, model, tier, structured, version, active in rows:
+        shape = f"{tier} 结构化" if structured else "纯文本"
+        line = _pad(slug, 20) + _pad(name, 20) + _pad(model, 30) + _pad(shape, 14) + f"v{version}"
+        typer.secho(line, fg=None if active else typer.colors.BRIGHT_BLACK)
+
+
+@agent_app.command("export")
+def agent_export(
+    slug: Annotated[str, typer.Argument(help="Agent 标识。")],
+    dest: Annotated[Path, typer.Option("--dest", help="导出到哪个目录。")] = Path("."),
+) -> None:
+    """导出成可脱离星槎运行的三文件目录。
+
+    这是「低锁定」的兑现方式：产出物是标准的 pydantic-ai AgentSpec，不是星槎的
+    私有格式。干净环境里只装 pydantic-ai-slim[openai,spec] 与 jsonschema 就能跑，
+    **且校验行为一并保留**。
+    """
+
+    async def run() -> object:
+        engine, maker, _ = _bootstrap()
+        try:
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                import json as _json
+
+                from .core import exporter
+                from .services import agent as agent_svc
+
+                a = await agent_svc.resolve(s, slug)
+                return exporter.export(
+                    slug=a.slug,
+                    name=a.name,
+                    version=a.version,
+                    tier=a.tier,
+                    spec=_json.loads(a.spec_json),
+                    out_schema=_json.loads(a.out_schema) if a.out_schema else None,
+                    dest=dest,
+                )
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    from .errors import XingchaError
+
+    try:
+        bundle = _run(run())
+    except XingchaError as e:
+        _err(e.message)
+        raise typer.Exit(1) from e
+
+    _ok(f"已导出 → {bundle.directory}")  # type: ignore[attr-defined]
+    for f in bundle.files:  # type: ignore[attr-defined]
+        typer.echo(f"    {f}")
+    typer.secho(
+        "  这个目录不依赖星槎。README.md 里写清了保留与丢失了什么。",
+        fg=typer.colors.CYAN,
+    )
 
 
 # =============================================================================

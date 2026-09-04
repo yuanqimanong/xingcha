@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -902,3 +903,45 @@ async def agent_lint(
     """
     await guard_mutation(request, csrf_token)
     return security_headers(_render(request, "_lint.html", _lint_ctx(output_schema, tier)))
+
+
+@router.get("/agents/{slug}/export")
+async def agent_export(slug: str, request: Request) -> Response:
+    """把 bundle 打成 zip 下载。
+
+    在内存里打包而不是落临时文件：这些文件很小，而临时文件要考虑清理、并发同名、
+    以及"进程被 kill 之后残留"——为一个几 KB 的下载引入那些不值得。
+    """
+    import io
+    import zipfile
+
+    await require_admin(request)
+    state = request.app.state.xc
+    from ..core import exporter
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        a = await agent_svc.resolve(s, slug)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = exporter.export(
+            slug=a.slug,
+            name=a.name,
+            version=a.version,
+            tier=a.tier,
+            spec=json.loads(a.spec_json),
+            out_schema=json.loads(a.out_schema) if a.out_schema else None,
+            dest=Path(tmp),
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in bundle.files:
+                zf.write(bundle.directory / name, arcname=f"{a.slug}/{name}")
+
+    return security_headers(
+        Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{a.slug}-v{a.version}.zip"'},
+        )
+    )
