@@ -2,13 +2,14 @@
 
 **启动顺序是有意的**，每一步都可能拒绝启动：
 
-1. umask + 数据目录权限 —— 在任何文件被创建之前
-2. 未知配置项告警 —— 让拼错的环境变量被看见
-3. 密钥环 —— 缺环而库里有密文则拒绝启动（单向门）
-4. 迁移（先备份） —— 失败则拒绝启动，绝不带着半旧 schema 服务
+1. 未知配置项告警 —— 让拼错的环境变量被看见
+2. umask + 数据目录权限 —— 在任何文件被创建之前
+3. 迁移（先备份） —— 失败则拒绝启动，绝不带着半旧 schema 服务
+4. 密钥环 —— 缺环而库里有密文则拒绝启动（单向门）
 5. WAL 断言 —— 静默降级会变成零星的 database is locked
+6. 上游配置 —— 缺 key **不**拒绝启动（首次部署必然缺），调用时才明确报错
 
-宁可起不来，也不要带病运行：上面每一条失败后继续跑，症状都会在几小时后以完全
+宁可起不来，也不要带病运行：前五条失败后继续跑，症状都会在几小时后以完全
 看不出根因的形式出现。
 """
 
@@ -19,16 +20,23 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import __version__
 from . import contract as C
+from .api import v1 as v1_api
+from .api.normalize import NormalizeV1Path
 from .bootstrap import prepare
 from .config import Settings, get_settings, warn_unknown_env
+from .core.models_catalog import ModelsCatalog
+from .core.upstream import UpstreamConfig, UpstreamNotConfigured, UpstreamPool
 from .crypto import Keyring
 from .db.engine import assert_wal, make_engine, make_sessionmaker
 from .errors import XingchaError, unhandled_error_handler, xingcha_error_handler
+from .services import setting as setting_svc
+from .services.ratelimit import RateLimiter
+from .services.runlog import UsageBuffer
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +45,7 @@ class AppState:
     """进程级共享状态。挂在 ``app.state.xc`` 上。
 
     显式持有而不是散落成模块级全局：一次调用的生命周期要能用一张图讲完
-    （开发计划 §6 标准 6）。
+    （开发计划 §6 标准 6），而全局变量很难说清"该在哪儿失效它"。
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -45,26 +53,81 @@ class AppState:
         self.keyring: Keyring | None = None
         self.engine: Any = None
         self.sessionmaker: Any = None
+        self.upstream = UpstreamPool(timeout=settings.request_timeout)
+        self.catalog = ModelsCatalog(ttl_seconds=settings.catalog_ttl_seconds)
+        self.limiter = RateLimiter(
+            per_minute=settings.rate_limit_per_minute,
+            concurrent=settings.rate_limit_concurrent,
+        )
+        self.usage: UsageBuffer | None = None
+
+
+async def load_upstream(state: AppState) -> None:
+    """从 setting 表读上游配置并装配客户端。
+
+    缺 key **不**拒绝启动：首次部署必然缺，那时管理员还没机会填。调用时才报
+    :class:`UpstreamNotConfigured`，消息里写清楚下一步做什么。
+    """
+    assert state.keyring is not None
+    async with state.sessionmaker() as session:
+        # 环境变量只在首次启动时一次性导入，之后永久忽略
+        if await setting_svc.import_env_once(
+            session, state.keyring, state.settings.openrouter_api_key
+        ):
+            await session.commit()
+
+        api_key = await setting_svc.get(session, state.keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
+        base_url = await setting_svc.get(session, state.keyring, C.SETTING_KEY_OPENROUTER_BASE_URL)
+
+    if not api_key:
+        await state.upstream.set_config(None)
+        log.warning(
+            "尚未配置 OpenRouter key，/v1 调用会返回明确提示。"
+            "配置方式：xingcha config set openrouter.api_key -"
+        )
+        return
+
+    await state.upstream.set_config(
+        UpstreamConfig(
+            api_key=api_key,
+            base_url=base_url or C.OPENROUTER_DEFAULT_BASE_URL,
+            app_url=state.settings.public_url,
+        )
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings: Settings = app.state.xc.settings
+    state: AppState = app.state.xc
+    settings = state.settings
 
     # 拼错的环境变量。不致命，但必须被看见——你以为设了某个值，实际跑的是默认值。
     warn_unknown_env()
 
     # umask → 数据目录 → 迁移（内含备份）→ 密钥环。顺序见 bootstrap.prepare。
     # serve 与 CLI 共用同一份，避免两处规则不一致。
-    app.state.xc.keyring = prepare(settings)
-    log.info("密钥环就绪（%d 把密钥）", len(app.state.xc.keyring))
+    state.keyring = prepare(settings)
+    log.info("密钥环就绪（%d 把密钥）", len(state.keyring))
 
     engine = make_engine(settings.db_path)
-    app.state.xc.engine = engine
-    app.state.xc.sessionmaker = make_sessionmaker(engine)
+    state.engine = engine
+    state.sessionmaker = make_sessionmaker(engine)
 
     # WAL 断言。静默降级会变成零星的 database is locked——最难查的一类问题。
     await assert_wal(engine)
+
+    await load_upstream(state)
+
+    # 预热模型目录。**这不只是为了首次 /v1/models 快一点**：目录同时是主价源，
+    # 不预热的话，一个只调 chat/completions、从不列模型的调用方（也就是绝大多数
+    # 业务代码）产生的每一条记录都会是 cost_source=unknown —— 等于没有账单数据。
+    # 尽力而为：上游不可达时不阻塞启动，TTL 到期后会自己再试。
+    up_cfg = state.upstream.config
+    if up_cfg is not None:
+        await state.catalog.refresh(state.upstream.client(), up_cfg.api_key)
+
+    state.usage = UsageBuffer(state.sessionmaker)
+    state.usage.start()
 
     log.info("星槎 %s 已就绪 · 监听 %s:%s", __version__, settings.host, settings.port)
     try:
@@ -72,10 +135,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         # 用量缓冲必须在这里落盘。「批量 flush」+「重启即升级」如果没有这一步，
         # 每次升级都会静默丢掉内存里那批 run 行——账单恰好在最需要它可信的时刻少报，
-        # 而且丢多少无法事后察觉。
-        # （M1 接上 UsageBuffer 后在此 flush；M0 还没有缓冲。）
+        # 而且丢多少无法事后察觉。这是准入项 A9。
+        if state.usage is not None:
+            await state.usage.close()
+        await state.upstream.aclose()
         await engine.dispose()
         log.info("星槎已停止")
+
+
+async def _not_configured_handler(request: Request, exc: Exception) -> JSONResponse:
+    """还没配上游 key。
+
+    503 而不是 500：这不是缺陷，是一个待办的配置步骤，而且它是可恢复的。
+    消息里直接给出下一步的命令——首次部署时看到这条的人正需要它。
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "message": str(exc),
+                "type": "upstream_not_configured",
+                "code": "upstream_not_configured",
+                "param": None,
+            }
+        },
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -95,23 +179,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/admin/openapi.json",
         # 必须显式关掉：即使 docs_url 挪到了 /admin 下，FastAPI 仍会在**根路径**注册
         # 一个 /docs/oauth2-redirect。那是一条计划外的免鉴权路由，而免鉴权路由
-        # 是一个安全关键闭集（见 tests/test_app_startup.py）。星槎的 Swagger 不走
-        # OAuth，这个回调本来也没用。
+        # 是一个安全关键闭集（见 tests/test_app_startup.py）。
         swagger_ui_oauth2_redirect_url=None,
     )
     app.state.xc = AppState(settings)
 
     app.add_exception_handler(XingchaError, xingcha_error_handler)
+    app.add_exception_handler(UpstreamNotConfigured, _not_configured_handler)
     app.add_exception_handler(Exception, unhandled_error_handler)
 
     _mount_probes(app)
+    app.include_router(v1_api.build_router())
+
+    # 必须在路由之前归一化 /v1 路径。见 api/normalize.py：不做这一步，
+    # GET /v1/models/ 会静默落进 catch-all 被反代出去。
+    app.add_middleware(NormalizeV1Path)
     return app
 
 
 def _mount_probes(app: FastAPI) -> None:
     """探针与版本协商。三个都**免鉴权**——这是一个安全关键的闭集。
 
-    往这里加路由必须同步更新 tests/test_contract_frozen.py 的免鉴权白名单断言。
+    往这里加路由必须同步更新 tests/test_app_startup.py 的免鉴权白名单断言。
     """
 
     @app.get("/healthz", include_in_schema=False)
@@ -152,6 +241,12 @@ def _mount_probes(app: FastAPI) -> None:
                 ok = False
         except OSError as e:
             checks["disk"] = f"error: {type(e).__name__}"
+
+        checks["upstream_configured"] = state.upstream.configured
+        checks["catalog_models"] = len(state.catalog.all())
+        checks["catalog_stale"] = state.catalog.is_stale
+        if state.usage is not None:
+            checks["usage_pending"] = state.usage.pending
 
         return JSONResponse(
             status_code=200 if ok else 503,

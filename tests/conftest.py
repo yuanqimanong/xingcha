@@ -1,0 +1,177 @@
+"""测试夹具。
+
+**假上游是一个真实的本地 HTTP 服务器**，不是 mock。直通层要验证的恰恰是字节级
+转发与流式行为，而 mock transport 会把响应物化，测不出"帧有没有被合并成一坨"
+这类问题——那正是流式最容易坏的地方。
+
+它同时记录收到的每一个请求，让"无鉴权时上游有没有被打到"成为一条可断言的事实
+而不是推测。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pytest
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from xingcha.config import Settings
+
+
+@dataclass
+class RecordedRequest:
+    method: str
+    path: str
+    query: str
+    headers: dict[str, str]
+    body: bytes
+
+
+@dataclass
+class FakeUpstream:
+    """假的 OpenRouter。"""
+
+    port: int
+    requests: list[RecordedRequest] = field(default_factory=list)
+    server: Any = None
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/v1"
+
+    def reset(self) -> None:
+        self.requests.clear()
+
+    @property
+    def hit_count(self) -> int:
+        return len(self.requests)
+
+    def last(self) -> RecordedRequest:
+        assert self.requests, "上游一次都没有被调用"
+        return self.requests[-1]
+
+
+def _build_upstream_app(state: FakeUpstream) -> FastAPI:
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def record(request: Request, call_next):
+        body = await request.body()
+        state.requests.append(
+            RecordedRequest(
+                method=request.method,
+                path=request.url.path,
+                query=request.url.query,
+                headers={k.lower(): v for k, v in request.headers.items()},
+                body=body,
+            )
+        )
+        return await call_next(request)
+
+    @app.get("/v1/models")
+    async def models() -> dict[str, Any]:
+        return {
+            "data": [
+                {
+                    "id": "openai/gpt-5",
+                    "name": "OpenAI: GPT-5",
+                    "created": 1700000000,
+                    "supported_parameters": ["tools", "structured_outputs", "response_format"],
+                    "pricing": {
+                        "prompt": "0.00000125",
+                        "completion": "0.00001",
+                        "input_cache_read": "0.000000125",
+                    },
+                },
+                {
+                    # 只有 response_format 没有 structured_outputs —— 判档必须区分这两者
+                    "id": "vendor/no-native",
+                    "name": "No Native Schema",
+                    "created": 1700000001,
+                    "supported_parameters": ["response_format"],
+                    "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+                },
+            ]
+        }
+
+    @app.post("/v1/chat/completions")
+    async def chat(request: Request):
+        payload = await request.json()
+        if payload.get("stream"):
+
+            async def gen():
+                for i in range(3):
+                    yield f'data: {{"choices":[{{"delta":{{"content":"{i}"}}}}]}}\n\n'.encode()
+                    await asyncio.sleep(0.005)
+                yield (
+                    b'data: {"model":"openai/gpt-5","choices":[],'
+                    b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n'
+                )
+                yield b"data: [DONE]\n\n"
+
+            return StreamingResponse(
+                gen(),
+                media_type="text/event-stream",
+                headers={"set-cookie": "upstream=1", "x-request-id": "up-1"},
+            )
+        return JSONResponse(
+            {
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": payload.get("model"),
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 4},
+                },
+            },
+            headers={"set-cookie": "upstream=1", "x-request-id": "up-1"},
+        )
+
+    @app.post("/v1/embeddings")
+    async def embeddings() -> dict[str, Any]:
+        return {"object": "list", "data": [{"embedding": [0.1, 0.2]}]}
+
+    @app.get("/v1/models/{author}/{slug}/endpoints")
+    async def endpoints(author: str, slug: str) -> dict[str, Any]:
+        return {"data": {"id": f"{author}/{slug}", "endpoints": ["a"]}}
+
+    return app
+
+
+@pytest.fixture(scope="session")
+def upstream() -> Iterator[FakeUpstream]:
+    state = FakeUpstream(port=8893)
+    app = _build_upstream_app(state)
+    config = uvicorn.Config(app, host="127.0.0.1", port=state.port, log_level="error")
+    server = uvicorn.Server(config)
+    state.server = server
+    threading.Thread(target=server.run, daemon=True).start()
+
+    for _ in range(100):
+        if getattr(server, "started", False):
+            break
+        time.sleep(0.05)
+    else:  # pragma: no cover
+        raise RuntimeError("假上游没能启动")
+
+    yield state
+    server.should_exit = True
+
+
+@pytest.fixture
+def settings(tmp_path: Path) -> Settings:
+    return Settings(
+        data_dir=tmp_path / "data",
+        request_timeout=10.0,
+        catalog_ttl_seconds=60,
+    )

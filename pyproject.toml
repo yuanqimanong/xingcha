@@ -58,6 +58,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # 全角标点是正确写法，不是笔误。
 ignore = ["RUF001", "RUF002", "RUF003"]
 
+[tool.ruff.lint.flake8-bugbear]
+# Depends / Query 放在参数默认值里是 FastAPI 的标准写法，不是 B008 想抓的可变默认值。
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Path"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
