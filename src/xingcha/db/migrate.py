@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import shutil
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -90,6 +91,77 @@ def restore(backup_path: Path, db_path: Path) -> None:
     shutil.copy2(backup_path, db_path)
     db_path.chmod(C.FILE_MODE)
     log.info("已从 %s 恢复数据库", backup_path)
+
+
+@dataclass(frozen=True)
+class BackupReport:
+    """一份备份的体检结果。
+
+    "备份文件在那儿"不等于"备份能用"。这个报告要回答的是后者，而且要在**真需要
+    它之前**回答——灾难当天才发现备份是坏的，等于没有备份。
+    """
+
+    path: Path
+    size_bytes: int
+    integrity_ok: bool
+    revision: str | None
+    counts: dict[str, int]
+    #: 库里有多少条密文。**它们要靠密钥环才能解开，而密钥环不在这份备份里。**
+    ciphertext_rows: int
+    problems: list[str]
+
+    @property
+    def usable(self) -> bool:
+        return not self.problems
+
+
+def verify_backup(backup_path: Path, *, expect_tables: tuple[str, ...] = ()) -> BackupReport:
+    """体检一份备份，不改动任何东西。
+
+    检查的顺序按"越致命越先"排：文件在不在 → 打不打得开 → 完整性 → schema 版本
+    → 有没有内容。任何一项失败都进 ``problems``，一条都不省——只报第一个问题的话，
+    运维得来回跑好几遍才能看清全貌。
+    """
+    problems: list[str] = []
+    if not backup_path.exists():
+        return BackupReport(backup_path, 0, False, None, {}, 0, [f"文件不存在：{backup_path}"])
+
+    size = backup_path.stat().st_size
+    integrity_ok = False
+    revision: str | None = None
+    counts: dict[str, int] = {}
+    ciphertext = 0
+
+    try:
+        with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as conn:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            integrity_ok = bool(row and row[0] == "ok")
+            if not integrity_ok:
+                problems.append(f"完整性检查未通过：{row[0] if row else '(无结果)'}")
+
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "alembic_version" in tables:
+                v = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+                revision = v[0] if v else None
+            if revision is None:
+                problems.append("没有 alembic_version——这不像是星槎的库")
+
+            for name in expect_tables or tuple(sorted(tables - {"alembic_version"})):
+                if name not in tables:
+                    problems.append(f"缺表：{name}")
+                    continue
+                counts[name] = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+
+            if "setting" in tables:
+                ciphertext = conn.execute(
+                    "SELECT COUNT(*) FROM setting WHERE is_secret = 1 AND value_enc IS NOT NULL"
+                ).fetchone()[0]
+    except sqlite3.DatabaseError as e:
+        problems.append(f"打不开：{e}")
+
+    return BackupReport(backup_path, size, integrity_ok, revision, counts, ciphertext, problems)
 
 
 def upgrade_to_head(db_path: Path, backup_dir: Path | None = None) -> tuple[str | None, str]:

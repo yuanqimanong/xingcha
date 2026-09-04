@@ -18,7 +18,7 @@ import typer
 from . import __version__
 from . import contract as C
 from .bootstrap import prepare
-from .config import get_settings
+from .config import Settings, get_settings
 from .crypto import Keyring, KeyringInvalid, KeyringMissing
 from .db import migrate
 from .db.engine import StartupRefused, make_engine, make_sessionmaker, session_scope
@@ -538,6 +538,60 @@ def db_backup(
         f"  记得单独备份密钥环：{settings.secret_path}（不在上面这个文件里）",
         fg=typer.colors.YELLOW,
     )
+
+
+@db_app.command("verify")
+def db_verify(
+    backup_path: Annotated[
+        Path | None,
+        typer.Argument(help="备份文件路径。不传则检查 data/backups/ 里最新的一份。"),
+    ] = None,
+) -> None:
+    """体检一份备份：能不能打开、完整不完整、里面有什么。
+
+    **「备份文件在那儿」不等于「备份能用」。** 灾难当天才发现备份是坏的，等于从来
+    没有备份过——所以这条命令的用法是**定期跑**，不是出事之后再跑。
+
+    它只读不写，可以随时对生产库的备份执行。
+    """
+    settings = get_settings()
+    target = backup_path or _latest_backup(settings)
+    if target is None:
+        _err(f"{settings.backup_dir} 里没有任何备份。先跑 `xingcha db backup`。")
+        raise typer.Exit(1)
+
+    report = migrate.verify_backup(target)
+    _info(f"检查 {report.path}")
+    typer.echo(f"  大小      {report.size_bytes / 1024:.1f} KiB")
+    typer.echo(f"  完整性    {'ok' if report.integrity_ok else '不通过'}")
+    typer.echo(f"  schema    {report.revision or '(无)'}")
+    if report.counts:
+        rows = ", ".join(f"{k}={v}" for k, v in sorted(report.counts.items()) if v)
+        typer.echo(f"  行数      {rows or '(全空)'}")
+
+    for problem in report.problems:
+        _err(problem)
+
+    if report.ciphertext_rows:
+        typer.secho(
+            f"\n  这份备份里有 {report.ciphertext_rows} 条密文（上游 key 等）。"
+            f"\n  它们要靠密钥环才能解开，而密钥环**不在这个文件里**："
+            f"\n    {settings.secret_path}"
+            "\n  只恢复数据库不恢复密钥环，服务会拒绝启动（这是有意的——"
+            "\n  静默重新生成会让密文永久解不开）。两者都要备份。",
+            fg=typer.colors.YELLOW,
+        )
+
+    if not report.usable:
+        raise typer.Exit(1)
+    _ok("这份备份可用")
+
+
+def _latest_backup(settings: Settings) -> Path | None:
+    if not settings.backup_dir.exists():
+        return None
+    files = sorted(settings.backup_dir.glob("*.db"), key=lambda p: p.stat().st_mtime)
+    return files[-1] if files else None
 
 
 @db_app.command("restore")
