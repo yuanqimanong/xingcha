@@ -144,7 +144,20 @@ async def passthrough(path: str, request: Request) -> Response:
     if request.url.query:
         url = f"{url}?{request.url.query}"
 
+    # 直通层的配额**默认不执行**（契约 §3.9 冻结了这一点，打开它是一次收紧）。
+    # 打开之后 /version 的 features 会多一项，调用方能探测到这个变化。
+    reservation = None
+    if state.quota is not None and state.settings.quota_on_passthrough:
+        principal = getattr(request.state, "principal", None)
+        reservation = state.quota.reserve(
+            user_id=principal.user_id if principal else 1,
+            token_id=principal.token_id if principal else None,
+            agent_id=None,
+        )
+
     tracker = RunTracker(request, kind="passthrough", model=_model_hint(body, rel))
+    if reservation is not None:
+        tracker.attach_reservation(reservation)
     return await execute_forward(
         client, request.method, url, headers, body, tracker, state.settings.request_timeout
     )

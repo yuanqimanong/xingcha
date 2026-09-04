@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(default=120, ge=1)
     rate_limit_concurrent: int = Field(default=8, ge=1)
 
+    #: 是否给**直通路径**也执行配额。**默认关。**
+    #:
+    #: 契约把"直通不执行配额"冻结了，打开它是一次收紧。做成显式开关而不是默认打开：
+    #: 那样它是部署者的决定，而不是升级的副作用；打开后 /version 的 features 会
+    #: 多一项，调用方能探测到。
+    quota_on_passthrough: bool = False
+
     # --- Web ---
     #: 会话有效期（小时）。
     session_ttl_hours: int = Field(default=24 * 7, ge=1)

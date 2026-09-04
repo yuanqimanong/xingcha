@@ -1,0 +1,115 @@
+{% extends "_shell.html" %}
+{% block title %}配额{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>配额</h1>
+    <p>三级主体 × 三种窗口，可限金额或次数。<strong>最紧的那条先生效</strong>——不是取最宽松的。</p>
+  </div>
+</div>
+
+{% if error %}<div class="alert danger"><div>{{ error }}</div></div>{% endif %}
+
+{% if not rules %}
+<div class="alert warn">
+  <div>
+    <div class="alert-title">还没有任何配额</div>
+    <div>在此之前，唯一的钱刹车是 OpenRouter 侧那把 key 的信用上限。
+      结构化 Agent 最坏会调用 <strong>1+重试次数</strong> 次模型，所以一条跑飞的调用能花掉几倍的钱。</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card mb5">
+  <div class="card-head"><h2>新增 / 修改</h2></div>
+  <div class="card-body">
+    <form method="post" action="/admin/quota/save" class="form-row">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="field" style="flex:0 1 140px">
+        <label for="subject_type">主体</label>
+        <select id="subject_type" name="subject_type">
+          <option value="user">用户</option>
+          <option value="token">密钥</option>
+          <option value="agent">Agent</option>
+        </select>
+      </div>
+      <div class="field" style="flex:0 1 200px">
+        <label for="subject_id">对象</label>
+        <select id="subject_id" name="subject_id">
+          {% for s in subjects %}<option value="{{ s.id }}">{{ s.label }}</option>{% endfor %}
+        </select>
+        <div class="hint">下拉里混着三类对象，请与左边的主体类型对应。</div>
+      </div>
+      <div class="field" style="flex:0 1 120px">
+        <label for="window">窗口</label>
+        <select id="window" name="window">
+          <option value="day">每天</option>
+          <option value="month">每月</option>
+          <option value="total">累计</option>
+        </select>
+      </div>
+      <div class="field" style="flex:0 1 140px">
+        <label for="usd">金额上限 USD</label>
+        <input id="usd" name="usd" type="number" step="0.01" min="0" placeholder="留空=不限">
+      </div>
+      <div class="field" style="flex:0 1 140px">
+        <label for="requests">次数上限</label>
+        <input id="requests" name="requests" type="number" min="1" placeholder="留空=不限">
+      </div>
+      <button class="btn primary" type="submit">保存</button>
+    </form>
+    <div class="hint mt4">
+      两个上限至少设一个。<strong>次数上限是永远精确的</strong>；金额上限最多超出
+      「在飞请求数 × 单次费用」——调用前不可能知道要花多少，所以它天然是事后判定。
+      另外约三分之一的在售模型查不到价，对它们金额上限完全无效，次数上限才是兜底。
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>当前状态</h2>
+    <span class="small muted">窗口口径一律 UTC</span>
+  </div>
+  <div class="card-body flush">
+    {% if rules %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>主体</th><th>窗口</th><th class="num">已用 USD</th><th class="num">上限 USD</th>
+              <th class="num">已用次数</th><th class="num">上限次数</th><th>周期</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for r in rules %}
+          <tr>
+            <td class="mono">{{ r.subject_label }}</td>
+            <td>{{ r.window_label }}</td>
+            <td class="num {% if r.usd_over %}danger-text{% endif %}">{{ r.spent_usd }}</td>
+            <td class="num dim">{{ r.limit_usd or '—' }}</td>
+            <td class="num {% if r.req_over %}danger-text{% endif %}">{{ r.spent_requests }}</td>
+            <td class="num dim">{{ r.limit_requests or '—' }}</td>
+            <td class="mono small dim">{{ r.period }}</td>
+            <td style="text-align:right">
+              <form method="post" action="/admin/quota/delete"
+                    onsubmit="return confirm('删掉这条配额？删掉之后这个主体就不再受限。')">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="subject_type" value="{{ r.subject_type }}">
+                <input type="hidden" name="subject_id" value="{{ r.subject_id }}">
+                <input type="hidden" name="window" value="{{ r.window }}">
+                <button class="btn danger sm" type="submit">删除</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">还没有配额规则</div>
+      <div class="small">也可以用命令行：<code>xingcha quota set user:1 day --usd 5</code></div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

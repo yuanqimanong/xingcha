@@ -159,6 +159,16 @@ def _fmt_time(iso: str | None) -> str:
         return iso[:16]
 
 
+#: 费用来源的人话解释。**实价与估价必须能一眼分开**——把两者显示成同一个样子，
+#: 看账单的人会以为目录估价就是要付的钱，而两者能差几百倍。
+_COST_HINT = {
+    C.CostSource.UPSTREAM.value: "上游报的实际费用",
+    C.CostSource.CATALOG.value: "按模型目录价预估（非实际账单）",
+    C.CostSource.GENAI_PRICES.value: "按 genai-prices 预估（非实际账单）",
+    C.CostSource.UNKNOWN.value: "目录里没有这个模型的价格，无法定价",
+}
+
+
 def _fmt_cost(value: str | None) -> str:
     """费用展示。
 
@@ -400,6 +410,7 @@ async def _recent_runs(s, *, limit: int, model: str = "", status: str = "") -> l
                 "cache_read_tokens": usage.cache_read_tokens if usage else 0,
                 "cost_display": _fmt_cost(usage.cost_usd if usage else None),
                 "cost_source": usage.cost_source if usage else "unknown",
+                "cost_hint": _COST_HINT.get(usage.cost_source if usage else "unknown", "来源未知"),
                 "latency_display": f"{run.latency_ms} ms" if run.latency_ms is not None else "—",
             }
         )
@@ -945,3 +956,129 @@ async def agent_export(slug: str, request: Request) -> Response:
             headers={"Content-Disposition": f'attachment; filename="{a.slug}-v{a.version}.zip"'},
         )
     )
+
+
+# =============================================================================
+# 配额
+# =============================================================================
+
+_WINDOW_LABELS = {"day": "每天", "month": "每月", "total": "累计"}
+_SUBJECT_LABELS = {"user": "用户", "token": "密钥", "agent": "Agent"}
+
+
+async def _quota_context(request: Request, error: str | None = None) -> dict[str, Any]:
+    state = request.app.state.xc
+    from ..services import agent as agent_svc
+    from ..services import auth as auth_svc
+
+    async with state.sessionmaker() as s:
+        tokens = await auth_svc.list_tokens(s)
+        agents = await agent_svc.list_active(s)
+        admin = await ws.get_admin(s)
+
+    # 下拉里要能认出对象是谁。只给 id 的话没人记得 token 3 是哪一把。
+    subjects = [SimpleNamespace(id=1, label=f"用户 {admin.username if admin else 'admin'}（1）")]
+    subjects += [SimpleNamespace(id=t.id, label=f"密钥 {t.name}（{t.id}）") for t in tokens]
+    subjects += [
+        SimpleNamespace(id=a.agent_id, label=f"Agent {a.slug}（{a.agent_id}）") for a in agents
+    ]
+
+    label_of = {("user", 1): admin.username if admin else "admin"}
+    label_of |= {("token", t.id): t.name for t in tokens}
+    label_of |= {("agent", a.agent_id): a.slug for a in agents}
+
+    rules = []
+    if state.quota is not None:
+        await state.quota.reload()
+        for snap in state.quota.snapshot():
+            st, sid = str(snap["subject_type"]), int(snap["subject_id"])  # type: ignore[arg-type]
+            name = label_of.get((st, sid), f"#{sid}")
+            limit_usd = snap["limit_usd"]
+            limit_req = snap["limit_requests"]
+            rules.append(
+                SimpleNamespace(
+                    subject_type=st,
+                    subject_id=sid,
+                    subject_label=f"{_SUBJECT_LABELS.get(st, st)} {name}",
+                    window=snap["window"],
+                    window_label=_WINDOW_LABELS.get(str(snap["window"]), snap["window"]),
+                    spent_usd=_fmt_cost(str(snap["spent_usd"])),
+                    limit_usd=limit_usd,
+                    spent_requests=snap["spent_requests"],
+                    limit_requests=limit_req,
+                    period=snap["period"],
+                    usd_over=bool(limit_usd)
+                    and Decimal(str(snap["spent_usd"])) >= Decimal(str(limit_usd)),
+                    req_over=bool(limit_req) and int(snap["spent_requests"]) >= int(limit_req),  # type: ignore[arg-type]
+                )
+            )
+
+    return {"rules": rules, "subjects": subjects, "error": error}
+
+
+@router.get("/quota")
+async def quota_page(request: Request) -> Response:
+    await require_admin(request)
+    csrf = await _ensure_csrf_cookie(request)
+    resp = _render(request, "quota.html", {**await _quota_context(request), "csrf": csrf.value})
+    csrf.apply(resp)
+    return resp
+
+
+@router.post("/quota/save")
+async def quota_save(
+    request: Request,
+    subject_type: str = Form(...),
+    subject_id: int = Form(...),
+    window: str = Form(...),
+    usd: str = Form(default=""),
+    requests: str = Form(default=""),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..services import quota as quota_svc
+
+    try:
+        async with state.sessionmaker() as s:
+            await quota_svc.upsert(
+                s,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                window=window,
+                limit_usd=Decimal(usd) if usd.strip() else None,
+                limit_requests=int(requests) if requests.strip() else None,
+            )
+            await s.commit()
+    except (quota_svc.InvalidQuota, ArithmeticError, ValueError) as e:
+        csrf = await _ensure_csrf_cookie(request)
+        resp = _render(
+            request, "quota.html", {**await _quota_context(request, str(e)), "csrf": csrf.value}
+        )
+        csrf.apply(resp)
+        return resp
+
+    # 规则改了要让内存里的计数器跟上，否则新规则要等下次重启才生效。
+    if state.quota is not None:
+        await state.quota.reload()
+    return security_headers(RedirectResponse("/admin/quota", status_code=303))
+
+
+@router.post("/quota/delete")
+async def quota_delete(
+    request: Request,
+    subject_type: str = Form(...),
+    subject_id: int = Form(...),
+    window: str = Form(...),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..services import quota as quota_svc
+
+    async with state.sessionmaker() as s:
+        await quota_svc.remove(s, subject_type=subject_type, subject_id=subject_id, window=window)
+        await s.commit()
+    if state.quota is not None:
+        await state.quota.reload()
+    return security_headers(RedirectResponse("/admin/quota", status_code=303))

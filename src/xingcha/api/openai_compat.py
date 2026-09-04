@@ -257,6 +257,21 @@ async def _run_agent(
         raise ModelInvalid("messages 必须是一个非空数组")
     prompt, extra_instructions = run_svc.to_prompt(messages)
 
+    # 配额：**检查并占掉名额**，就在最贵的那一步之前。
+    #
+    # 放在这里而不是函数开头，是为了让 stream_unsupported / messages 格式错这类
+    # 早期拒绝不白吃名额——它们根本没打到上游。
+    #
+    # 占用与检查在同一个同步块里，所以并发请求不可能全部通过检查再一起计数。
+    principal = getattr(request.state, "principal", None)
+    reservation = None
+    if state.quota is not None:
+        reservation = state.quota.reserve(
+            user_id=principal.user_id if principal else 1,
+            token_id=principal.token_id if principal else None,
+            agent_id=resolved.agent_id,
+        )
+
     rt = await run_svc.get_runtime(
         resolved,
         cache=state.runtimes,
@@ -266,6 +281,8 @@ async def _run_agent(
     )
 
     tracker = RunTracker(request, kind="agent", model=requested_model)
+    if reservation is not None:
+        tracker.attach_reservation(reservation)
     tracker.rec.agent_id = resolved.agent_id
     tracker.rec.agent_version = resolved.version
     tracker.rec.tier = resolved.tier.value
@@ -285,7 +302,7 @@ async def _run_agent(
         await tracker.submit()
         raise
 
-    _absorb(tracker, outcome, state.catalog)
+    _absorb(tracker, outcome, state.catalog, state.cost_sink)
     tracker.finish_ok()
     await tracker.submit()
 
@@ -312,8 +329,15 @@ def _status_for(e: XingchaError) -> str:
     }.get(e.error_type, RunStatus.UPSTREAM_ERROR.value)
 
 
-def _absorb(tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any) -> None:
-    """把运行结果写进 run 记录，并按目录价算费用。"""
+def _absorb(
+    tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any, cost_sink: Any = None
+) -> None:
+    """把运行结果写进 run 记录，并结算费用。
+
+    费用优先用**上游自己报的**（经 CostSink），拿不到才回落目录价。
+    上游那个是唯一非预估的数字，而 pydantic-ai 填的 usage.cost 是估价——
+    实测两者能差 400 倍。
+    """
     import json as _json
 
     from .runlog_mw import price
@@ -331,15 +355,31 @@ def _absorb(tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any) -> N
     if outcome.extra:
         rec.extra_json = _json.dumps(outcome.extra, ensure_ascii=False)
 
-    cost, source = price(
-        catalog,
-        outcome.model_id,
-        {
-            "input_tokens": outcome.input_tokens,
-            "output_tokens": outcome.output_tokens,
-            "cache_read_tokens": outcome.cache_read_tokens,
-        },
+    usage = {
+        "input_tokens": outcome.input_tokens,
+        "output_tokens": outcome.output_tokens,
+        "cache_read_tokens": outcome.cache_read_tokens,
+    }
+    estimate, source = price(catalog, outcome.model_id, usage)
+
+    upstream = (
+        cost_sink.take(outcome.response_ids)
+        if cost_sink is not None and outcome.response_ids
+        else None
     )
+    if upstream is not None:
+        cost = upstream
+        source = C.CostSource.UPSTREAM.value
+        if estimate is not None:
+            # 记下预估与实际的差，便于观察目录价准不准。不记的话，"预估偏差有多大"
+            # 这个问题永远只能靠人工对账回答。
+            extra = _json.loads(rec.extra_json) if rec.extra_json else {}
+            extra["cost_estimate"] = str(estimate)
+            extra["cost_delta"] = str(upstream - estimate)
+            rec.extra_json = _json.dumps(extra, ensure_ascii=False)
+    else:
+        cost = estimate
+
     rec.cost_usd = cost
     rec.cost_source = source
     outcome.cost_usd = cost

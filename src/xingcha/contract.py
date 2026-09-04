@@ -45,8 +45,17 @@ FEATURES: Final[frozenset[str]] = frozenset(
         "agents",  # Agent 以 slug 作为 model id 调用
         "structured_output",  # 结构化输出保证（T2 档）
         "streaming_passthrough",  # 直通路径的流式转发
+        "quota",  # 三级主体 × 三窗口的配额执行（Agent 路径）
     }
 )
+
+#: 直通路径的配额执行**默认关闭**，由管理员显式打开。
+#:
+#: 契约 §3.9 把 ``PASSTHROUGH_ENFORCES_QUOTA`` 冻结成 False，演进规则写明"给直通层
+#: 加配额闸是**收紧**，必须经协商入口发布"。所以这里的做法是能力做好、默认关，
+#: 打开之后 ``/version`` 的 features 里会多一项 ``quota_passthrough``——
+#: 那样它对既有调用方就不是一次静默的行为改变，而是部署者的显式决定。
+FEATURE_QUOTA_PASSTHROUGH: Final = "quota_passthrough"
 
 
 # =============================================================================
@@ -644,18 +653,19 @@ OPENROUTER_DEFAULT_BASE_URL: Final = "https://openrouter.ai/api/v1"
 class CostSource(StrEnum):
     """费用数字的来源。**四态从第一天就定死。**
 
-    v1 只会出现前三种。``UPSTREAM`` 留给 v0.4 的对账链路——pydantic-ai 自动填的
-    ``usage.cost`` 是 genai-prices 的**估价**而不是上游账单（OpenRouter body 里真实的
-    ``cost`` 因为是 float 被 ``isinstance(v, int)`` 过滤掉，哪儿都没留）。
+    只有 ``UPSTREAM`` 是上游报的真实费用；``CATALOG`` 与 ``GENAI_PRICES`` 都是**估价**。
+    UI 与 CLI 必须把两者区分显示，绝不把估价说成账单——实测两者能差几百倍。
 
-    UI 与 CLI 对前三种一律标注「预估」，绝不声称数字来自账单。
+    pydantic-ai 自动填的 ``usage.cost`` 属于估价（genai-prices），而上游 body 里真实的
+    ``cost`` 因为是 float 被 ``isinstance(v, int)`` 过滤掉，哪儿都没留。所以 ``UPSTREAM``
+    只能在 HTTP 层抓（见 ``core/costsink.py``）。
     """
 
     #: OpenRouter /v1/models 自带的价格。**主价源**——424/424 全有，抽样与 genai-prices 相等。
     CATALOG = "openrouter_catalog"
     #: genai-prices 估价。回落价源——实测只覆盖 66.7%，且在线更新补不上。
     GENAI_PRICES = "genai_prices"
-    #: 上游账单对账结果（v0.4）。
+    #: 上游自己在响应体 ``usage.cost`` 里报的费用。**唯一非预估的数字。**
     UPSTREAM = "upstream"
     #: 无法定价。此时 cost 为 null，与真实的 0 费用可区分。
     UNKNOWN = "unknown"

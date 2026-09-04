@@ -26,6 +26,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from .. import contract as C
 from ..contract import Tier
 from ..errors import AgentBuildFailed, AgentSpecInvalid
+from .costsink import CostSink, make_hook
 from .guarantee import GuaranteeCounters, attach_validator, limits_for, output_spec
 from .upstream import UpstreamConfig, attribution_headers
 
@@ -117,7 +118,9 @@ def capability_params_schema() -> dict[str, Any]:
 # =============================================================================
 
 
-def make_provider(cfg: UpstreamConfig, *, timeout: float) -> OpenRouterProvider:
+def make_provider(
+    cfg: UpstreamConfig, *, timeout: float, cost_sink: CostSink | None = None
+) -> OpenRouterProvider:
     """构造 provider。
 
     走自建 ``AsyncOpenAI`` 而不是让 provider 自己建，因为 ``OpenRouterProvider``
@@ -138,9 +141,16 @@ def make_provider(cfg: UpstreamConfig, *, timeout: float) -> OpenRouterProvider:
         （那段注入只在它自建 client 的分支里）。所以这不是重复代码，删掉会让
         OpenRouter 后台看不到来源。
     """
+    hooks: dict[str, list[Any]] = {}
+    if cost_sink is not None:
+        # 上游真实费用只能在 HTTP 层拿到：pydantic-ai 填的 usage.cost 是 genai-prices
+        # 的估价，上游 body 里那个真实值被 isinstance(v, int) 过滤掉了（实测差 400 倍）。
+        hooks["response"] = [make_hook(cost_sink)]
+
     http = httpx2.AsyncClient(
         trust_env=False,
         timeout=httpx2.Timeout(timeout, connect=min(15.0, timeout)),
+        event_hooks=hooks or None,
     )
     client = AsyncOpenAI(
         base_url=cfg.normalized_base(),

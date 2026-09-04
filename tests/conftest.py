@@ -47,6 +47,9 @@ class FakeUpstream:
     tool_call_index: int = 0
     #: T1 档下上游实际收到的 response_format，用于断言 schema 被怎样改写。
     native_requests: list[Any] = field(default_factory=list)
+    #: 非 None 时，每条响应的 usage 里带上这个 ``cost``（模拟中转报账单）。
+    #: 默认不带——不是所有中转都报，"不报时回落目录价"也必须被测到。
+    report_cost: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -57,10 +60,20 @@ class FakeUpstream:
         self.tool_payloads = []
         self.tool_call_index = 0
         self.native_requests = []
+        self.report_cost = None
 
     @property
     def hit_count(self) -> int:
         return len(self.requests)
+
+    @property
+    def chat_count(self) -> int:
+        """只数模型调用。
+
+        ``hit_count`` 里混着启动时的目录预热（``/v1/models``），拿它断言"模型被调了
+        几次"会莫名多一次。
+        """
+        return sum(1 for r in self.requests if r.path.endswith("/chat/completions"))
 
     def last(self) -> RecordedRequest:
         assert self.requests, "上游一次都没有被调用"
@@ -69,6 +82,12 @@ class FakeUpstream:
 
 def _build_upstream_app(state: FakeUpstream) -> FastAPI:
     app = FastAPI()
+
+    def usage(**counts: Any) -> dict[str, Any]:
+        """构造 usage 块，按需附上中转报的费用。"""
+        if state.report_cost is not None:
+            counts["cost"] = float(state.report_cost)
+        return counts
 
     @app.middleware("http")
     async def record(request: Request, call_next):
@@ -128,7 +147,9 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
             state.tool_call_index += 1
             return JSONResponse(
                 {
-                    "id": "chatcmpl-n",
+                    # id 必须每次不同：费用是按响应 id 关联回来的，固定 id 会让
+                    # 两次不相关的调用互相串账。
+                    "id": f"chatcmpl-n{state.tool_call_index}",
                     "object": "chat.completion",
                     "created": 0,
                     "model": payload.get("model"),
@@ -142,7 +163,7 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
                             "finish_reason": "stop",
                         }
                     ],
-                    "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                    "usage": usage(prompt_tokens=20, completion_tokens=8, total_tokens=28),
                 }
             )
 
@@ -156,7 +177,7 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
             state.tool_call_index += 1
             return JSONResponse(
                 {
-                    "id": "chatcmpl-t",
+                    "id": f"chatcmpl-t{state.tool_call_index}",
                     "object": "chat.completion",
                     "created": 0,
                     "model": payload.get("model"),
@@ -179,11 +200,7 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
                             "finish_reason": "tool_calls",
                         }
                     ],
-                    "usage": {
-                        "prompt_tokens": 12,
-                        "completion_tokens": 6,
-                        "total_tokens": 18,
-                    },
+                    "usage": usage(prompt_tokens=12, completion_tokens=6, total_tokens=18),
                 }
             )
 
@@ -193,10 +210,14 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
                 for i in range(3):
                     yield f'data: {{"choices":[{{"delta":{{"content":"{i}"}}}}]}}\n\n'.encode()
                     await asyncio.sleep(0.005)
-                yield (
-                    b'data: {"model":"openai/gpt-5","choices":[],'
-                    b'"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n'
-                )
+                import json as _json
+
+                tail = {
+                    "model": "openai/gpt-5",
+                    "choices": [],
+                    "usage": usage(prompt_tokens=10, completion_tokens=5),
+                }
+                yield f"data: {_json.dumps(tail)}\n\n".encode()
                 yield b"data: [DONE]\n\n"
 
             return StreamingResponse(
@@ -219,12 +240,12 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15,
-                    "prompt_tokens_details": {"cached_tokens": 4},
-                },
+                "usage": usage(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    prompt_tokens_details={"cached_tokens": 4},
+                ),
             },
             headers={"set-cookie": "upstream=1", "x-request-id": "up-1"},
         )

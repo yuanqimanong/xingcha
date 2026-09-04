@@ -44,6 +44,33 @@ def extract_usage(payload: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def extract_upstream_cost(payload: dict[str, Any]) -> Decimal | None:
+    """取上游**自己报的**费用。
+
+    OpenRouter 会在 ``usage.cost`` 里回真实扣费（还有
+    ``usage.cost_details.upstream_inference_cost``）。这是唯一非预估的数字。
+
+    为什么必须自己取：pydantic-ai 会自动填 ``RunUsage.cost``，但填的是
+    **genai-prices 的估价**，不是上游账单——上游 body 里那个 ``cost`` 因为是 float
+    被 ``_map_usage`` 的 ``isinstance(v, int)`` 过滤掉了，哪儿都没留（实测）。
+    所以"预估 vs 实际"这件事只能在 HTTP 层做。
+    """
+    u = payload.get("usage")
+    if not isinstance(u, dict):
+        return None
+    for key in ("cost", "total_cost"):
+        raw = u.get(key)
+        if isinstance(raw, int | float | str):
+            try:
+                value = Decimal(str(raw))
+            except Exception:
+                continue
+            # 上游对免费模型会回 0，那是真实的 0 而不是"没有数据"——保留它。
+            if value >= 0:
+                return value
+    return None
+
+
 def price(
     catalog: ModelsCatalog, model_id: str, usage: dict[str, int]
 ) -> tuple[Decimal | None, str]:
@@ -92,9 +119,42 @@ def _apply(rec: RunRecord, payload: dict[str, Any], catalog: ModelsCatalog) -> N
     # 上游回显的 model 才是真正执行的那个（可能被路由到变体）
     executed_model = payload.get("model") or rec.model
     rec.usage_model = executed_model
+
+    # **上游自己报的费用优先。** 那是唯一非预估的数字。
+    #
+    # 目录价是好的回落，但它算的是"按标价应该花多少"，而上游实际扣费会受平台抽成、
+    # 缓存计价、provider 路由影响。两者有系统性差异，而 cost_source 让这件事
+    # 在数据里是可见的——不至于让人把预估当账单。
+    upstream = extract_upstream_cost(payload)
+    if upstream is not None:
+        rec.cost_usd = upstream
+        rec.cost_source = C.CostSource.UPSTREAM.value
+        # 顺手记下预估与实际的差，便于观察目录价准不准
+        estimate, _ = price(catalog, executed_model, usage)
+        if estimate is not None:
+            rec.extra_json = _merge_extra(
+                rec.extra_json,
+                {"cost_estimate": str(estimate), "cost_delta": str(upstream - estimate)},
+            )
+        return
+
     cost, source = price(catalog, executed_model, usage)
     rec.cost_usd = cost
     rec.cost_source = source
+
+
+def _merge_extra(existing: str | None, extra: dict[str, Any]) -> str:
+    """往 ``extra_json`` 里加字段而不覆盖已有的。"""
+    base: dict[str, Any] = {}
+    if existing:
+        try:
+            loaded = json.loads(existing)
+            if isinstance(loaded, dict):
+                base = loaded
+        except json.JSONDecodeError:
+            pass
+    base.update(extra)
+    return json.dumps(base, ensure_ascii=False)
 
 
 def sniff_stream(
@@ -150,7 +210,7 @@ class RunTracker:
     永远 0 token 的记录。
     """
 
-    __slots__ = ("_buffer", "_catalog", "_submitted", "_t0", "rec")
+    __slots__ = ("_buffer", "_catalog", "_reservation", "_submitted", "_t0", "rec")
 
     def __init__(self, request: Any, *, kind: str, model: str) -> None:
         import time
@@ -168,10 +228,26 @@ class RunTracker:
         )
         self._buffer = state.usage
         self._catalog = state.catalog
+        #: 配额名额在**检查时**就占掉了（见 services/quota.py 的难点二），
+        #: 这里只负责补上实际费用。
+        self._reservation: Any = None
         self._t0 = time.monotonic()
         self._submitted = False
         # run_id 要能回到 5xx 的响应体里——那是排障时唯一的抓手
         request.state.run_id = self.rec.id
+
+    def attach_reservation(self, reservation: Any) -> None:
+        """把配额预留交给 tracker，由它在提交时结算。"""
+        self._reservation = reservation
+
+    def release_reservation(self) -> None:
+        """调用没有发生（早期拒绝），把名额还回去。
+
+        不释放的话，一次 stream_unsupported 之类的拒绝也会白吃一个名额，
+        而那类拒绝根本没打到上游、没花钱。
+        """
+        if self._reservation is not None:
+            self._reservation.release()
 
     def finish_ok(self) -> None:
         self.rec.status = C.RunStatus.OK.value
@@ -207,4 +283,12 @@ class RunTracker:
 
         self.rec.latency_ms = int((time.monotonic() - self._t0) * 1000)
         self.rec.finished_at = utcnow()
+
+        # 补上实际费用。次数在预留时已经算过——不能再加一次，否则限额会减半。
+        #
+        # **无论成败都结算**：一次重试耗尽的调用照样花了钱（1+retries 次模型调用），
+        # 不结算等于让失败的调用免费，而那恰好是最贵的一类。
+        if self._reservation is not None:
+            self._reservation.settle(self.rec.cost_usd)
+
         await self._buffer.add(self.rec)

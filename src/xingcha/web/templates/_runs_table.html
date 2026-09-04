@@ -20,7 +20,9 @@
         <td class="num">{{ r.input_tokens }}</td>
         <td class="num">{{ r.output_tokens }}</td>
         <td class="num dim">{{ r.cache_read_tokens or '' }}</td>
-        <td class="num" title="来源：{{ r.cost_source }}">{{ r.cost_display }}</td>
+        <td class="num nowrap" title="{{ r.cost_hint }}">
+          {%- if r.cost_source == 'catalog' %}<span class="dim">~</span>{% endif %}{{ r.cost_display }}
+        </td>
         <td class="num dim">{{ r.latency_display }}</td>
       </tr>
     {% endfor %}

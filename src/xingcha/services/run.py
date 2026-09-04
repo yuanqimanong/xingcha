@@ -110,6 +110,11 @@ class RunOutcome:
     cost_usd: Decimal | None = None
     cost_source: str = C.CostSource.UNKNOWN.value
     extra: dict[str, Any] = field(default_factory=dict)
+    #: 本次运行里所有上游响应的 id。用于向 CostSink 取回真实费用。
+    #:
+    #: 一次运行可能有多次上游调用（schema 重试、工具往返、两阶段），所以是列表——
+    #: 只取最后一个会漏掉重试那几次的费用，而那恰好是最贵的情形。
+    response_ids: list[str] = field(default_factory=list)
 
     @property
     def content(self) -> str:
@@ -273,6 +278,18 @@ async def execute(
     guard_counters(rt.counters, tier=rt.tier)
     usage = result.usage  # 属性，不是方法
 
+    def collect_ids(res: Any) -> list[str]:
+        out = []
+        for m in res.all_messages():
+            rid = getattr(m, "provider_response_id", None)
+            if isinstance(rid, str) and rid:
+                out.append(rid)
+        return out
+
+    response_ids = collect_ids(result)
+    if stage_one is not None:
+        response_ids = collect_ids(stage_one) + response_ids
+
     def total(field: str) -> int:
         value = getattr(usage, field, 0) or 0
         if stage_one is not None:
@@ -292,6 +309,7 @@ async def execute(
         schema_violations=rt.counters.violations,
         schema_retries=rt.counters.retries,
         extra=_extra_usage(usage),
+        response_ids=list(dict.fromkeys(response_ids)),
     )
 
 

@@ -29,12 +29,14 @@ from .api import v1 as v1_api
 from .api.normalize import NormalizeV1Path
 from .bootstrap import prepare
 from .config import Settings, get_settings, warn_unknown_env
+from .core.costsink import CostSink
 from .core.models_catalog import ModelsCatalog
 from .core.upstream import UpstreamConfig, UpstreamNotConfigured, UpstreamPool
 from .crypto import Keyring
 from .db.engine import assert_wal, make_engine, make_sessionmaker
 from .errors import XingchaError, unhandled_error_handler, xingcha_error_handler
 from .services import setting as setting_svc
+from .services.quota import QuotaService
 from .services.ratelimit import RateLimiter
 from .services.run import RuntimeCache
 from .services.runlog import UsageBuffer
@@ -62,6 +64,9 @@ class AppState:
             concurrent=settings.rate_limit_concurrent,
         )
         self.usage: UsageBuffer | None = None
+        self.quota: QuotaService | None = None
+        #: 上游真实费用的暂存点。见 core/costsink.py。
+        self.cost_sink = CostSink()
 
         # Agent 运行时按 (agent_id, version) 缓存。版本不可变，所以编辑会产生新
         # 版本号、旧条目自然不再命中——不需要失效逻辑。
@@ -118,7 +123,9 @@ async def load_upstream(state: AppState) -> None:
     # 这是 RuntimeCache.clear() 唯一该被调用的地方。
     from .core.builder import make_provider
 
-    state.provider = make_provider(cfg, timeout=state.settings.request_timeout)
+    state.provider = make_provider(
+        cfg, timeout=state.settings.request_timeout, cost_sink=state.cost_sink
+    )
     state.runtimes.clear()
 
 
@@ -154,6 +161,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     state.usage = UsageBuffer(state.sessionmaker)
     state.usage.start()
+
+    # 配额的计数在内存里，启动时从数据库把当前窗口的已用量读回来播种。
+    # 不播种的话每次重启配额都会归零——而重启就是这个项目的升级方式。
+    state.quota = QuotaService(state.sessionmaker)
+    await state.quota.reload()
 
     log.info("星槎 %s 已就绪 · 监听 %s:%s", __version__, settings.host, settings.port)
     try:
@@ -296,6 +308,9 @@ def _mount_probes(app: FastAPI) -> None:
         checks["catalog_models"] = len(state.catalog.all())
         checks["catalog_stale"] = state.catalog.is_stale
         checks["agent_runtimes_cached"] = len(state.runtimes)
+        checks["cost_sink_pending"] = len(state.cost_sink)
+        if state.quota is not None:
+            checks["quota_rules"] = state.quota.rule_count
         if state.usage is not None:
             checks["usage_pending"] = state.usage.pending
 
@@ -311,9 +326,14 @@ def _mount_probes(app: FastAPI) -> None:
         契约号只在破坏性变更时 +1。``features`` 让调用方无需试探即可知道服务端支持
         什么——这是万一真的必须收紧某个行为时，唯一的非硬切发布通道。
         """
+        features = set(C.FEATURES)
+        # 直通配额是**打开之后**才公布的：契约把"直通不执行配额"冻结了，
+        # 打开它是一次收紧，调用方需要能探测到这件事。
+        if app.state.xc.settings.quota_on_passthrough:
+            features.add(C.FEATURE_QUOTA_PASSTHROUGH)
         return {
             "name": "xingcha",
             "version": __version__,
             "contract": C.CONTRACT_VERSION,
-            "features": sorted(C.FEATURES),
+            "features": sorted(features),
         }

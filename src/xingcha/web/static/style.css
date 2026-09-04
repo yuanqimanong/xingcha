@@ -820,3 +820,4 @@ textarea {
     animation: none !important;
   }
 }
+.danger-text { color: var(--danger); font-weight: 600; }
