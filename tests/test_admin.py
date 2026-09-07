@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -170,6 +171,78 @@ class TestClickjacking:
         csp = client.get("/admin/login").headers["content-security-policy"]
         assert "script-src 'self'" in csp
         assert "unsafe-inline" not in csp.split("style-src")[0]
+
+
+class TestPagesActuallyObeyTheirOwnCsp:
+    """**光守住 CSP 头是不够的——还得有人拿页面去对那个头。**
+
+    v0.4 之前恰恰是这样：上面那条测试断言了 `script-src 'self'` 无 unsafe-inline，
+    而 base.html 里放着内联 <script>、keys.html 与 quota.html 用 `onsubmit=
+    "return confirm(...)"`。浏览器把它们全部拒绝执行，于是
+
+    - 「复制」按钮完全无反应，而同一个页面写着「这是唯一一次看到明文」；
+    - 吊销密钥与删配额的 confirm() **根本不弹**，表单直接提交——
+      「危险操作二次确认」在生产里不存在，而界面看起来像是有保护。
+
+    真浏览器实测过：控制台每页都在报
+    `Executing inline script violates ... The action has been blocked.`
+
+    所以这一组是从**页面**这一侧断言的。
+    """
+
+    #: 内联事件处理器属性。CSP 无 unsafe-inline 时它们一律不执行。
+    #:
+    #: 危险的地方在于失败是**静默**的：onsubmit="return confirm(...)" 被挡掉之后
+    #: 表单照常提交，看不出任何异常。
+    INLINE_HANDLER = re.compile(r"\bon(?:submit|click|change|input|load|error)\s*=")
+
+    def _templates(self) -> list[Path]:
+        root = Path(__file__).resolve().parent.parent / "src" / "xingcha" / "web" / "templates"
+        return sorted(root.rglob("*.html"))
+
+    def test_no_template_has_an_inline_script_block(self):
+        """``<script>`` 只允许带 src。带内容的一律不执行。"""
+        bad = []
+        for path in self._templates():
+            for m in re.finditer(r"<script([^>]*)>(.*?)</script>", path.read_text("utf-8"), re.S):
+                attrs, body = m.group(1), m.group(2).strip()
+                if body and "src=" not in attrs:
+                    bad.append(f"{path.name}: {body[:60]!r}")
+        assert not bad, f"内联脚本会被 CSP 挡掉（改放 static/*.js）：{bad}"
+
+    def test_no_template_uses_an_inline_event_handler(self):
+        """``onsubmit=`` 一类改用 data-* 属性 + static/app.js 里的事件委托。"""
+        bad = [
+            f"{p.name}:{p.read_text('utf-8')[: m.start()].count(chr(10)) + 1}"
+            for p in self._templates()
+            for m in [self.INLINE_HANDLER.search(p.read_text("utf-8"))]
+            if m
+        ]
+        assert not bad, f"内联事件处理器会被 CSP 静默挡掉：{bad}"
+
+    def test_every_script_src_is_served_by_us(self, client: TestClient):
+        """页面引用的每个脚本都必须真的能取到。
+
+        `script-src 'self'` 也挡 CDN——这条顺带守住「禁 CDN、离线可用」那条硬要求。
+        """
+        html = client.get("/admin/login").text
+        srcs = re.findall(r'<script[^>]*\bsrc="([^"]+)"', html)
+        assert srcs, "页面一个脚本都没引用？复制按钮与二次确认都要靠它"
+        for src in srcs:
+            assert src.startswith("/admin/static/"), f"{src} 不是自己的路径，会被 CSP 挡掉"
+            assert client.get(src).status_code == 200, f"{src} 取不到"
+
+    def test_the_copy_button_has_a_handler_and_a_fallback(self, client: TestClient):
+        """复制按钮与二次确认所依赖的钩子必须在 app.js 里真的存在。
+
+        模板改了 data-* 名字而 app.js 没跟上的话，症状又是"点了没反应"——
+        与内联脚本被挡掉一模一样，而且同样不报错。
+        """
+        js = client.get("/admin/static/app.js").text
+        assert "data-copy" in js
+        assert "form[data-confirm]" in js
+        # http 下 navigator.clipboard 不可用，必须有回落
+        assert "getSelection" in js, "剪贴板不可用时要能回落到选中文本"
 
 
 # =============================================================================

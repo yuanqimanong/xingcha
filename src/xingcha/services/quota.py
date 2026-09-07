@@ -293,27 +293,6 @@ class QuotaService:
 
         return Reservation(self, keys)
 
-    def record_settled(
-        self,
-        *,
-        user_id: int,
-        token_id: int | None,
-        agent_id: int | None,
-        cost_usd: Decimal | None,
-    ) -> None:
-        """没有预留句柄时的兜底累加（次数 + 金额一起算）。
-
-        正常路径都该走 ``reserve`` / ``settle``；这个留给测试与一次性脚本。
-        """
-        keys = self._keys_for(user_id, token_id, agent_id)
-        for key in keys:
-            _, _, window = key
-            spent = self._spent.setdefault(key, Spent(period=window_key(window)))
-            spent.roll_if_needed(window_key(window))
-            spent.requests += 1
-            if cost_usd is not None:
-                spent.usd += cost_usd
-
     # ------------------------------------------------------------ 展示
     def snapshot(self) -> list[dict[str, object]]:
         """给管理面看的当前状态。"""

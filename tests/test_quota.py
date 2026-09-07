@@ -549,6 +549,71 @@ class TestPassthroughRespectsTheContract:
         with TestClient(create_app(settings2)) as c:
             assert C.FEATURE_QUOTA_PASSTHROUGH in c.get("/version").json()["features"]
 
+    @pytest.mark.parametrize(
+        ("model", "path"),
+        [
+            # 裸模型走**自有路径** /v1/chat/completions，由 openai_compat 分派；
+            ("openai/gpt-5", "/v1/chat/completions"),
+            # 其余 /v1/* 走 passthrough 的 catch-all。
+            (None, "/v1/embeddings"),
+        ],
+        ids=["裸模型（自有路径）", "catch-all"],
+    )
+    def test_switch_on_really_blocks_both_passthrough_entrances(
+        self, wired, settings: Settings, upstream: FakeUpstream, model, path
+    ):
+        """打开开关之后，**两个直通入口都要被拦住。**
+
+        直通有两个入口，而它们很容易被当成一个：``chat/completions`` 是自有路径，
+        由 openai_compat 处理；其余 ``/v1/*`` 才走 catch-all。预留逻辑原先只写在
+        catch-all 里，于是 ``quota_on_passthrough=True`` **对裸模型完全无效**——
+        而裸模型直通恰恰是这个项目的首要用途。开关看着打开了，钱刹车却没落在要刹
+        的那条路上。
+
+        这条测试同时覆盖两个入口，正是为了不让它们再次分叉。
+        """
+        _, token = wired
+        upstream.reset()
+        on = Settings(
+            data_dir=settings.data_dir,
+            request_timeout=10.0,
+            catalog_ttl_seconds=60,
+            quota_on_passthrough=True,
+        )
+        payload = {"model": model, "messages": [{"role": "user", "content": "x"}]} if model else {}
+        with TestClient(create_app(on)) as client:
+            codes = [
+                client.post(path, json=payload, headers=auth(token)).status_code for _ in range(4)
+            ]
+        # 用户级配额在 wired 里是 2 次
+        assert codes[:2] == [200, 200], f"前两次该放行：{codes}"
+        assert codes[2] == 429, f"第三次该被拦，实际 {codes}——配额闸没落在这条路上"
+
+    def test_blocked_passthrough_never_reaches_upstream(
+        self, wired, settings: Settings, upstream: FakeUpstream
+    ):
+        """被配额拦下的请求**一次上游都不能打**。
+
+        打了就等于钱已经花了、只是没记账——那比不拦更糟。
+        """
+        _, token = wired
+        upstream.reset()
+        on = Settings(
+            data_dir=settings.data_dir,
+            request_timeout=10.0,
+            catalog_ttl_seconds=60,
+            quota_on_passthrough=True,
+        )
+        body = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "x"}]}
+        with TestClient(create_app(on)) as client:
+            for _ in range(2):
+                client.post("/v1/chat/completions", json=body, headers=auth(token))
+            before = upstream.hit_count
+            blocked = client.post("/v1/chat/completions", json=body, headers=auth(token))
+        assert blocked.status_code == 429
+        assert blocked.json()["error"]["type"] == C.ErrorType.QUOTA_EXCEEDED.value
+        assert upstream.hit_count == before, "被拦的请求还是打到了上游"
+
 
 # =============================================================================
 # 并发不穿透 —— 计划里那条验收
@@ -702,3 +767,125 @@ class TestReservationRelease:
                 headers=auth(token),
             )
         assert ok.status_code == 200, "早期拒绝吃掉了名额"
+
+
+# =============================================================================
+# 窗口滚动与启动播种
+# =============================================================================
+
+
+class TestWindowRolloverEndToEnd:
+    """窗口的两条真实路径。
+
+    此前只有两处**孤立的纯函数单测**（``window_key(now=...)`` 前后不等、
+    直接 new 一个 ``Spent`` 调 ``roll_if_needed``），组合起来的行为从未被验证过。
+
+    两条路径都不是理论风险：
+    - **播种**：``_seed`` 用 ``window_start`` 过滤历史 run。若它退化（比如 day 返回
+      一个过早的边界），启动时会把全部历史用量灌进当天窗口，**用户被永久锁死在
+      429**，而全套测试仍然全绿。
+    - **滚动**：``reserve`` 里调 ``window_key(window)`` 不带 now 参数，没有时间
+      注入点，所以"跨天之后从零开始计"只能靠打桩验证。
+    """
+
+    def _svc(self, tmp_path: Path, rules: list[dict]) -> QuotaService:
+        db = tmp_path / "q.db"
+        migrate.upgrade_to_head(db, tmp_path / "b")
+        engine = make_engine(db)
+        maker = make_sessionmaker(engine)
+
+        async def go() -> QuotaService:
+            async with maker() as s:
+                for r in rules:
+                    await quota_svc.upsert(s, **r)
+                await s.commit()
+            svc = QuotaService(maker)
+            await svc.reload()
+            await engine.dispose()
+            return svc
+
+        return asyncio.run(go())
+
+    def test_seed_only_counts_runs_inside_the_window(self, tmp_path: Path):
+        """昨天的 run 不能算进今天的 day 窗口，上个月的不能算进本月。
+
+        算错的方向很要命：多算 → 用户一启动就被 429 锁死，而且重启也不会好。
+        """
+        from xingcha.db.models import Run, RunUsage
+
+        db = tmp_path / "q.db"
+        migrate.upgrade_to_head(db, tmp_path / "b")
+        engine = make_engine(db)
+        maker = make_sessionmaker(engine)
+
+        async def go() -> list[dict]:
+            async with maker() as s:
+                for window in ("day", "month", "total"):
+                    await quota_svc.upsert(
+                        s,
+                        subject_type="user",
+                        subject_id=1,
+                        window=window,
+                        limit_usd=None,
+                        limit_requests=10,
+                    )
+                now = datetime.now(UTC)
+                for name, ts in {
+                    "today": now,
+                    "yesterday": now - timedelta(days=1),
+                    "long-ago": now - timedelta(days=40),
+                }.items():
+                    s.add(
+                        Run(
+                            id=name,
+                            kind="agent",
+                            user_id=1,
+                            model="m",
+                            status="ok",
+                            started_at=ts.isoformat(timespec="microseconds"),
+                        )
+                    )
+                    s.add(RunUsage(run_id=name, model="m", cost_usd="0.10", cost_source="unknown"))
+                await s.commit()
+            svc = QuotaService(maker)
+            await svc.reload()
+            snap = svc.snapshot()
+            await engine.dispose()
+            return snap
+
+        by_window = {row["window"]: row for row in asyncio.run(go())}
+        assert by_window["day"]["spent_requests"] == 1, "day 窗口只该含今天那一条"
+        assert by_window["total"]["spent_requests"] == 3, "total 窗口该含全部"
+        assert Decimal(str(by_window["day"]["spent_usd"])) == Decimal("0.10")
+
+    def test_reserve_starts_from_zero_after_the_window_rolls(self, tmp_path: Path, monkeypatch):
+        """跨天之后额度必须真的重置。
+
+        不重置的话「每天 N 次」实际是「一共 N 次」——而用户会在第二天发现服务
+        没恢复，且重启也无济于事（播种会把昨天的量读回来）。
+        """
+        svc = self._svc(
+            tmp_path,
+            [
+                dict(
+                    subject_type="user",
+                    subject_id=1,
+                    window="day",
+                    limit_usd=None,
+                    limit_requests=2,
+                )
+            ],
+        )
+        svc.reserve(user_id=1, token_id=None, agent_id=None).settle(None)
+        svc.reserve(user_id=1, token_id=None, agent_id=None).settle(None)
+        with pytest.raises(QuotaExceeded):
+            svc.reserve(user_id=1, token_id=None, agent_id=None)
+
+        # 把时钟拨到明天。reserve 内部不接受 now 参数，只能在这一层打桩。
+        real = quota_svc.window_key
+
+        def tomorrow(window: str, *, now=None):
+            return real(window, now=(now or datetime.now(UTC) + timedelta(days=1)))
+
+        monkeypatch.setattr(quota_svc, "window_key", tomorrow)
+        svc.reserve(user_id=1, token_id=None, agent_id=None).settle(None)  # 不抛即为通过

@@ -91,7 +91,7 @@
             <td class="mono small dim">{{ r.period }}</td>
             <td style="text-align:right">
               <form method="post" action="/admin/quota/delete"
-                    onsubmit="return confirm('删掉这条配额？删掉之后这个主体就不再受限。')">
+                    data-confirm="删掉这条配额？删掉之后这个主体就不再受限。">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="subject_type" value="{{ r.subject_type }}">
                 <input type="hidden" name="subject_id" value="{{ r.subject_id }}">

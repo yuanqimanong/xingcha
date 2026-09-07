@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import Request
@@ -214,17 +215,45 @@ class RequestTimeout(XingchaError):
 _REDACT_PREFIXES = ("sk-or-v1-", "sk-xc-", "sk-ant-", "sk-proj-")
 
 
+#: 预编译一次。脱敏跑在**每一条**日志上，不该在热路径里反复编译正则。
+#:
+#: 保留前缀（``sk-or-v1-***`` 而不是 ``***``）：知道漏的是哪一类 key，才知道该去吊销
+#: 哪一把。脱敏的目的是别让密文进日志，不是让日志变得无法排查。
+_REDACT_PATTERNS = tuple(
+    (re.compile(rf"{re.escape(p)}[A-Za-z0-9_\-]+"), f"{p}***") for p in _REDACT_PREFIXES
+)
+
+
 def redact(text: str) -> str:
     """把可能是 key 的串脱敏。用于日志与任何要外泄的文本。
 
     异常文本经常带完整 URL、偶尔带 header——直接回显或记日志就是一条 key 泄漏路径。
     """
-    import re
+    for pattern, replacement in _REDACT_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
-    out = text
-    for prefix in _REDACT_PREFIXES:
-        out = re.sub(rf"{re.escape(prefix)}[A-Za-z0-9_\-]+", f"{prefix}***", out)
-    return out
+
+class RedactingFormatter(logging.Formatter):
+    """在**日志渲染的唯一收口**上脱敏。
+
+    ------------------------------------------------------------------------
+    为什么必须是 Formatter，而不是在各个 log 调用点手动 redact
+    ------------------------------------------------------------------------
+
+    手动调的下场已经发生过一次：``redact()`` 只被用在 ``XingchaError.log_detail``
+    上，而 :func:`unhandled_error_handler` 里的 ``log.exception()`` 把整条 traceback
+    原样写了出去。实测用一个 ``RuntimeError("... key sk-or-v1-LEAKED failed")``
+    触发 5xx：**响应体是干净的，日志里那把 key 逐字出现。**
+
+    挡住了回显、没挡住日志——而日志会进 json-file、进 `docker logs`、进任何日志收集。
+
+    Filter 也不够：traceback 是 handler 阶段由 Formatter 渲染的，Filter 拿到的
+    ``record.exc_info`` 还是个元组，改不动最终文本。所以只能在 Formatter 上做。
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
 
 
 async def xingcha_error_handler(request: Request, exc: Exception) -> JSONResponse:

@@ -10,20 +10,6 @@
 </head>
 <body>
 {% block body %}{% endblock %}
-<script>
-// 复制到剪贴板。只在一次性密钥展示处用到——那是唯一需要 JS 的交互。
-document.addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-copy]');
-  if (!btn) return;
-  try {
-    await navigator.clipboard.writeText(btn.dataset.copy);
-    const old = btn.textContent;
-    btn.textContent = '已复制';
-    setTimeout(() => { btn.textContent = old; }, 1500);
-  } catch {
-    btn.textContent = '复制失败，请手动选中';
-  }
-});
-</script>
+<script src="/admin/static/app.js" defer></script>
 </body>
 </html>

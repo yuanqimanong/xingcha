@@ -17,6 +17,7 @@ from xingcha import contract as C
 from xingcha.app import create_app
 from xingcha.config import Settings
 from xingcha.crypto import KeyringMissing
+from xingcha.db import migrate
 from xingcha.db.engine import StartupRefused, assert_single_worker
 
 
@@ -139,11 +140,10 @@ class TestStartupAssertions:
 
 
 class TestErrorEnvelope:
-    def test_5xx_leaks_nothing(self, settings: Settings):
-        """5xx 对外只给固定文案 + run_id。
+    def test_redact_keeps_the_key_class(self):
+        """脱敏保留前缀：知道漏的是哪一类 key，才知道该吊销哪一把。
 
-        直接回显异常文本是最常见的一条上游 key 泄漏路径——UserError / httpx / openai
-        的异常经常带完整 URL、偶尔带 header。
+        脱敏的目的是别让密文进日志，不是让日志变得无法排查。
         """
         from xingcha.errors import redact
 
@@ -151,6 +151,61 @@ class TestErrorEnvelope:
         cleaned = redact(leaky)
         assert "sk-or-v1-abcdefghijklmnop" not in cleaned
         assert "sk-or-v1-***" in cleaned
+
+    def test_5xx_leaks_nothing_in_body_or_log(self, settings: Settings):
+        """**真发一个会炸的请求**，同时断言响应体与日志都不含 key。
+
+        这条测试原先只对纯函数 ``redact()`` 断言、从头到尾没发过请求——于是漏掉了
+        真正的缺口：``unhandled_error_handler`` 里的 ``log.exception()`` 把整条
+        traceback 原样写出去，而 ``redact()`` 只被用在 ``XingchaError.log_detail``
+        上。实测结果是**响应体干净、日志里那把 key 逐字出现**。
+
+        挡住了回显、没挡住日志——而日志会进 json-file、进 docker logs、进任何日志
+        收集系统。所以断言必须同时覆盖两侧。
+        """
+        import io
+        import logging
+
+        from fastapi import APIRouter
+
+        from xingcha.errors import RedactingFormatter
+
+        KEY = "sk-or-v1-LEAKEDKEYabcdef123456"
+
+        settings.ensure_data_dir()
+        migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+        app = create_app(settings)
+
+        # 一条一定会炸的路由，异常文本里带着 key —— 这正是 httpx / openai 抛出来的形状
+        router = APIRouter()
+
+        @router.get("/_boom", include_in_schema=False)
+        async def boom() -> None:
+            raise RuntimeError(f"connect https://openrouter.ai key {KEY} failed")
+
+        app.include_router(router)
+
+        # 把根 logger 的输出接到内存里。formatter 用生产那一个，不是测试专用的。
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(RedactingFormatter("%(levelname)s %(name)s | %(message)s"))
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            with TestClient(app, raise_server_exceptions=False) as client:
+                r = client.get("/_boom")
+        finally:
+            root.removeHandler(handler)
+
+        assert r.status_code == 500
+        body = r.text
+        assert KEY not in body, "响应体泄漏了上游 key"
+        assert r.json()["error"]["type"] == C.ErrorType.INTERNAL_ERROR.value
+
+        logged = stream.getvalue()
+        assert "Traceback" in logged, "异常没有被记进日志？那排查就没抓手了"
+        assert KEY not in logged, f"**日志里泄漏了上游 key**：{logged[:400]}"
+        assert "sk-or-v1-***" in logged, "脱敏后应当留下前缀，指明漏的是哪类 key"
 
     def test_redacts_own_tokens_too(self):
         """自家的 sk-xc- 同样要脱敏 —— 日志泄漏一样能被用来调用。"""

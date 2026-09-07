@@ -35,7 +35,12 @@ from .core.models_catalog import ModelsCatalog
 from .core.upstream import UpstreamConfig, UpstreamNotConfigured, UpstreamPool
 from .crypto import Keyring
 from .db.engine import assert_wal, make_engine, make_sessionmaker
-from .errors import XingchaError, unhandled_error_handler, xingcha_error_handler
+from .errors import (
+    RedactingFormatter,
+    XingchaError,
+    unhandled_error_handler,
+    xingcha_error_handler,
+)
 from .obs import tracing as tracing_mod
 from .services import setting as setting_svc
 from .services.quota import QuotaService
@@ -267,12 +272,31 @@ async def _denied_handler(request: Request, exc: Exception) -> Response:
     )
 
 
+def _configure_logging(settings: Settings) -> None:
+    """装配根 logger。幂等：重复调用只替换 formatter，不叠加 handler。
+
+    uvicorn 用 ``log_config=None`` 启动（见 cli.serve），所以它的日志也走根 logger
+    的这个 handler——**上游 key 出现在 uvicorn 的异常里同样会被脱敏**。
+    """
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    formatter = RedactingFormatter("%(asctime)s %(levelname)-7s %(name)s | %(message)s")
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    else:
+        for h in root.handlers:
+            h.setFormatter(formatter)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-    )
+    # 用 RedactingFormatter 而不是裸 basicConfig：**每一条**日志（含 traceback）
+    # 都要过一遍脱敏。见 errors.RedactingFormatter 的注释——挡住了回显没挡住日志，
+    # 这个错已经犯过一次了。
+    _configure_logging(settings)
 
     app = FastAPI(
         title="星槎 Xīngchá",

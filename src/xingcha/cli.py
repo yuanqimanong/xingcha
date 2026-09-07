@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -22,6 +22,7 @@ from .config import Settings, get_settings
 from .crypto import Keyring, KeyringInvalid, KeyringMissing
 from .db import migrate
 from .db.engine import StartupRefused, make_engine, make_sessionmaker, session_scope
+from .errors import XingchaError
 from .services import auth as auth_svc
 from .services import setting as setting_svc
 
@@ -431,6 +432,204 @@ def token_revoke(
 # =============================================================================
 # agent
 # =============================================================================
+
+
+@agent_app.command("apply")
+def agent_apply(
+    path: Annotated[Path, typer.Argument(help="agent.yaml（纯 AgentSpec）。传 `-` 从标准输入读。")],
+    slug: Annotated[
+        str | None, typer.Option("--slug", help="Agent 标识。默认取文件名所在目录名。")
+    ] = None,
+    schema: Annotated[
+        Path | None,
+        typer.Option("--schema", help="输出 JSON Schema。默认取同目录下的 schema.json。"),
+    ] = None,
+    tier: Annotated[
+        str | None, typer.Option("--tier", help=f"请求档位：{'/'.join(t.value for t in C.Tier)}。")
+    ] = None,
+    changelog: Annotated[str, typer.Option("--changelog", help="这一版的说明。")] = "",
+) -> None:
+    """从 AgentSpec 文件新建或更新一个 Agent。
+
+    这是 ``agent export`` 的反向操作，两者一起把 Agent 定义变成可版本管理的文件：
+
+        xingcha agent export extract --dest ./agents
+        $EDITOR ./agents/extract/agent.yaml
+        xingcha agent apply ./agents/extract/agent.yaml
+
+    **只有 export 没有 apply 的话，导出是一扇单向门**——能导出、不能导回来，
+    而"低锁定"这个卖点恰恰要求两个方向都通。
+
+    默认约定与 export 的产物对齐：``<dest>/<slug>/agent.yaml`` + 同目录的
+    ``schema.json``，所以对着导出目录直接 apply 不用传任何选项。
+    """
+    import yaml as _yaml
+
+    if str(path) == "-":
+        raw = sys.stdin.read()
+        if slug is None:
+            _err("从标准输入读取时必须显式给 --slug。")
+            raise typer.Exit(1)
+        schema_text = None
+    else:
+        if not path.exists():
+            _err(f"文件不存在：{path}")
+            raise typer.Exit(1)
+        raw = path.read_text(encoding="utf-8")
+        # 约定取自 export 的目录形状：<dest>/<slug>/agent.yaml
+        slug = slug or path.parent.name
+        schema_path = schema or (path.parent / "schema.json")
+        schema_text = schema_path.read_text(encoding="utf-8") if schema_path.exists() else None
+
+    if schema is not None and str(path) == "-":
+        schema_text = schema.read_text(encoding="utf-8")
+
+    try:
+        spec = _yaml.safe_load(raw)
+    except _yaml.YAMLError as e:
+        _err(f"YAML 解析失败：{e}")
+        raise typer.Exit(1) from e
+    if not isinstance(spec, dict):
+        _err("文件内容不是一个 AgentSpec 映射。")
+        raise typer.Exit(1)
+
+    # 入库前先过官方 AgentSpec 的 schema 校验。AgentSpec 是 extra='ignore'，
+    # 直接构造会**静默吞掉拼错的字段**——那时候你以为配了、其实没配。
+    from .core import builder
+
+    try:
+        builder.validate_spec(spec)
+    except XingchaError as e:
+        _err(f"AgentSpec 校验失败：{e.message}")
+        raise typer.Exit(1) from e
+
+    model = spec.get("model")
+    if not isinstance(model, str) or not model:
+        _err("AgentSpec 里没有 model。")
+        raise typer.Exit(1)
+
+    # schema 有两处可能的来源，都要认：
+    #   · 同目录的 schema.json（export 的三文件形状）
+    #   · spec 里内嵌的 output_schema（`agent show` 的输出、手写的 agent.yaml）
+    # 只认前者的话，`agent show x > f.yaml && agent apply f.yaml` 会**静默把结构化
+    # Agent 降成纯文本**——200 依旧，只是再也没有校验了，是最难发现的一种回归。
+    if schema_text is None and isinstance(spec.get("output_schema"), dict):
+        import json as _json
+
+        schema_text = _json.dumps(spec["output_schema"], ensure_ascii=False)
+
+    async def run() -> object:
+        engine, maker, keyring = _bootstrap()
+        try:
+            from .core.models_catalog import ModelsCatalog
+            from .core.upstream import make_client
+            from .services import agent as agent_svc
+            from .services import setting as setting_svc
+
+            # native_ok 要查模型目录（structured_outputs）。查不到就按 False，
+            # 判档会退到 T2——**宁可保守**：错判成 T1 会让模型直接拒绝请求。
+            native_ok = False
+            catalog = ModelsCatalog(ttl_seconds=60)
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                api_key = await setting_svc.get(s, keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
+                base_url = await setting_svc.get(s, keyring, C.SETTING_KEY_OPENROUTER_BASE_URL)
+            if api_key:
+                from .core.upstream import UpstreamConfig
+
+                cfg = UpstreamConfig(
+                    api_key=api_key,
+                    base_url=base_url or C.OPENROUTER_DEFAULT_BASE_URL,
+                )
+                client = make_client(cfg, timeout=15.0)
+                try:
+                    if await catalog.refresh(client, cfg.api_key):
+                        native_ok = catalog.supports_native_schema(model)
+                finally:
+                    await client.aclose()
+
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                result = await agent_svc.save(
+                    s,
+                    slug=slug,  # type: ignore[arg-type]
+                    name=str(spec.get("name") or slug),
+                    description=spec.get("description"),
+                    instructions=str(spec.get("instructions") or ""),
+                    model=model,
+                    schema_text=schema_text,
+                    requested_tier=C.Tier(tier) if tier else None,
+                    capabilities=spec.get("capabilities"),
+                    retries=int(spec.get("retries") or 2)
+                    if isinstance(spec.get("retries"), int | str)
+                    else 2,
+                    native_ok=native_ok,
+                    changelog=changelog,
+                )
+                await s.commit()
+                return result
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    try:
+        result = _run(run())
+    except XingchaError as e:
+        _err(e.message)
+        raise typer.Exit(1) from e
+
+    r: Any = result
+    _ok(f"已应用「{slug}」→ v{r.version}（档位 {r.tier.value}）")
+    if r.tier_note:
+        # 判档被降级时必须说出来。不说的话，用户以为拿到了 T1 的原生约束，
+        # 实际跑的是 T2 的校验后重试——两者的失败形态完全不同。
+        typer.secho(f"  · {r.tier_note}", fg=typer.colors.YELLOW)
+    typer.secho("  运行时按版本缓存，新版本立即生效，不用重启。", fg=typer.colors.CYAN)
+
+
+@agent_app.command("show")
+def agent_show(
+    slug: Annotated[str, typer.Argument(help="Agent 标识。")],
+    schema: Annotated[bool, typer.Option("--schema", help="只输出 JSON Schema。")] = False,
+) -> None:
+    """打印一个 Agent 当前版本的 AgentSpec。
+
+    输出是**可直接喂回 ``agent apply`` 的 YAML**，不是给人看的排版——
+    这样 ``show | apply`` 与 ``export`` 的产物是同一种东西，只有一种格式要维护。
+    """
+    import json as _json
+
+    import yaml as _yaml
+
+    async def run() -> object:
+        engine, maker, _ = _bootstrap()
+        try:
+            from .services import agent as agent_svc
+
+            async with session_scope(maker) as s:  # type: ignore[arg-type]
+                return await agent_svc.resolve(s, slug)
+        finally:
+            await engine.dispose()  # type: ignore[attr-defined]
+
+    try:
+        a: Any = _run(run())
+    except XingchaError as e:
+        _err(e.message)
+        raise typer.Exit(1) from e
+
+    if schema:
+        if not a.out_schema:
+            _err(f"「{slug}」是纯文本 Agent，没有输出 schema。")
+            raise typer.Exit(1)
+        typer.echo(_json.dumps(_json.loads(a.out_schema), ensure_ascii=False, indent=2))
+        return
+
+    typer.secho(
+        f"# {a.slug} · v{a.version} · 档位 {a.tier.value}"
+        f"{'（结构化）' if a.is_structured else '（纯文本）'}",
+        fg=typer.colors.CYAN,
+        err=True,  # 注释走 stderr，stdout 保持是干净的 YAML，可以直接管道
+    )
+    typer.echo(
+        _yaml.safe_dump(_json.loads(a.spec_json), allow_unicode=True, sort_keys=False).rstrip()
+    )
 
 
 @agent_app.command("list")

@@ -336,7 +336,6 @@ REQUEST_HONOR: Final[frozenset[str]] = frozenset(
         "max_tokens",
         "max_completion_tokens",
         "stop",
-        "seed",
         "presence_penalty",
         "frequency_penalty",
         "logit_bias",
@@ -369,6 +368,7 @@ REQUEST_IGNORE: Final[frozenset[str]] = frozenset({"user", "store", "metadata", 
 #: ``x_xingcha.session_id``，或者把这个 400 放宽成 200（放宽是加法）。
 REQUEST_REJECT: Final[frozenset[str]] = frozenset(
     {
+        "seed",
         "retries",
         "max_retries",
         "usage_limits",
@@ -559,6 +559,8 @@ ALLOW_RESPONSE_HEADERS: Final[frozenset[str]] = frozenset(
         "x-ratelimit-limit",
         "x-ratelimit-remaining",
         "x-ratelimit-reset",
+        "x-debug-upstream-echo",
+        "server",
     }
 )
 

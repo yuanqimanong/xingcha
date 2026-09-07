@@ -31,7 +31,12 @@ from ..errors import (
 from ..obs import tracing as tracing_mod
 from ..services import agent as agent_svc
 from ..services import run as run_svc
-from .passthrough import execute_forward, forward_headers, read_body_capped
+from .passthrough import (
+    execute_forward,
+    forward_headers,
+    read_body_capped,
+    reserve_passthrough_quota,
+)
 from .runlog_mw import RunTracker
 from .sse import SameTaskEventStream
 
@@ -201,6 +206,9 @@ async def chat_completions(request: Request) -> Response:
     url = f"{cfg.normalized_base()}/chat/completions"
 
     tracker = RunTracker(request, kind="passthrough", model=ref.value)
+    # 与 catch-all 共用同一份预留逻辑。写两遍的下场已经发生过一次：
+    # 这里漏了，于是配额开关对裸模型完全无效。见 passthrough.reserve_passthrough_quota。
+    reserve_passthrough_quota(request, tracker)
     return await execute_forward(
         client, "POST", url, headers, body, tracker, state.settings.request_timeout
     )

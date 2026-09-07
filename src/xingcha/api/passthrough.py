@@ -144,22 +144,43 @@ async def passthrough(path: str, request: Request) -> Response:
     if request.url.query:
         url = f"{url}?{request.url.query}"
 
-    # 直通层的配额**默认不执行**（契约 §3.9 冻结了这一点，打开它是一次收紧）。
-    # 打开之后 /version 的 features 会多一项，调用方能探测到这个变化。
-    reservation = None
-    if state.quota is not None and state.settings.quota_on_passthrough:
-        principal = getattr(request.state, "principal", None)
-        reservation = state.quota.reserve(
+    tracker = RunTracker(request, kind="passthrough", model=_model_hint(body, rel))
+    reserve_passthrough_quota(request, tracker)
+    return await execute_forward(
+        client, request.method, url, headers, body, tracker, state.settings.request_timeout
+    )
+
+
+def reserve_passthrough_quota(request: Request, tracker: RunTracker) -> None:
+    """给直通请求占配额名额。**两条直通路径共用这一份。**
+
+    ------------------------------------------------------------------------
+    为什么必须共用
+    ------------------------------------------------------------------------
+
+    直通有两个入口，很容易被当成一个：
+
+    - ``/v1/chat/completions`` 里 model 带 ``/`` 的那一支（裸模型），由
+      ``openai_compat`` 处理——因为 ``chat/completions`` 是**自有路径**；
+    - 其余 ``/v1/*`` 的 catch-all（embeddings、models/x/y/endpoints……），由这里处理。
+
+    这段逻辑原先只写在 catch-all 里，于是 ``quota_on_passthrough=True``
+    **对裸模型完全无效**——而裸模型直通恰恰是这个项目的首要用途。开关看着打开了、
+    钱刹车根本没落在要刹的那条路上。
+
+    配额**默认不执行**（契约 §3.9 冻结了这一点，打开它是一次收紧）。打开之后
+    ``/version`` 的 features 会多一项，调用方能探测到这个变化。
+    """
+    state = request.app.state.xc
+    if state.quota is None or not state.settings.quota_on_passthrough:
+        return
+    principal = getattr(request.state, "principal", None)
+    tracker.attach_reservation(
+        state.quota.reserve(
             user_id=principal.user_id if principal else 1,
             token_id=principal.token_id if principal else None,
             agent_id=None,
         )
-
-    tracker = RunTracker(request, kind="passthrough", model=_model_hint(body, rel))
-    if reservation is not None:
-        tracker.attach_reservation(reservation)
-    return await execute_forward(
-        client, request.method, url, headers, body, tracker, state.settings.request_timeout
     )
 
 
