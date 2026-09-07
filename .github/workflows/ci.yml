@@ -1,0 +1,140 @@
+# 星槎 CI。
+#
+# 这个文件的存在本身是一条修复：README 与开发计划里三处写着「任何改动闭集的提交都会
+# 让 CI 变红」、「CI 里有一条特别的断言：在 ALL_PROXY 指向黑洞的环境下跑全套测试」，
+# 而仓库里**从来没有过 CI**。冻结物只在有人手动跑 pytest 时才生效——那不是约束，
+# 是约定。
+#
+# 四件事按"越便宜越先"排，任一失败就停：
+#   1. lint + 类型     秒级，先挡掉低级错误
+#   2. 契约冻结物      单独一步跑，红的时候一眼看出是契约变更而不是普通失败
+#   3. 全套测试        含黑洞代理那一遍（E1）
+#   4. 镜像可构建      A12/A13：装坏了的镜像必须在这里红，而不是在 VPS 上
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # 同一分支的新推送取消旧的跑批。省 runner，也避免看到过期的红绿。
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.0"
+          enable-cache: true
+
+      - name: 装依赖
+        # --frozen：按锁文件装，与镜像构建同一套（A12）。锁文件与 pyproject 不一致
+        # 时这里就会失败，而不是等到部署时才发现两边装出不同的传递依赖。
+        run: uv sync --frozen
+
+      - name: lint
+        run: |
+          uv run ruff check src tests
+          uv run ruff format --check src tests
+
+      - name: 类型
+        run: uv run pyright
+
+      - name: 契约冻结物
+        # 单独一步：红在这里就是"你改了一个冻结的闭集"，不是普通的测试失败。
+        # 这一步的存在是 M0「产出是约束本身」的唯一执行机制。
+        run: uv run pytest tests/test_contract_frozen.py tests/test_layering.py -q
+
+      - name: CONTRACT.md 与常量同步
+        # 文档由常量生成，不手写。漂移了就说明有人手改了文档、或改了常量没重新生成。
+        run: |
+          uv run python -m xingcha.contract_doc
+          git diff --exit-code -- docs/CONTRACT.md
+
+      - name: 全套测试
+        run: uv run pytest -q
+
+      - name: 全套测试（代理指黑洞）
+        # E1：httpx2 默认 trust_env=True，会读机器的 ALL_PROXY。所有自建 client
+        # 必须显式 trust_env=False，否则线上会因为一个环境变量而整体起不来，
+        # 且报错完全看不出跟代理有关。
+        #
+        # socks5 下 socksio 未装会在**构造阶段**就 ImportError，所以这一遍绿是有
+        # 含金量的：它证明没有任何客户端在读环境代理。
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: socks5://127.0.0.1:9
+        run: uv run pytest -q -m "not slow"
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建镜像
+        # Dockerfile 里有构建期自检（xingcha --help + import）。A13 那次就是这样
+        # 被发现的：uv sync 默认装 editable，构建绿灯而镜像里 import 直接失败。
+        run: docker build -t xingcha:ci .
+
+      - name: 镜像自检
+        # 镜像里没有 pytest（--no-dev），所以这里不是跑测试，而是验"这个镜像真的能用"。
+        # A13 那次就是没做这件事：构建绿灯、275MB 镜像跑任何命令都 ModuleNotFoundError。
+        # （编排的结构约束由 check job 里的 tests/test_deploy_artifacts.py 覆盖。）
+        run: |
+          docker run --rm xingcha:ci --help >/dev/null
+          docker run --rm --entrypoint python xingcha:ci -c "import xingcha, opentelemetry.sdk"
+          docker run --rm --entrypoint sh -e XINGCHA_DATA_DIR=/tmp/d xingcha:ci -c '
+            set -e
+            xingcha db upgrade
+            xingcha config set openrouter.api_key sk-or-v1-ci
+            xingcha db backup
+            xingcha db verify
+          '
+
+      - name: 缺必填变量时 compose 必须立刻失败
+        # 而不是把失败推迟成容器的无限重启循环。这是 A13。
+        run: |
+          if docker compose config >/dev/null 2>&1; then
+            echo "::error::缺 XINGCHA_DOMAIN / ACME_EMAIL 时 compose 应当失败，却成功了"
+            exit 1
+          fi
+          printf 'XINGCHA_DOMAIN=ci.example.com\nACME_EMAIL=ci@example.com\n' > .env
+          docker compose config >/dev/null
+
+      - name: 整栈真的起得来
+        # 不只是"配置合法"。A13 的两个 blocker 都只在真 up 时才暴露：
+        # Caddy 拿到空 ACME_EMAIL 进重启循环、data/ 属主不对导致 PermissionError。
+        # 用 localhost + Caddy 内部 CA，除了向 Let's Encrypt 签证书之外全是真的。
+        run: |
+          printf 'XINGCHA_DOMAIN=localhost\nACME_EMAIL=ci@example.com\n' > .env
+          mkdir -p data
+          sudo chown -R 10001:10001 data
+          chmod 700 data
+          docker compose up -d
+          for i in $(seq 1 45); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1 2>/dev/null)" = healthy ] && break
+            sleep 2
+          done
+          docker compose ps
+          test "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1)" = healthy
+          # xingcha 绝不能映射宿主端口（DOCKER-USER 链会绕过 ufw）
+          test -z "$(docker port xingcha-xingcha-1)"
+          curl -fsS -k https://localhost/healthz | grep -q '"status":"ok"'
+          curl -fsS -k https://localhost/version | grep -q '"contract"'
+          test "$(curl -s -o /dev/null -w '%%{http_code}' -k https://localhost/v1/models)" = 401
+
+      - name: 收尾
+        if: always()
+        run: docker compose down -v || true

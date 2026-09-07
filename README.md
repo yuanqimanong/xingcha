@@ -81,9 +81,14 @@ uv pip install --python .venv/bin/python -e . --group dev
 测试**不需要**任何 API key，也不需要外网：LLM 相关行为用 pydantic-ai 的
 `FunctionModel` / `TestModel` 构造，上游用一个本地假服务器。
 
-CI 里有一条特别的断言：在 `ALL_PROXY` 指向黑洞的环境下跑全套测试。这是
-「代理不进代码」这个承诺的唯一自动化保证——星槎自建的 HTTP 客户端一律
-`trust_env=False`，不继承机器级代理。
+CI（`.github/workflows/ci.yml`）里有一条特别的断言：在 `ALL_PROXY` 指向黑洞的
+环境下**再跑一遍**全套测试。这是「代理不进代码」这个承诺的唯一自动化保证——星槎
+自建的 HTTP 客户端一律 `trust_env=False`，不继承机器级代理。
+
+CI 还会构建镜像并**真的把整栈起起来**（`localhost` + Caddy 内部 CA），断言容器
+healthy、xingcha 零宿主端口、`/healthz` 通、`/v1` 无凭据 401。这一步是因为
+`Caddyfile` 引用的变量 compose 漏传过一次——那种问题不会让任何单测变红，症状只在
+真的 `docker compose up` 时出现。
 
 ---
 

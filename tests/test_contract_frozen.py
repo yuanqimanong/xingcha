@@ -499,6 +499,98 @@ def test_features_only_grow():
     assert {"passthrough", "agents", "structured_output"} <= C.FEATURES
 
 
+class TestNamedFieldsStayInTheirTable:
+    """请求字段表与响应头白名单里**点名的成员**，逐条断言。
+
+    ------------------------------------------------------------------------
+    为什么"文档同步"这一条不够
+    ------------------------------------------------------------------------
+
+    ``test_contract_doc_is_in_sync`` 确实会在这些集合变动时变红——但它是**唯一**
+    会红的那条，而它红的时候提示是"重新生成文档"。照着提示跑一遍
+    ``python -m xingcha.contract_doc``，红就消失了，**契约变更被当成文档没同步处理掉。**
+
+    这不是假想：v0.4 有一次提交里 ``seed`` 从 honor 被挪进了 reject（一次**收紧**：
+    原本 200 的请求开始返回 400），``server`` 与一个调试头被塞进了响应头白名单。
+    唯一变红的就是文档同步那条，而它看起来只是"忘了重新生成"。
+
+    所以点名的成员要有**语义断言**：红的时候提示直接说"你在收紧契约"。
+    """
+
+    def test_seed_is_honored_not_rejected(self):
+        """``seed`` 是 honor。
+
+        它是 OpenAI 的标准字段、上游认它，而且拒掉它是**收紧**——原本 200 的请求
+        开始 400。这类变更必须走协商入口发布，不能是一次提交的副作用。
+        """
+        assert "seed" in C.REQUEST_HONOR
+        assert "seed" not in C.REQUEST_REJECT
+        assert "seed" not in C.REQUEST_IGNORE
+
+    def test_response_allowlist_never_grows_to_echo_upstream_identity(self):
+        """白名单里**不能**出现 ``server`` 这类上游身份头。
+
+        白名单的意义是"只放确定安全的"。``server`` 会把上游的服务端标识回显给
+        调用方——中转的存在本身就暴露了；而白名单一旦开始容纳"看起来无害"的头，
+        它就退化成黑名单了。
+        """
+        forbidden = {"server", "set-cookie", "x-powered-by", "via", "date"}
+        leaked = forbidden & C.ALLOW_RESPONSE_HEADERS
+        assert not leaked, f"这些头不该被回显：{sorted(leaked)}"
+
+    def test_response_allowlist_has_no_debug_leftovers(self):
+        """白名单里不该有 ``x-debug-*``。
+
+        调试用的头是探针残留的典型形态——它进了白名单就说明有人的实验被提交了。
+        """
+        debug = {h for h in C.ALLOW_RESPONSE_HEADERS if h.startswith(("x-debug", "x-test"))}
+        assert not debug, f"白名单里有调试头残留：{sorted(debug)}"
+
+    def test_the_three_request_tables_name_every_field_we_promised(self):
+        """三张表里点名的字段逐条在位。
+
+        整表比对（而不是"数量对得上"）：少一个字段与多一个字段是不同性质的变更，
+        而集合相等能把两者一起说清，并在报错里直接列出差异。
+        """
+        honor = {
+            "model",
+            "messages",
+            "stream",
+            "stream_options",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "seed",
+            "presence_penalty",
+            "frequency_penalty",
+            "logit_bias",
+        }
+        ignore = {"user", "store", "metadata", "n"}
+        reject = {
+            "retries",
+            "max_retries",
+            "usage_limits",
+            "response_format",
+            "tools",
+            "tool_choice",
+            "functions",
+            "function_call",
+            "session_id",
+        }
+        for name, expected, actual in (
+            ("honor", honor, C.REQUEST_HONOR),
+            ("ignore", ignore, C.REQUEST_IGNORE),
+            ("reject", reject, C.REQUEST_REJECT),
+        ):
+            assert set(actual) == expected, (
+                f"{name} 表变了。多出：{sorted(set(actual) - expected)}；"
+                f"少掉：{sorted(expected - set(actual))}。"
+                "这是一次契约变更，不是「忘了同步文档」。"
+            )
+
+
 def test_contract_module_has_no_internal_imports():
     """契约处在依赖图最底层，不 import 任何 xingcha 模块（开发计划 §6 标准 1）。
 
