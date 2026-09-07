@@ -195,6 +195,7 @@ docker compose exec xingcha xingcha config set trace.endpoint -
 # https://你的langfuse域名/api/public/otel/v1/traces
 docker compose exec xingcha xingcha config set trace.public_key -
 docker compose exec xingcha xingcha config set trace.secret_key -
+# 命令行写的值在启动时读取，这一步不能省
 docker compose restart xingcha
 ```
 
@@ -312,7 +313,7 @@ cd /opt/xingcha/deploy
 |---|---|
 | 容器起不来 | `docker compose logs xingcha`。启动时的断言（WAL、密钥环、迁移）失败都会打印明确原因 |
 | 证书签不下来 | `docker compose logs caddy`。多半是 DNS 没生效或 80 端口被占 |
-| `/v1` 返回 503 | 还没配 OpenRouter key。后台「设置」页，或 `docker compose exec xingcha xingcha config set openrouter.api_key -` |
+| `/v1` 返回 503 | 还没配 OpenRouter key。后台「设置」页（当场生效），或 `docker compose exec xingcha xingcha config set openrouter.api_key -` **后 `docker compose restart xingcha`**——命令行写的值在启动时读取，不重启不生效 |
 | 想看整体状况 | `docker compose exec xingcha xingcha doctor` |
 | 磁盘水位 | `curl -s https://<域名>/readyz`，低于 10% 会标 `degraded` |
 

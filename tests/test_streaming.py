@@ -28,7 +28,7 @@ from decimal import Decimal
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import FakeUpstream
+from conftest import FakeUpstream, free_port
 from xingcha import contract as C
 from xingcha.app import create_app
 from xingcha.config import Settings
@@ -507,7 +507,7 @@ def test_client_disconnect_still_records_the_run(tmp_path, upstream: FakeUpstrea
     upstream.stream_chunks = list("abcdefghijklmnop")
     upstream.stream_gap = 0.05  # 总共 ~0.8s，够我们在中途撒手
 
-    port = 8896
+    port = free_port()
     server = uvicorn.Server(
         uvicorn.Config(create_app(settings), host="127.0.0.1", port=port, log_level="error")
     )

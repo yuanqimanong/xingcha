@@ -25,6 +25,24 @@ log = logging.getLogger(__name__)
 ENV_PREFIX = "XINGCHA_"
 
 
+class StartupRefused(RuntimeError):
+    """启动前置条件不满足。**故意让进程起不来**，而不是带病运行。
+
+    定义在这里而不是 db/engine.py：数据目录不可写这类失败发生在建引擎之前，
+    而 config 是唯一比它更早、又只依赖 contract 的层。db/engine 从这里导出，
+    对既有调用方无感。
+    """
+
+
+class DataDirNotWritable(StartupRefused):
+    """数据目录建不出来或写不进去。
+
+    单独一个类型是为了让 CLI 与容器日志能给出**可以直接粘贴执行**的修复命令——
+    默认的 ``PermissionError: /data/backups`` 离根因太远，没人会从那句话想到
+    "去宿主上 chown"。
+    """
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -130,8 +148,21 @@ class Settings(BaseSettings):
         共享 VPS 上 0755 的数据目录 + 0644 的库文件，等于把 token hash 与 Fernet 密文
         交给任意本地账号。
         """
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            # bind mount 最常见的失败方式，而默认报错离根因很远：
+            # 容器里以 UID 10001 运行，镜像里 chown 过的 /data 被宿主目录整个盖掉，
+            # 于是看到的是 "Permission denied: /data/backups"——没人会从这句话想到
+            # "去宿主上 chown"。所以这里直接把要敲的命令写出来。
+            raise DataDirNotWritable(
+                f"数据目录不可写：{e.filename or self.data_dir}\n"
+                f"容器内以 UID {C.CONTAINER_UID} 运行，宿主上的挂载目录必须属于它。\n"
+                f"在宿主上执行："
+                f"sudo chown -R {C.CONTAINER_UID}:{C.CONTAINER_UID} <你的 data 目录>\n"
+                "（非容器部署则是：确认当前用户对该目录有写权限）"
+            ) from e
         for d in (self.data_dir, self.backup_dir):
             try:
                 d.chmod(C.DIR_MODE)

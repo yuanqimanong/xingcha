@@ -132,6 +132,11 @@ def serve(
     bind_host = host or settings.host
     bind_port = port or settings.port
 
+    # 数据目录预检。真正的建目录在 app.lifespan 里，但那已经在 uvicorn 之内——
+    # 失败会以一段 ASGI 栈回溯的形式出现，而运维需要的那句话被埋在最底下。
+    # 这里先跑一次（幂等），让它走 CLI 的运维错误通道：只印一行可执行的指引。
+    _run_sync(settings.ensure_data_dir)
+
     if bind_host == "0.0.0.0":
         typer.secho(
             "⚠ 正在监听 0.0.0.0。星槎默认只监听 127.0.0.1，生产环境应由 Caddy 前置、"
@@ -204,6 +209,40 @@ def config_set(
 
     _run(run())
     _ok(f"已写入 {key}")
+    _restart_hint(key)
+
+
+#: 这些配置项在**启动时**读一次，之后进程不再回看数据库。
+#:
+#: 后台的设置页改完会当场重装（它调 load_upstream / load_tracing），CLI 改不会——
+#: CLI 是个独立进程，碰不到正在跑的那个。
+_STARTUP_ONLY_KEYS = frozenset(
+    {
+        C.SETTING_KEY_OPENROUTER_API_KEY,
+        C.SETTING_KEY_OPENROUTER_BASE_URL,
+        C.SETTING_KEY_TRACE_ENDPOINT,
+        C.SETTING_KEY_TRACE_PUBLIC_KEY,
+        C.SETTING_KEY_TRACE_SECRET_KEY,
+    }
+)
+
+
+def _restart_hint(key: str) -> None:
+    """写完之后提醒重启。
+
+    不提醒的话会出现最难受的一种失败：命令回了 ✓，服务照旧报"还没有配置
+    OpenRouter API key"——而那句报错正好推荐了这条命令。用户会以为命令没生效、
+    或者配置存错了地方，然后反复重试。
+    """
+    if key not in _STARTUP_ONLY_KEYS:
+        return
+    typer.secho(
+        "  这一项在启动时读取，**需要重启才生效**：\n"
+        "    docker compose restart xingcha        （容器部署）\n"
+        "    systemctl restart xingcha             （或你自己的方式）\n"
+        "  在后台的「设置」页改则当场生效，不用重启。",
+        fg=typer.colors.YELLOW,
+    )
 
 
 @config_app.command("get")

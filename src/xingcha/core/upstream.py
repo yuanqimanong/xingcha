@@ -127,6 +127,7 @@ class UpstreamNotConfigured(RuntimeError):
     def __init__(self) -> None:
         super().__init__(
             "还没有配置 OpenRouter API key。\n"
-            "  命令行：xingcha config set openrouter.api_key -\n"
-            "  或在管理后台的「设置」页填写。"
+            "  管理后台的「设置」页填写——**当场生效**。\n"
+            "  或命令行：xingcha config set openrouter.api_key -\n"
+            "  （命令行写的值在启动时读取，写完要重启服务才生效）"
         )

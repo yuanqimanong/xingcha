@@ -623,6 +623,13 @@ DB_FILENAME: Final = "xingcha.db"
 SECRET_FILENAME: Final = "secret.key"
 BACKUP_DIRNAME: Final = "backups"
 
+#: 容器内的运行 UID。**固定值，不是随机分配的**——宿主上的 bind mount 目录必须
+#: 属于它，否则容器起来就是 Permission denied，而那句报错离根因很远。
+#:
+#: Dockerfile 的 useradd、deploy.sh 的 chown、以及数据目录不可写时的报错文案都引用
+#: 这一个值。写三处的结果是改了一处忘两处，而症状只在真正部署时才出现。
+CONTAINER_UID: Final = 10001
+
 #: 目录 0700、文件 0600。共享 VPS 上 0644 的库文件等于把 token hash 与 Fernet 密文
 #: 交给任意本地账号。
 DIR_MODE: Final = 0o700

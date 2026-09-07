@@ -24,12 +24,13 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .. import contract as C
+from ..config import StartupRefused
 
 log = logging.getLogger(__name__)
 
 
-class StartupRefused(RuntimeError):
-    """启动前置条件不满足。故意让进程起不来，而不是带病运行。"""
+# 定义在 config.py（比这一层更早、且只依赖 contract）。这里导出，保持既有 import 可用。
+__all__ = ["StartupRefused"]
 
 
 def make_engine(db_path: Path, *, echo: bool = False) -> AsyncEngine:

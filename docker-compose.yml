@@ -24,7 +24,7 @@ services:
     environment:
       XINGCHA_DATA_DIR: /data
       XINGCHA_HOST: 0.0.0.0
-      XINGCHA_PUBLIC_URL: https://${XINGCHA_DOMAIN}
+      XINGCHA_PUBLIC_URL: https://${XINGCHA_DOMAIN:?请在 .env 里设置 XINGCHA_DOMAIN（已解析到本机的域名）}
       XINGCHA_LOG_LEVEL: ${XINGCHA_LOG_LEVEL:-INFO}
       # 上游 key **不放这里**。环境变量会进 docker inspect 与 /proc/<pid>/environ。
       # 首次部署可以临时设一次 XINGCHA_OPENROUTER_API_KEY，星槎会把它加密导入数据库
@@ -65,7 +65,13 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      XINGCHA_DOMAIN: ${XINGCHA_DOMAIN}
+      # 用 `${VAR:?说明}` 而不是 `${VAR}`：变量缺失时 **compose 在 up 那一刻就带着
+      # 这句说明失败**。写成 `${VAR}` 的话它会静默变成空串，然后 Caddy 拿着空配置
+      # 进无限重启循环，而日志里那句 "wrong argument count" 离根因很远。
+      XINGCHA_DOMAIN: ${XINGCHA_DOMAIN:?请在 .env 里设置 XINGCHA_DOMAIN（已解析到本机的域名）}
+      # **必须传。** Caddyfile 里写着 email {$ACME_EMAIL}，不传的话容器里它是空的，
+      # `email` 指令零参数 → 配置解析失败 → Caddy 永远起不来。
+      ACME_EMAIL: ${ACME_EMAIL:?请在 .env 里设置 ACME_EMAIL（证书到期提醒邮箱，Caddy 必需）}
       # 首次上线先用 staging CA 走通链路，确认无误再注释掉这一行切正式 CA。
       # 直接上正式 CA 时，一次配置错误就可能撞上 Let's Encrypt 的速率限制，
       # 然后要等一周。

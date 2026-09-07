@@ -296,9 +296,26 @@ def _build_upstream_app(state: FakeUpstream) -> FastAPI:
     return app
 
 
+def free_port() -> int:
+    """向内核要一个当前空闲的端口。
+
+    写死端口的代价不是"偶尔冲突"，而是**这套测试没法与任何别的东西并存**——
+    另一个 pytest、一个跑着的开发服务、甚至上一次没退干净的线程，都会让整批用例
+    以 "假上游没能启动" 失败，而那句报错完全指不到真正的原因。实际被咬过。
+
+    bind 到 0 让内核分配，读回端口号后立刻关掉。理论上存在 close 与 re-bind 之间
+    被别人抢走的窗口，但那比固定端口的必然冲突好得多。
+    """
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 @pytest.fixture(scope="session")
 def upstream() -> Iterator[FakeUpstream]:
-    state = FakeUpstream(port=8893)
+    state = FakeUpstream(port=free_port())
     app = _build_upstream_app(state)
     config = uvicorn.Config(app, host="127.0.0.1", port=state.port, log_level="error")
     server = uvicorn.Server(config)

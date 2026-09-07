@@ -97,13 +97,16 @@ if [[ ! -f .env ]]; then
   warn "已从 deploy/.env.example 生成 .env"
   printf '\n  请填写后重新运行：%s\n\n' "$REPO_DIR/.env"
   printf '  必填：XINGCHA_DOMAIN（已解析到本机的域名，Caddy 要用它申请证书）\n'
-  printf '  可选：ACME_EMAIL（证书到期提醒）\n\n'
+  printf '  必填：ACME_EMAIL（证书到期提醒邮箱；Caddy 不接受空值，留空起不来）\n\n'
   exit 1
 fi
 
 # shellcheck disable=SC1091
 set -a; source .env; set +a
 [[ -n "${XINGCHA_DOMAIN:-}" ]] || die ".env 里的 XINGCHA_DOMAIN 是空的。Caddy 需要它来申请证书。"
+# Caddyfile 里是 `email {$ACME_EMAIL}`，零参数会让 Caddy 配置解析失败并无限重启。
+# 在这里拦住，比让用户去读 Caddy 的 "wrong argument count" 强得多。
+[[ -n "${ACME_EMAIL:-}" ]] || die ".env 里的 ACME_EMAIL 是空的。Caddy 的 email 指令不接受空值，留空会导致它起不来。"
 ok "配置就绪（域名 $XINGCHA_DOMAIN）"
 
 # ---------------------------------------------------------------- 数据目录
@@ -115,8 +118,16 @@ if [[ "$(stat -c '%u' data)" != "10001" ]]; then
   if [[ $EUID -eq 0 ]]; then
     chown -R 10001:10001 data
     ok "data/ 属主已设为 10001（容器内的 xingcha 用户）"
+  elif sudo -n true 2>/dev/null; then
+    sudo chown -R 10001:10001 data
+    ok "data/ 属主已设为 10001（经 sudo）"
   else
-    warn "data/ 的属主不是 10001，容器可能写不进去。执行：sudo chown -R 10001:10001 $REPO_DIR/data"
+    # **不能只 warn 然后继续。** 继续的结果是起一个注定崩溃循环的容器，
+    # 而用户看到的是 "Permission denied: /data/backups" —— 离根因很远。
+    # 宁可现在停下并给出可直接粘贴的命令。
+    die "data/ 的属主不是 10001，容器写不进去。先执行：
+    sudo chown -R 10001:10001 $REPO_DIR/data
+  然后重新运行本脚本。"
   fi
 fi
 chmod 700 data

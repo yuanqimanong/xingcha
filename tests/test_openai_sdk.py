@@ -26,7 +26,7 @@ import pytest
 import uvicorn
 from openai import APIStatusError, OpenAI
 
-from conftest import FakeUpstream
+from conftest import FakeUpstream, free_port
 from xingcha import contract as C
 from xingcha.app import create_app
 from xingcha.config import Settings
@@ -84,7 +84,7 @@ def live(tmp_path_factory: pytest.TempPathFactory, upstream: FakeUpstream) -> It
 
     token = asyncio.run(seed())
 
-    port = 8894
+    port = free_port()
     config = uvicorn.Config(create_app(settings), host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
