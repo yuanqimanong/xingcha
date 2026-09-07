@@ -25,6 +25,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from xingcha.config import Settings
 
+#: 浏览器端到端那一层的夹具单独一个文件（它拖着 playwright 依赖，混在这里会让
+#: 每次收集都 import 一遍浏览器驱动）。用 plugins 挂进来而不是 import *，
+#: 这样 fixture 的作用域与 conftest 里的一致。
+pytest_plugins = ["conftest_web"]
+
 
 @dataclass
 class RecordedRequest:

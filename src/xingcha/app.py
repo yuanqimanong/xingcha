@@ -48,6 +48,7 @@ from .services.ratelimit import RateLimiter
 from .services.run import RuntimeCache
 from .services.runlog import UsageBuffer
 from .web import routes as web_routes
+from .web.flash import OneShotFlash
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,9 @@ class AppState:
         self.usage: UsageBuffer | None = None
         self.quota: QuotaService | None = None
         self.tracing: Any = None
+        #: 一次性展示值（目前只有"刚签发的密钥明文"）。**在内存里，不落盘、不进 URL。**
+        #: 见 web/flash.py 的注释——它替掉的是把明文放进查询串的做法。
+        self.flash = OneShotFlash()
         #: 上游真实费用的暂存点。见 core/costsink.py。
         self.cost_sink = CostSink()
 
@@ -263,6 +267,10 @@ async def _denied_handler(request: Request, exc: Exception) -> Response:
             f"<!doctype html><meta charset=utf-8>"
             f"<title>操作被拒绝</title>"
             f"<link rel=stylesheet href=/admin/static/style.css>"
+            # 带上与 base.html 相同的 data: favicon。不带的话浏览器会去要
+            # /favicon.ico，而那是一条 404——每一次"操作被拒绝"都在控制台留一条
+            # 红色错误，把真正的问题淹掉。
+            f'<link rel="icon" href="{_FAVICON}">'
             f"<div class=auth-shell><div class=auth-card>"
             f"<div class=auth-title>操作被拒绝</div>"
             f"<p class='muted small mt4'>{exc.message}</p>"
@@ -270,6 +278,20 @@ async def _denied_handler(request: Request, exc: Exception) -> Response:
             status_code=exc.status,
         )
     )
+
+
+#: 与 base.html 里那个同一个。内联的错误页不走模板，所以这里要有一份。
+#: 两处各写一遍的代价是改了一处忘一处——所以这里从模板里读出来，只有一个来源。
+def _favicon() -> str:
+    import re
+    from pathlib import Path as _P
+
+    tpl = (_P(__file__).parent / "web" / "templates" / "base.html").read_text("utf-8")
+    m = re.search(r'rel="icon" href="([^"]+)"', tpl)
+    return m.group(1) if m else ""
+
+
+_FAVICON = _favicon()
 
 
 def _configure_logging(settings: Settings) -> None:

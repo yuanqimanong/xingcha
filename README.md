@@ -85,6 +85,11 @@ CI（`.github/workflows/ci.yml`）里有一条特别的断言：在 `ALL_PROXY` 
 环境下**再跑一遍**全套测试。这是「代理不进代码」这个承诺的唯一自动化保证——星槎
 自建的 HTTP 客户端一律 `trust_env=False`，不继承机器级代理。
 
+CI 里还有一层**浏览器端到端**（42 条，Playwright + 系统的 chromium）：起真服务、
+点真按钮、读真控制台。它是唯一能证明"页面在浏览器里真能用"的一层——CSP 挡掉内联
+脚本那次，ASGI 层的全套测试是绿的，而复制密钥按钮无反应、危险操作的二次确认根本
+不弹。本机跑：`pytest -m browser`；跳过：`pytest -m "not browser"`。
+
 CI 还会构建镜像并**真的把整栈起起来**（`localhost` + Caddy 内部 CA），断言容器
 healthy、xingcha 零宿主端口、`/healthz` 通、`/v1` 无凭据 401。这一步是因为
 `Caddyfile` 引用的变量 compose 漏传过一次——那种问题不会让任何单测变红，症状只在

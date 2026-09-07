@@ -61,8 +61,8 @@ jobs:
           uv run python -m xingcha.contract_doc
           git diff --exit-code -- docs/CONTRACT.md
 
-      - name: 全套测试
-        run: uv run pytest -q
+      - name: 全套测试（不含浏览器）
+        run: uv run pytest -q -m "not browser"
 
       - name: 全套测试（代理指黑洞）
         # E1：httpx2 默认 trust_env=True，会读机器的 ALL_PROXY。所有自建 client
@@ -75,7 +75,37 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:9
           HTTPS_PROXY: http://127.0.0.1:9
           ALL_PROXY: socks5://127.0.0.1:9
-        run: uv run pytest -q -m "not slow"
+        run: uv run pytest -q -m "not slow and not browser"
+
+  browser:
+    # 浏览器端到端。单独一个 job：它比其余测试慢一个数量级，而且失败原因与单元层
+    # 完全不同——混在一起的话"红了"这件事本身失去信息量。
+    #
+    # 它是唯一能证明"页面在浏览器里真能用"的一层。CSP 挡掉内联脚本那次，ASGI 层的
+    # 全套测试是绿的，而复制密钥按钮无反应、危险操作的二次确认根本不弹。
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.0"
+          enable-cache: true
+
+      - name: 装依赖
+        run: uv sync --frozen
+
+      - name: 装 chromium
+        # 用系统的 chromium 而不是 playwright 自带的：本机开发与 CI 用同一个二进制，
+        # 也省掉一次几百 MB 的下载。测试里的路径是 /usr/bin/chromium。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends chromium
+          chromium --version
+
+      - name: 浏览器端到端
+        run: uv run pytest -q -m browser
 
   image:
     runs-on: ubuntu-latest

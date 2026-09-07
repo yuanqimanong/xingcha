@@ -424,10 +424,16 @@ async def _recent_runs(s, *, limit: int, model: str = "", status: str = "") -> l
 
 @router.get("/keys")
 async def keys_page(request: Request) -> Response:
-    await require_admin(request)
+    session = await require_admin(request)
     state = request.app.state.xc
-    issued = request.query_params.get("issued")
-    name = request.query_params.get("name", "")
+    # 一次性取走。取走即删，所以刷新页面不会再显示——"这是唯一一次看到明文"
+    # 这句话由此才成立。明文从不进 URL、不进浏览器历史、不落盘。
+    # 明文与用途名用换行分隔存成一条：两条 flash 会出现"取了一条另一条还在"的
+    # 中间态，而这里要的是原子的一次性。
+    flashed = state.flash.take(f"{session.id}:issued_key")
+    issued, name = (
+        (flashed.split("\n", 1) if "\n" in flashed else [flashed, ""]) if flashed else (None, "")
+    )
 
     async with state.sessionmaker() as s:
         rows = await auth_svc.list_tokens(s)
@@ -469,20 +475,22 @@ async def issue_key(
     state = request.app.state.xc
     expires = auth_svc.parse_expiry(int(days)) if days.strip() else None
 
+    session = await current_session(request)
     async with state.sessionmaker() as s:
         issued = await auth_svc.issue(s, name=name.strip()[:60] or "未命名", expires_at=expires)
         await s.commit()
 
-    # 明文经 URL 传一次。这不理想（会进浏览器历史），但它只在这一刻有效于展示，
-    # 而替代方案（存进服务端 flash）会让明文在库里多活一会儿——两害相权。
-    from urllib.parse import quote
-
-    return security_headers(
-        RedirectResponse(
-            f"/admin/keys?issued={quote(issued.plaintext)}&name={quote(issued.name)}",
-            status_code=303,
-        )
-    )
+    # **明文不进 URL。**
+    #
+    # 原先是 `303 → /admin/keys?issued=sk-xc-...`，代价是明文进浏览器历史、留在
+    # 地址栏（截图/录屏/肩窥）、进 Referer，而且**刷新就重现**——那让页面上
+    # "这是唯一一次看到明文"变成一句假话。
+    #
+    # 当时的注释认为替代方案会让明文在库里多活一会儿，那是个假两难：单 worker 是
+    # 断言过的硬约束，进程内存里做一次性存取就够了，一次都不落盘。见 web/flash.py。
+    assert session is not None  # require_admin 已在 guard_mutation 里过了
+    state.flash.put(f"{session.id}:issued_key", f"{issued.plaintext}\n{issued.name}")
+    return security_headers(RedirectResponse("/admin/keys", status_code=303))
 
 
 @router.post("/keys/revoke")
@@ -829,9 +837,26 @@ async def agent_new(request: Request) -> Response:
     return resp
 
 
+def _take_saved(request: Request, session: Any) -> Any:
+    """取走"刚保存成 vN"的一次性提示。
+
+    保存走的是 POST-redirect-GET，所以结果必须经 flash 带过来——直接在 GET 里写死
+    ``None`` 的话，模板里那一块永远不显示，而它同时承载着**判档降级的说明**
+    （"你请求了 T1，但这个模型不支持原生约束，已降级到 T2"）。那句话丢了，
+    用户会以为自己拿到了 T1 的原生约束，而实际跑的是 T2 的校验后重试。
+    """
+    if session is None:
+        return None
+    raw = request.app.state.xc.flash.take(f"{session.id}:saved_agent")
+    if not raw:
+        return None
+    version, _, note = raw.partition("\n")
+    return SimpleNamespace(version=version, tier_note=note or "")
+
+
 @router.get("/agents/{slug}")
 async def agent_edit(slug: str, request: Request) -> Response:
-    await require_admin(request)
+    session = await require_admin(request)
     state = request.app.state.xc
     from ..services import agent as agent_svc
 
@@ -878,7 +903,8 @@ async def agent_edit(slug: str, request: Request) -> Response:
             "tiers": _tier_options(),
             "versions": version_rows,
             "error": None,
-            "saved": None,
+            # 取走上一次保存的结果（经 flash 跨过 303）。一次性：刷新页面不再提示。
+            "saved": _take_saved(request, session),
             **_lint_ctx(form.schema, form.tier),
         },
     )
@@ -956,6 +982,15 @@ async def agent_save(
         csrf.apply(resp)
         return resp
 
+    # 保存结果经 flash 带过重定向。
+    #
+    # 不带的话编辑页的 `{% if saved %}已保存为 v… %}` 那一块**永远不显示**——用户
+    # 保存完看不到任何确认，更要紧的是同一块里的 `tier_note` 也一起丢了：
+    # "你请求了 T1，但这个模型不支持原生约束，已降级到 T2" 这句话是静默消失的，
+    # 而两档的失败形态完全不同。
+    session = await current_session(request)
+    if session is not None:
+        state.flash.put(f"{session.id}:saved_agent", f"{result.version}\n{result.tier_note or ''}")
     return security_headers(RedirectResponse(f"/admin/agents/{result.slug}", status_code=303))
 
 
