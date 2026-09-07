@@ -29,6 +29,7 @@ from decimal import Decimal
 from typing import Any, ClassVar
 
 from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.usage import RunUsage
 
 from .. import contract as C
 from ..contract import Tier
@@ -42,6 +43,7 @@ from ..errors import (
     SchemaViolation,
     UpstreamError,
     UpstreamTimeout,
+    XingchaError,
 )
 from ..obs import tracing as tracing_mod
 from .agent import ResolvedAgent
@@ -241,9 +243,20 @@ async def execute(
     # 完全不进账单——那正好是这一档比 T1 贵一倍的原因所在。
     stage_one: Any = None
 
-    with map_errors(rt, run_timeout):
+    # 用量累加器。**必须传，而且必须在 try 外面建。**
+    #
+    # 重试耗尽时 ``Agent.run`` 抛异常，手上没有任何 result 可读——原先的失败路径
+    # 因此把 token 记成 0、费用记成 None。一次 retries=2 的失败打了 **3 次**上游，
+    # 账上却是 0：账单少报的恰好是最贵的一类调用，而金额配额结算 None 意味着
+    # **这条最贵的路径完全不占金额配额**（钱刹车没落在要刹的地方）。
+    #
+    # pydantic-ai 会原地累加进这个对象（实测：3 次调用后 input=36 output=18
+    # requests=3，与成功路径的口径一致），所以异常抛出后它仍然是完整的。
+    usage_acc = RunUsage()
+
+    with map_errors(rt, run_timeout, usage=usage_acc):
         async with asyncio.timeout(run_timeout):
-            kwargs = run_kwargs(rt, extra_instructions)
+            kwargs = run_kwargs(rt, extra_instructions, usage_acc)
             if rt.reason_agent is not None:
                 # 阶段一：不加任何格式约束，规避对齐税
                 stage_one = await rt.reason_agent.run(prompt, **kwargs)
@@ -261,15 +274,25 @@ async def execute(
     return outcome_from(rt, result, stage_one=stage_one)
 
 
-def run_kwargs(rt: AgentRuntime, extra_instructions: str | None) -> dict[str, Any]:
+def run_kwargs(
+    rt: AgentRuntime, extra_instructions: str | None, usage: Any = None
+) -> dict[str, Any]:
+    """给 ``Agent.run`` / ``run_stream`` 的公共 kwargs。
+
+    ``usage`` 是一个 :class:`RunUsage` 累加器，pydantic-ai 会**原地累加**进去。
+    传它的理由见 :func:`execute`——异常路径上没有 result 可读，累加器是唯一还
+    拿得到用量的东西。两阶段（T1P）也传同一个，所以第一阶段的 token 不会丢。
+    """
     kwargs: dict[str, Any] = {"usage_limits": rt.limits}
     if extra_instructions:
         kwargs["instructions"] = extra_instructions
+    if usage is not None:
+        kwargs["usage"] = usage
     return kwargs
 
 
 @contextlib.contextmanager
-def map_errors(rt: AgentRuntime, run_timeout: float) -> Iterator[None]:
+def map_errors(rt: AgentRuntime, run_timeout: float, usage: Any = None) -> Iterator[None]:
     """把 pydantic-ai 的异常映射成错误契约。
 
     命令式与流式**共用这一份**。写两份的话，两条路径迟早在"同一个上游故障返回
@@ -277,27 +300,37 @@ def map_errors(rt: AgentRuntime, run_timeout: float) -> Iterator[None]:
 
     注意它必须包在 ``asyncio.timeout`` **外面**：整轮超时是由 timeout 的 ``__aexit__``
     抛出的，放在里面看不到。
+
+    ``usage`` 是那个原地累加的累加器。失败路径上它是唯一还拿得到用量的东西，所以
+    这里把它挂到抛出去的 :class:`XingchaError` 上——契约冻结了"429 / 422 也带
+    usage"（``USAGE_ON_ERROR``），而没有这一步，那句承诺是假的。
     """
+
+    def tag(err: XingchaError) -> XingchaError:
+        if usage is not None:
+            err.usage = usage
+        return err
+
     try:
         yield
     except TimeoutError as e:
-        raise RequestTimeout(run_timeout) from e
+        raise tag(RequestTimeout(run_timeout)) from e
     except UnexpectedModelBehavior as e:
         # 校验重试耗尽走这里。把最后一次的 schema 错误详情带给调用方——
         # 只说"重试耗尽"没法定位是哪个字段不对。
         if rt.counters.violations:
             guard_counters(rt.counters, tier=rt.tier)
-            raise SchemaViolation(rt.counters.last_error, rt.counters.retries) from e
-        raise UpstreamError(502, log_detail=f"UnexpectedModelBehavior: {e}") from e
+            raise tag(SchemaViolation(rt.counters.last_error, rt.counters.retries)) from e
+        raise tag(UpstreamError(502, log_detail=f"UnexpectedModelBehavior: {e}")) from e
     except UsageLimitExceeded as e:
         # 与 schema 违规分开：混在一起的话，一个 request_limit 设小了的配置错误
         # 会伪装成"模型输出不合规"，查错方向完全反了。
-        raise QuotaExceeded("agent", "run", "usage") from e
+        raise tag(QuotaExceeded("agent", "run", "usage")) from e
     except ModelAPIError as e:
         text = str(e)
         if "timed out" in text.lower() or "timeout" in text.lower():
-            raise UpstreamTimeout(run_timeout) from e
-        raise UpstreamError(502, log_detail=f"ModelAPIError: {e}") from e
+            raise tag(UpstreamTimeout(run_timeout)) from e
+        raise tag(UpstreamError(502, log_detail=f"ModelAPIError: {e}")) from e
 
 
 #: "没传" 与 "传了 None" 要能区分——流式的正文可以是空字符串。

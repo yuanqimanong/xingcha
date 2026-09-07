@@ -420,6 +420,22 @@ USAGE_IS_WHOLE_RUN: Final = True
 #: 失败响应（429 / 422）也必须带 usage，否则失败 run 的花费不可见。
 USAGE_ON_ERROR: Final = True
 
+#: 具体是哪两种错误必须带 usage。**闭集，一处定义。**
+#:
+#: 只有这两种：它们背后可能有真实的模型调用（schema 重试耗尽是 1+retries 次；
+#: usage 超限是跑到一半被拦）。其余错误（401 / 400 / 413）在打到上游之前就返回了，
+#: 给它们加 usage 只是噪音。
+#:
+#: **即使这一次真的零调用（例如配额在模型调用之前就拒了），也要给 0 而不是不给。**
+#: 不给的话调用方读 ``.usage.total_tokens`` 要分两种情况处理，而"分情况"是所有
+#: 客户端 bug 的温床——形状统一比字段省几个字节重要得多。
+USAGE_ON_ERROR_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "quota_exceeded",
+        "schema_violation",
+    }
+)
+
 #: SSE 终止行。
 SSE_DONE: Final = "data: [DONE]\n\n"
 

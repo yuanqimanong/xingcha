@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -329,6 +330,111 @@ class TestAgentMetering:
         assert row["status"] == "schema_failed"
         assert row["schema_violations"] == 3
         assert row["schema_retries"] == 2
+        # **token 与费用也必须在。**
+        #
+        # 这条断言原先只到 retries 就停了，于是漏掉了真正的缺口：失败路径拿不到
+        # result（``Agent.run`` 抛异常），token 被记成 0、费用记成 None。一次
+        # retries=2 的失败打了 **3 次**上游，账上却是零——少报的恰好是最贵的一类。
+        # 更糟的是金额配额结算 None，等于**这条最贵的路径完全不占金额配额**。
+        assert row["input_tokens"] > 0, "失败 run 的 token 被记成 0"
+        assert row["output_tokens"] > 0
+        assert row["cost_usd"] is not None, "失败 run 的费用被记成 null"
+        assert Decimal(row["cost_usd"]) > 0
+        assert row["cost_source"] == C.CostSource.CATALOG.value
+
+    def test_failed_response_body_carries_usage(self, wired, upstream: FakeUpstream):
+        """**422 也要带 usage。** 契约 §3.6 的 ``USAGE_ON_ERROR`` 冻结了这一点。
+
+        照 CONTRACT.md 写的客户端会读 ``.usage.total_tokens``——不给的话它拿到的是
+        空，而这次调用真花了 1+retries 次的钱。口径与 200 一致：整轮累计。
+        """
+        client, token = wired
+        upstream.reset()
+        upstream.tool_payloads = [BAD]
+        r = client.post(
+            "/v1/chat/completions",
+            json={"model": "extract", "messages": [{"role": "user", "content": "x"}]},
+            headers=auth(token),
+        )
+        assert r.status_code == 422
+        body = r.json()
+        assert "usage" in body, "422 响应里没有 usage"
+        usage = body["usage"]
+        # 与成功响应逐字段同形，否则调用方要写两套解析
+        assert set(usage) == {"prompt_tokens", "completion_tokens", "total_tokens"}
+        assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+        assert usage["prompt_tokens"] > 0, "usage 是空的——等于没带"
+        # 3 次调用（1 + 2 retries），所以应当明显大于单次
+        assert upstream.chat_count == 3
+        assert usage["prompt_tokens"] >= 3 * 10
+
+    def test_failed_run_consumes_the_usd_quota(self, settings: Settings, upstream: FakeUpstream):
+        """失败调用必须占**金额**配额。
+
+        不占的话钱刹车恰好在最贵的那条路径上失效：一个反复输出违规 JSON 的
+        prompt，每次请求打 3 次上游、烧 3 倍 token，而金额配额一动不动。
+        """
+        import asyncio as _asyncio
+        from decimal import Decimal as _D
+
+        from xingcha.services import quota as quota_svc
+
+        settings.ensure_data_dir()
+        migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+        keyring = Keyring.load_or_create(settings.secret_path)
+
+        async def seed() -> str:
+            engine = make_engine(settings.db_path)
+            maker = make_sessionmaker(engine)
+            async with maker() as s:
+                await setting_svc.set_(
+                    s, keyring, C.SETTING_KEY_OPENROUTER_API_KEY, "sk-or-v1-fake"
+                )
+                await setting_svc.set_(
+                    s, keyring, C.SETTING_KEY_OPENROUTER_BASE_URL, upstream.base_url
+                )
+                await agent_svc.save(
+                    s,
+                    slug="extract",
+                    name="x",
+                    description=None,
+                    instructions="i",
+                    model="openai/gpt-5",
+                    schema_text=json.dumps(SCHEMA),
+                    requested_tier=Tier.T2,
+                    capabilities=None,
+                    retries=2,
+                    native_ok=True,
+                )
+                await quota_svc.upsert(
+                    s,
+                    subject_type="user",
+                    subject_id=1,
+                    window="day",
+                    limit_usd=_D("100"),
+                    limit_requests=None,
+                )
+                tok = await auth_svc.issue(s, name="t")
+                await s.commit()
+            await engine.dispose()
+            return tok.plaintext
+
+        token = _asyncio.run(seed())
+        upstream.reset()
+        upstream.tool_payloads = [BAD]
+
+        app = create_app(settings)
+        with TestClient(app) as client:
+            r = client.post(
+                "/v1/chat/completions",
+                json={"model": "extract", "messages": [{"role": "user", "content": "x"}]},
+                headers=auth(token),
+            )
+            assert r.status_code == 422
+            snap = app.state.xc.quota.snapshot()[0]
+
+        assert Decimal(str(snap["spent_usd"])) > 0, "失败调用没有占用金额配额"
+        assert snap["spent_requests"] == 1
 
 
 # =============================================================================

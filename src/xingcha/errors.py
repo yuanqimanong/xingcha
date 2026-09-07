@@ -22,6 +22,16 @@ from .contract import ErrorType
 log = logging.getLogger(__name__)
 
 
+def usage_block(usage: Any) -> dict[str, int]:
+    """把 ``RunUsage`` 转成 OpenAI 形状的 usage。``None`` 给全零。
+
+    只有这一处定义：成功响应与失败响应必须逐字段同形，否则调用方要写两套解析。
+    """
+    inp = int(getattr(usage, "input_tokens", 0) or 0)
+    out = int(getattr(usage, "output_tokens", 0) or 0)
+    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": inp + out}
+
+
 class XingchaError(Exception):
     """所有对外错误的基类。
 
@@ -46,6 +56,12 @@ class XingchaError(Exception):
         self.param = param
         self.log_detail = log_detail
         self.extra = extra
+        #: 这次调用已经产生的用量。失败也要带——契约冻结了 ``USAGE_ON_ERROR``：
+        #: 「429 / 422 也带 usage，否则失败 run 的花费不可见」。
+        #:
+        #: 由 ``services/run.map_errors`` 在抛出时挂上（重试耗尽时手上没有 result
+        #: 可读，一个原地累加的 RunUsage 是唯一还拿得到用量的东西）。
+        self.usage: Any = None
 
     @property
     def status_code(self) -> int:
@@ -59,7 +75,19 @@ class XingchaError(Exception):
             "param": self.param,
         }
         body.update(self.extra)
-        return {"error": body}
+        out: dict[str, Any] = {"error": body}
+        # **失败响应也带 usage。** 契约 §3.6 的 USAGE_ON_ERROR 冻结了这一点：
+        # 一次重试耗尽的 422 背后是 1+retries 次真实的模型调用，不报出来的话
+        # 调用方看不见自己花了多少——而那恰好是最贵的一类调用。
+        #
+        # 口径与 200 一致：整轮累计，含全部重试。
+        #
+        # 哪些错误要带由 contract.USAGE_ON_ERROR_TYPES 决定，而且**零调用也给 0**：
+        # 配额可能在模型调用之前就拒了，那时用量确实是零——但"不给"会让调用方
+        # 读 .usage.total_tokens 时分两种情况处理，形状统一更重要。
+        if self.error_type.value in C.USAGE_ON_ERROR_TYPES:
+            out["usage"] = usage_block(self.usage)
+        return out
 
 
 # --------------------------------------------------------------------------

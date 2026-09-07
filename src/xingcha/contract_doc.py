@@ -164,8 +164,9 @@ def render() -> str:
         "（`null` = 无法定价，与真实的 0 费用可区分） |",
         f"| `usage` 口径 | {'整轮累计' if C.USAGE_IS_WHOLE_RUN else '单次'}，"
         "含全部 schema 重试与工具往返产生的 token 与费用 |",
-        f"| 失败响应带 usage | {'是' if C.USAGE_ON_ERROR else '否'}（429 / 422 也带，"
-        "否则失败 run 的花费不可见） |",
+        f"| 失败响应带 usage | {'是' if C.USAGE_ON_ERROR else '否'} —— "
+        f"`{'` · `'.join(sorted(C.USAGE_ON_ERROR_TYPES))}` 必带，"
+        "**零调用也给 0**（形状与 200 一致，调用方不必分情况） |",
         f"| SSE 帧序列 | {' → '.join(C.SSE_FRAME_ORDER)} |",
         f"| SSE 终止 | `{C.SSE_DONE.strip()}` |",
         "",

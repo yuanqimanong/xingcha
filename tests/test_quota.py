@@ -521,6 +521,45 @@ class TestEndToEnd:
         assert second.status_code == 429, "失败的那次也该占用配额"
 
 
+class TestQuota429CarriesUsage:
+    """契约把 ``quota_exceeded`` 列进 ``USAGE_ON_ERROR_TYPES``。
+
+    配额可能在模型调用**之前**就拒了，那时用量确实是零——但"不给 usage"会让调用方
+    读 ``.usage.total_tokens`` 时分两种情况处理，而分情况是所有客户端 bug 的温床。
+    所以零调用也给 0，形状与 200 逐字段一致。
+    """
+
+    def test_pre_run_rejection_gives_a_zero_usage_block(self, wired, upstream: FakeUpstream):
+        client, token = wired
+        upstream.reset()
+        upstream.tool_payloads = [GOOD]
+        body = {"model": "extract", "messages": [{"role": "user", "content": "x"}]}
+        for _ in range(2):
+            client.post("/v1/chat/completions", json=body, headers=auth(token))
+        before = upstream.chat_count
+        blocked = client.post("/v1/chat/completions", json=body, headers=auth(token))
+
+        assert blocked.status_code == 429
+        payload = blocked.json()
+        assert "usage" in payload, "429 响应里没有 usage"
+        assert set(payload["usage"]) == {"prompt_tokens", "completion_tokens", "total_tokens"}
+        # 这一次真的零调用，所以是 0——但键必须在
+        assert payload["usage"]["total_tokens"] == 0
+        assert upstream.chat_count == before, "被配额拦下的请求还是打到了上游"
+
+    def test_every_promised_error_type_carries_usage(self):
+        """闭集里点名的每一种都要真的带。
+
+        只测其中一种的话，另一种漏了不会有人知道——而它们是两条完全不同的代码路径
+        （一条在模型调用前拒，一条在跑到一半时拦）。
+        """
+        from xingcha.errors import QuotaExceeded, SchemaViolation
+
+        for err in (QuotaExceeded("user", "day", "usd"), SchemaViolation("字段不对", 2)):
+            assert err.error_type.value in C.USAGE_ON_ERROR_TYPES
+            assert "usage" in err.to_body(), f"{err.error_type.value} 的响应体没有 usage"
+
+
 class TestPassthroughRespectsTheContract:
     """契约 §3.9 冻结了「直通层不执行配额」。
 

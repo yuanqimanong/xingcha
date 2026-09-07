@@ -109,7 +109,7 @@ slug 是**全局**唯一命名空间（`agent.slug` 有 UNIQUE 约束），不�
 | `message.content` | 永远是字符串；结构化输出是 `json.dumps(dict, ensure_ascii=False)` |
 | 金额类型 | 字符串形式的 Decimal，或 null（`null` = 无法定价，与真实的 0 费用可区分） |
 | `usage` 口径 | 整轮累计，含全部 schema 重试与工具往返产生的 token 与费用 |
-| 失败响应带 usage | 是（429 / 422 也带，否则失败 run 的花费不可见） |
+| 失败响应带 usage | 是 —— `quota_exceeded` · `schema_violation` 必带，**零调用也给 0**（形状与 200 一致，调用方不必分情况） |
 | SSE 帧序列 | role → content → finish → summary → done |
 | SSE 终止 | `data: [DONE]` |
 

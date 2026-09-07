@@ -306,9 +306,16 @@ async def _run_agent(
 
     async def fail(e: XingchaError) -> None:
         tracker.finish_error(e.error_type.value, _status_for(e))
-        # 失败也要落用量：一次重试耗尽的调用照样花了钱，不记就等于账单少报。
         tracker.rec.schema_violations = rt.counters.violations
         tracker.rec.schema_retries = rt.counters.retries
+        # **失败也要落用量与费用。**
+        #
+        # 原先这里只记了违规/重试次数，token 与费用是 0/None——一次 retries=2 的
+        # 失败打了 3 次上游，账上却是零。少报的恰好是最贵的一类调用，而且金额配额
+        # 结算 None 意味着**这条最贵的路径完全不占金额配额**，钱刹车没落在要刹的
+        # 地方。用量来自 map_errors 挂在异常上的累加器（见 services/run.execute）。
+        if e.usage is not None:
+            _absorb_usage(tracker, e.usage, rt, state.catalog, state.cost_sink)
         await tracker.submit()
 
     if wants_streaming:
@@ -392,6 +399,32 @@ async def _stream_agent(
 
     # 不是 StreamingResponse：它在子任务里迭代，而并发闸按任务记账。见 api/sse.py。
     return SameTaskEventStream(body(), request=request)
+
+
+def _absorb_usage(tracker: RunTracker, usage: Any, rt: Any, catalog: Any, cost_sink: Any) -> None:
+    """把**失败路径**的用量与费用写进 run 记录。
+
+    与成功路径共用 ``price()``（一处定价），但拿不到 ``provider_response_id``——
+    异常抛出时没有 result 可读，所以取不回上游报的实价，只能用目录价。这是有意的
+    折中：目录估价好过记成 0，而"失败调用的实价"要拿到得改 pydantic-ai 的调用方式。
+    """
+    from .runlog_mw import price
+
+    rec = tracker.rec
+    rec.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    rec.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    rec.cache_read_tokens = int(getattr(usage, "cache_read_tokens", 0) or 0)
+    cost, source = price(
+        catalog,
+        rt.model_id,
+        {
+            "input_tokens": rec.input_tokens,
+            "output_tokens": rec.output_tokens,
+            "cache_read_tokens": rec.cache_read_tokens,
+        },
+    )
+    rec.cost_usd = cost
+    rec.cost_source = source
 
 
 def _status_for(e: XingchaError) -> str:
