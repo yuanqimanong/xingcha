@@ -159,14 +159,16 @@ jobs:
         # DOCKER-USER 链，会绕过 ufw。所以"开给局域网"必须是 .env 里的一次显式
         # 选择（XINGCHA_BIND_ADDR=0.0.0.0），装上就默认对外是不可接受的。
         run: |
+          # 注意 `config` 会把 ports 规范化成**长格式**，所以断言要看 host_ip，
+          # 不是 "127.0.0.1:8720:8720" 那种短写法。
           : > .env
           docker compose -f deploy/docker-compose.yml --env-file .env config > /tmp/cfg.yml
-          grep -q '127.0.0.1:8720:8720' /tmp/cfg.yml \
+          grep -q 'host_ip: 127.0.0.1' /tmp/cfg.yml \
             || { echo "::error::默认没有绑在回环上"; cat /tmp/cfg.yml; exit 1; }
           # 显式开给局域网时才应该出现 0.0.0.0
           printf 'XINGCHA_BIND_ADDR=0.0.0.0\n' > .env
           docker compose -f deploy/docker-compose.yml --env-file .env config \
-            | grep -q '0.0.0.0:8720:8720' \
+            | grep -q 'host_ip: 0.0.0.0' \
             || { echo "::error::XINGCHA_BIND_ADDR 没起作用"; exit 1; }
 
       - name: 整栈真的起得来
