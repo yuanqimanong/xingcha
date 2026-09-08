@@ -30,6 +30,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import contract as C
 from ..db.models import User, WebSession, utcnow
 
 log = logging.getLogger(__name__)
@@ -92,6 +93,67 @@ class LoginThrottle:
 
 def hash_password(password: str) -> str:
     return _hasher.hash(password)
+
+
+def env_password_usable(env_password: str | None) -> bool:
+    """环境变量里那个密码本身合不合格（不管它最终是否生效）。
+
+    低于长度下限**一律拒用**，而不是"警告后放过"：一个 4 位的后台密码在公网机器上
+    是实打实的洞，而这个功能的全部意义是方便——方便不该以此为代价。
+
+    拒用之后会回落到库里的密码（或首次设密流程），所以用户不会被锁在门外，
+    只是那条捷径不生效。日志里会说清原因。
+    """
+    if not env_password:
+        return False
+    if len(env_password) < C.MIN_ADMIN_PASSWORD_LEN:
+        log.error(
+            "环境变量 XINGCHA_ADMIN_PASSWORD 被忽略：长度 %d 不足 %d 位。"
+            "后台密码守着上游 key 与全部配置，太短的话这个便利不值得。"
+            "改长一点，或删掉它改用后台的首次设密流程。",
+            len(env_password),
+            C.MIN_ADMIN_PASSWORD_LEN,
+        )
+        return False
+    return True
+
+
+def env_password_in_effect(stored: str | None, env_password: str | None) -> bool:
+    """环境变量那个密码**此刻是否真的在生效**。
+
+    ------------------------------------------------------------------------
+    优先级：先立者为准
+    ------------------------------------------------------------------------
+
+    库里已经有密码 → **库赢**，环境变量被忽略。
+    库里没有密码 + 环境变量合格 → 用环境变量。
+
+    反过来（环境变量总是优先）会引入一个真实的越权路径：任何能往 ``.env`` 写一行
+    的人——一次误挂的卷、一个共享的部署目录、一个能写文件的漏洞——就能顶掉已经
+    建好的管理员密码。"先立者为准"让这条路走不通：密码一旦在库里立起来，只有
+    握着它的人（或显式的 ``admin reset-password``）能改。
+
+    代价是"改 .env 里的密码不生效"这件事必须说清楚，否则用户会以为改了。
+    所以启动时会打一条日志，登录页与设置页也都有说明。
+    """
+    return not stored and env_password_usable(env_password)
+
+
+def verify_admin_password(
+    stored: str | None, password: str, env_password: str | None = None
+) -> bool:
+    """校验后台密码。**这是唯一的判定点。**
+
+    优先级见 :func:`env_password_in_effect`：库里有就用库里的，没有才看环境变量。
+    绝不"两个都能用"——那种状态没人说得清哪个才是真的，而"我改了密码但旧的还能登"
+    是最坏的一种安全体验。
+
+    环境变量那条用 ``compare_digest`` 而不是 argon2：手上是明文，没有哈希可验，
+    而普通的 ``==`` 会按字符逐位短路，泄漏前缀长度。
+    """
+    if env_password_in_effect(stored, env_password):
+        return secrets.compare_digest(password, env_password or "")
+    return verify_password(stored, password)
 
 
 def verify_password(stored: str | None, password: str) -> bool:

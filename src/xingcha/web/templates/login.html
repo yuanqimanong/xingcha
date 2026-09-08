@@ -28,6 +28,7 @@
       <input id="password" name="password" type="password" autocomplete="{{ 'new-password' if setup else 'current-password' }}"
              required minlength="{{ 12 if setup else 1 }}" autofocus>
       {% if setup %}<div class="hint">至少 {{ min_password_len }} 位。</div>{% endif %}
+      {% if env_managed %}<div class="hint">密码由环境变量托管（<code>XINGCHA_ADMIN_PASSWORD</code>）。</div>{% endif %}
     </div>
     {% if setup %}
     <div class="field">

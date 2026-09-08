@@ -103,6 +103,9 @@ class TestProbes:
 
         # 闭集。**改动它必须是一次显式决定。**
         allowed = {
+            # 根路径只做跳转，不判鉴权、不碰数据库。见 app.root 的注释：
+            # 自己判一遍"登录了没"会让根路径变成一个登录态探测器。
+            "GET /",
             "GET /healthz",
             "GET /readyz",
             "GET /version",
@@ -161,6 +164,44 @@ class TestProbes:
         assert "GET /debug-dump" in opened, (
             "枚举没发现这条新加的免鉴权路由——说明上面那条闭集断言是装饰"
         )
+
+    def test_root_redirects_to_admin(self, settings: Settings):
+        """访问根路径要落到后台，而不是 404。"""
+        settings.ensure_data_dir()
+        migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+        with TestClient(create_app(settings), base_url="https://testserver") as client:
+            r = client.get("/", follow_redirects=False)
+            assert r.status_code in (302, 303, 307)
+            assert (r.headers.get("location") or "").endswith("/admin")
+
+            # 跟到底：未登录时应当落在登录页
+            r2 = client.get("/", follow_redirects=True)
+            assert "/admin/login" in str(r2.url)
+            assert "设置管理员密码" in r2.text or "登录" in r2.text
+
+    def test_root_is_not_a_login_state_oracle(self, settings: Settings):
+        """**根路径的响应不能随登录状态变化。**
+
+        变了的话，公网上任何人都能拿它试探"这台机器上有人登着吗"——一个免费的
+        侦察信号。所以这条路由只跳转，不判鉴权。
+        """
+        settings.ensure_data_dir()
+        migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+        with TestClient(create_app(settings), base_url="https://testserver") as client:
+            anon = client.get("/", follow_redirects=False)
+            assert (
+                client.post(
+                    "/admin/login",
+                    data={"password": "root-test-abc123", "confirm": "root-test-abc123"},
+                    follow_redirects=False,
+                ).status_code
+                == 303
+            )
+            signed_in = client.get("/", follow_redirects=False)
+
+        assert anon.status_code == signed_in.status_code
+        assert anon.headers.get("location") == signed_in.headers.get("location")
+        assert anon.text == signed_in.text
 
     def test_every_v1_route_demands_credentials(self, settings: Settings):
         """``/v1`` 下**每一条**路由都要凭据（OPTIONS 除外，那是 CORS 预检）。

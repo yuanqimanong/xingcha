@@ -197,7 +197,12 @@ def _fmt_cost(value: str | None) -> str:
 async def login_page(request: Request) -> Response:
     state = request.app.state.xc
     async with state.sessionmaker() as s:
-        setup = not await ws.has_password(s)
+        has_db_password = await ws.has_password(s)
+        env_managed = ws.env_password_in_effect(
+            "x" if has_db_password else None,
+            request.app.state.xc.settings.admin_password,
+        )
+        setup = not has_db_password and not env_managed
     if await current_session(request) is not None:
         return RedirectResponse("/admin", status_code=303)
 
@@ -205,7 +210,13 @@ async def login_page(request: Request) -> Response:
     resp = _render(
         request,
         "login.html",
-        {"setup": setup, "action": "/admin/login", "error": None, "csrf": csrf.value},
+        {
+            "setup": setup,
+            "env_managed": env_managed,
+            "action": "/admin/login",
+            "error": None,
+            "csrf": csrf.value,
+        },
     )
     csrf.apply(resp)
     return resp
@@ -258,7 +269,11 @@ async def login(
         if admin is None:
             return _login_error(request, "数据库里没有管理员账号，请检查安装。")
 
-        setup = not admin.password_hash
+        env_password = state.settings.admin_password
+        env_managed = ws.env_password_in_effect(admin.password_hash, env_password)
+        # 环境变量生效时**不走首次设密**：走了的话用户会以为自己设了个新密码，
+        # 而下一次登录仍然按环境变量校验——一个"我明明改了"却毫无效果的状态。
+        setup = not admin.password_hash and not env_managed
         if setup:
             if len(password) < C.MIN_ADMIN_PASSWORD_LEN:
                 return _login_error(
@@ -269,11 +284,11 @@ async def login(
             admin.password_hash = ws.hash_password(password)
             log.info("已设置管理员密码")
         else:
-            if not ws.verify_password(admin.password_hash, password):
+            if not ws.verify_admin_password(admin.password_hash, password, env_password):
                 _throttle.record_failure(throttle_key)
                 # 不区分"用户不存在"与"密码错误"，也不提示剩余次数
                 return _login_error(request, "密码不正确。")
-            if admin.password_hash and ws.needs_rehash(admin.password_hash):
+            if not env_managed and admin.password_hash and ws.needs_rehash(admin.password_hash):
                 admin.password_hash = ws.hash_password(password)
 
         new = await ws.create(s, admin.id, ttl_hours=state.settings.session_ttl_hours)
@@ -549,6 +564,7 @@ async def settings_page(request: Request) -> Response:
         trace_endpoint = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
         trace_pk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
         trace_sk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
+        has_db_password = await ws.has_password(s)
 
     from ..db import migrate
 
@@ -569,6 +585,12 @@ async def settings_page(request: Request) -> Response:
             "trace_has_secret": bool(trace_sk),
             "trace_on": state.tracing is not None,
             "trace_include_content": state.settings.trace_include_content,
+            "env_managed": ws.env_password_in_effect(
+                "x" if has_db_password else None, state.settings.admin_password
+            ),
+            # 库里已有密码而环境变量也设了：那一项被忽略，必须说出来，
+            # 否则用户改了 .env、重启、发现没变化，而根因看不见。
+            "admin_password_env_ignored": bool(has_db_password and state.settings.admin_password),
         },
     )
     csrf.apply(resp)
@@ -644,7 +666,18 @@ async def change_password(
 
     async with state.sessionmaker() as s:
         admin = await ws.get_admin(s)
-        if admin is None or not ws.verify_password(admin.password_hash, current):
+        if admin is None:
+            raise Denied("数据库里没有管理员账号。")
+        if ws.env_password_in_effect(admin.password_hash, state.settings.admin_password):
+            # 改了也不生效（登录按环境变量校验），所以直接拒绝。
+            # 假装成功是最坏的选择：用户以为换了密码，而旧的那个仍然能登。
+            raise Denied(
+                "密码由环境变量 XINGCHA_ADMIN_PASSWORD 托管，在这里改不生效。"
+                "请改 .env 里的那一项并重启服务。"
+            )
+        if not ws.verify_admin_password(
+            admin.password_hash, current, state.settings.admin_password
+        ):
             raise Denied("当前密码不正确，未做任何修改。")
         if new_password == current:
             raise Denied("新密码与当前密码相同，未做任何修改。")

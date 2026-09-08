@@ -97,6 +97,26 @@ class AppState:
         self.concurrency = ConcurrencyLimiter(settings.max_concurrency, name="xingcha")
 
 
+async def _log_password_source(state: AppState) -> None:
+    """启动日志里报出后台密码来自哪里。"""
+    from .services import websession as ws
+
+    async with state.sessionmaker() as s:
+        has_db = await ws.has_password(s)
+    env = state.settings.admin_password
+    if ws.env_password_in_effect("x" if has_db else None, env):
+        log.warning(
+            "后台密码由环境变量 XINGCHA_ADMIN_PASSWORD 托管。"
+            "它会出现在 docker inspect 与 /proc/<pid>/environ 里；"
+            "后台与 CLI 的改密码/重置都不生效，要换就改 .env 并重启。"
+        )
+    elif has_db and env:
+        log.warning(
+            "环境变量 XINGCHA_ADMIN_PASSWORD **被忽略**：库里已有密码，先立者为准。"
+            "要改用环境变量里那个，先跑 `xingcha admin reset-password`。"
+        )
+
+
 async def load_tracing(state: AppState) -> None:
     """从 setting 表读 trace 配置并装配。
 
@@ -211,6 +231,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     state.usage = UsageBuffer(state.sessionmaker)
     state.usage.start()
+
+    # 后台密码的来源要在启动时说清楚。不说的话会出现一个很难查的状态：
+    # 用户改了 .env 里的密码、重启、发现没变化——而原因是库里已经有密码、先立者为准。
+    await _log_password_source(state)
 
     # 配额的计数在内存里，启动时从数据库把当前窗口的已用量读回来播种。
     # 不播种的话每次重启配额都会归零——而重启就是这个项目的升级方式。
@@ -355,6 +379,28 @@ def _mount_probes(app: FastAPI) -> None:
 
     往这里加路由必须同步更新 tests/test_app_startup.py 的免鉴权白名单断言。
     """
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> Response:
+        """根路径跳后台。
+
+        ------------------------------------------------------------------------
+        为什么是 307 而不是直接渲染
+        ------------------------------------------------------------------------
+
+        这条路由**不做任何鉴权判断，也不碰数据库**——它只是把人送去 ``/admin``，
+        由那边现有的守卫决定给总览还是跳登录页。
+
+        自己判一遍"登录了没"会有两个坏处：一是鉴权判定就有了第二个入口（架构标准 2
+        的反面），二是**根路径会因此变成一个登录态探测器**——未登录与已登录返回不同
+        的东西，公网上任何人都能拿它试探"这台机器上有人登着吗"。
+
+        307 而不是 303：303 会把方法改成 GET，而根路径只接 GET，两者等价；但 307
+        语义上是"这个资源就在那边"，更贴近这里的意思。用 302 会被某些客户端缓存。
+        """
+        from .web.routes import security_headers
+
+        return security_headers(RedirectResponse("/admin", status_code=307))
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

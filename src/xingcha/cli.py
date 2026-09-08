@@ -879,11 +879,6 @@ def admin_reset_password(
     执行这条命令的场景往往正是"我不确定还有谁登着"。
     """
     settings = get_settings()
-    if not yes:
-        typer.confirm(
-            "清空后台密码？现有登录会话会全部失效，下次访问 /admin 需要重新设定密码。",
-            abort=True,
-        )
 
     async def run() -> int:
         engine, maker, _ = _bootstrap()
@@ -895,6 +890,25 @@ def admin_reset_password(
                 if admin is None:
                     _err("数据库里没有管理员账号。库是不是空的？")
                     raise typer.Exit(1)
+
+                # 环境变量生效时**屏蔽重置**。
+                #
+                # 这时库里本来就没有密码（那正是环境变量生效的条件），清空是个空操作；
+                # 而它会让人以为"重置了、可以重新设一个"——实际下次登录仍然按环境变量
+                # 校验。与其做一个没有效果的动作，不如说清楚该去改哪儿。
+                if ws.env_password_in_effect(admin.password_hash, settings.admin_password):
+                    _err(
+                        "密码由环境变量 XINGCHA_ADMIN_PASSWORD 托管，重置在这里没有意义。\n"
+                        "  要换密码：改 .env 里的那一项并重启服务。\n"
+                        "  要改回后台设密：删掉那一项并重启，然后访问 /admin 设定。"
+                    )
+                    raise typer.Exit(2)
+
+                if not yes:
+                    typer.confirm(
+                        "清空后台密码？现有登录会话会全部失效，下次访问 /admin 需要重新设定密码。",
+                        abort=True,
+                    )
                 admin.password_hash = None
                 # 与后台改密码共用同一个吊销实现（架构标准 2：一个概念一处定义）
                 return await ws.revoke_all(s)
@@ -931,7 +945,25 @@ def admin_status() -> None:
             await engine.dispose()  # type: ignore[attr-defined]
 
     has_password, sessions = _run(run())
-    _info(f"密码：{'已设置' if has_password else '未设置（下次访问 /admin 会引导设定）'}")
+    from .services import websession as ws
+
+    settings = get_settings()
+    env_managed = ws.env_password_in_effect("x" if has_password else None, settings.admin_password)
+    if env_managed:
+        _info("密码：由环境变量 XINGCHA_ADMIN_PASSWORD 托管")
+        typer.secho(
+            "  要换密码就改 .env 并重启；后台与 CLI 的改/重置都不生效。", fg=typer.colors.CYAN
+        )
+    elif has_password:
+        _info("密码：已设置（存在库里）")
+        if settings.admin_password:
+            typer.secho(
+                "  环境变量 XINGCHA_ADMIN_PASSWORD **被忽略**：库里已有密码，先立者为准。\n"
+                "  要改用它，先跑 `xingcha admin reset-password`。",
+                fg=typer.colors.YELLOW,
+            )
+    else:
+        _info("密码：未设置（下次访问 /admin 会引导设定）")
     _info(f"活跃会话：{sessions}")
 
 

@@ -105,6 +105,14 @@ curl https://xc.example.com/healthz          # 这次不用 -k
 
 1. 首次访问会引导**设置管理员密码**（至少 12 位，别复用其它服务的密码——
    这个后台能改写上游 base_url）
+
+   也可以在 `.env` 里预设 `XINGCHA_ADMIN_PASSWORD`，省掉这一步、也不怕忘。
+   **先立者为准**：库里一旦有了密码，那一项就被忽略——这样任何能往 `.env` 写一行
+   的人都顶不掉已建好的管理员密码。要改用它，先跑
+   `docker compose exec xingcha xingcha admin reset-password`。
+
+   忘了密码：`docker compose exec xingcha xingcha admin reset-password`，
+   然后重新访问 `/admin` 设定。密码只存 argon2id 哈希，没有别的找回途径。
 2. 「设置」页填 OpenRouter key
 3. 「密钥」页签发一把 `sk-xc-`，交给业务代码
 
