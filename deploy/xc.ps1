@@ -44,6 +44,12 @@ function Die  { param($m) Write-Host "✗ $m" -ForegroundColor Red; exit 1 }
 
 function Compose { docker compose @Files @args }
 
+# up / down 一律带 --remove-orphans：不带的话，**从 compose 里删掉一个服务之后它的
+# 容器会永远留着**——compose 只管现在声明的服务，那个孤儿既不会被 down 掉也不会被
+# up 重建，就一直跑着占端口。实际踩过（Caddy 去掉之后 xingcha-caddy-1 还占着端口）。
+function Up   { Compose up -d --build --remove-orphans }
+function Down { Compose down --remove-orphans }
+
 function Need-Env {
   if (-not (Test-Path '.env')) {
     Die ".env 不存在。先 Copy-Item .env.example .env 并填 XINGCHA_DOMAIN。"
@@ -95,7 +101,7 @@ switch ($Action) {
   'start' {
     Need-Env
     Say '构建并启动（数据保留）'
-    Compose up -d --build
+    Up
     Wait-Healthy
     Show-Url
   }
@@ -111,9 +117,9 @@ switch ($Action) {
     # 数据在卷里而不是宿主目录里，所以**不存在** Linux 版那个"容器还在跑时删目录、
     # 进程握着已删除的 inode 继续写"的陷阱——down 一定先于卷被删除。
     Say '停止容器并删除数据卷'
-    Compose down -v
+    Compose down -v --remove-orphans
     Say '构建并启动'
-    Compose up -d --build
+    Up
     Wait-Healthy
     Ok '全新实例。第一次打开 /admin 会引导设定密码（或按 .env 里的 XINGCHA_ADMIN_PASSWORD）'
     Show-Url
@@ -128,12 +134,12 @@ switch ($Action) {
     Say '拉代码'
     git pull --ff-only
     Say '构建并启动'
-    Compose up -d --build
+    Up
     Wait-Healthy
     Show-Url
   }
 
-  'stop' { Compose down; Ok '已停止（数据卷保留）' }
+  'stop' { Down; Ok '已停止（数据卷保留）' }
 
   'logs' { Compose logs -f --tail $Tail xingcha }
 

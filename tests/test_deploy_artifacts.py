@@ -329,7 +329,9 @@ class TestOpsScripts:
         """**先 down 再删。** 反过来的话进程还握着已删除的 inode 继续写，
         表现为"我删了库，密码却还在"——实际踩出来的。"""
         block = sh[sh.index("  redeploy)") : sh.index("  stop)")]
-        assert block.index("c down") < block.index("rm -rf"), "redeploy 在 down 之前就删了 data"
+        # 匹配的是 `down`（脚本里的包装函数，会带上 --remove-orphans），不是 `c down`
+        assert re.search(r"^\s*down\s*$", block, re.M), "redeploy 里没有停容器这一步"
+        assert block.index("down") < block.index("rm -rf"), "redeploy 在 down 之前就删了 data"
 
     def test_redeploy_asks_before_destroying_data(self, sh: str, ps1: str):
         assert "read -r answer" in sh and '"$answer" = yes' in sh
@@ -368,3 +370,14 @@ class TestOpsScripts:
     def test_powershell_avoids_the_reserved_host_variable(self, ps1: str):
         """``$Host`` 是 PowerShell 的自动变量，赋值会报错。"""
         assert "$host =" not in ps1 and "$Host =" not in ps1
+
+    def test_both_scripts_remove_orphans(self, sh: str, ps1: str):
+        """``up`` / ``down`` 必须带 ``--remove-orphans``。
+
+        不带的话，**从 compose 里删掉一个服务之后它的容器会永远留着**：compose 只
+        管自己现在声明的服务，那个孤儿既不会被 down 掉，也不会被 up 重建，就一直
+        跑着占端口。实际踩过：Caddy 从编排里去掉之后 xingcha-caddy-1 还在跑、还占着
+        8443，而 ``docker compose ps`` 看起来一切正常。
+        """
+        for name, text in (("deploy/xc", sh), ("deploy/xc.ps1", ps1)):
+            assert "--remove-orphans" in text, f"{name} 的 up/down 没带 --remove-orphans"

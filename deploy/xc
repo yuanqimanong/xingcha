@@ -42,6 +42,15 @@ DATA_DIR=./data
 # "在哪个目录下敲命令"会改变结果——正是上一版让人在 deploy/ 里 restart 失败的原因。
 c() { docker compose -f deploy/docker-compose.yml --env-file .env "$@"; }
 
+# up / down 一律带 --remove-orphans。
+#
+# 不带的话，**从 compose 里删掉一个服务之后它的容器会永远留着**：compose 只管
+# 自己现在声明的服务，那个孤儿既不会被 down 掉，也不会被 up 重建，就一直跑着占端口。
+# 实际踩过：Caddy 从编排里去掉之后，xingcha-caddy-1 还在跑、还占着 8443，
+# 而 `docker compose ps` 看起来一切正常。
+up()   { c up -d --build --remove-orphans "$@"; }
+down() { c down --remove-orphans "$@"; }
+
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m→ %s\033[0m\n' "$*"; }
 ok()  { printf '\033[32m✓ %s\033[0m\n' "$*"; }
@@ -119,7 +128,7 @@ case "${1:-}" in
   start)
     need_env; ensure_data_owner
     say "构建并启动（保留 data）"
-    c up -d --build
+    up
     wait_healthy; show_url
     ;;
 
@@ -133,12 +142,12 @@ case "${1:-}" in
     # **先 down 再删**。反过来的话进程还握着已删除的 inode 继续写，
     # 表现为"我删了库，密码却还在"——这一条是实际踩出来的。
     say "停止容器"
-    c down
+    down
     say "删除 $DATA_DIR"
     sudo rm -rf "$DATA_DIR"
     ensure_data_owner
     say "构建并启动"
-    c up -d --build
+    up
     wait_healthy
     ok "全新实例。第一次打开 /admin 会引导设定密码（或按 .env 里的 XINGCHA_ADMIN_PASSWORD）"
     show_url
@@ -157,11 +166,11 @@ case "${1:-}" in
     git pull --ff-only
     say "构建并启动"
     ensure_data_owner
-    c up -d --build
+    up
     wait_healthy; show_url
     ;;
 
-  stop)   c down; ok "已停止（data 保留）" ;;
+  stop)   down; ok "已停止（data 保留）" ;;
   logs)   shift; c logs -f --tail "${1:-50}" xingcha ;;
   status)
     c ps
