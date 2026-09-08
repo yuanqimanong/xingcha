@@ -35,11 +35,37 @@ DOCKERFILE = ROOT / "Dockerfile"
 DEPLOY_SH = ROOT / "deploy" / "deploy.sh"
 ENV_EXAMPLE = ROOT / "deploy" / ".env.example"
 DRILL_SH = ROOT / "deploy" / "drill.sh"
+COMPOSE_LAN = ROOT / "docker-compose.lan.yml"
+CADDYFILE_LAN = ROOT / "deploy" / "Caddyfile.lan"
+
+
+class _ComposeLoader(yaml.SafeLoader):
+    """认得 compose 自己的 YAML 标签（``!override`` / ``!reset``）。
+
+    ``safe_load`` 会对它们抛 ConstructorError——那不是配置错，是 compose 的扩展
+    语法。这里把标签丢掉、只保留值，因为测试关心的是"有没有这个 key、值是什么"，
+    而标签本身另有一条测试（读原文断言 ``ports: !override`` 在）。
+    """
+
+
+def _drop_tag(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    return loader.construct_scalar(node)  # type: ignore[arg-type]
+
+
+_ComposeLoader.add_multi_constructor("!", _drop_tag)
+
+
+def _load_compose(path: Path) -> dict:
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=_ComposeLoader)
 
 
 @pytest.fixture(scope="module")
 def compose() -> dict:
-    return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    return _load_compose(COMPOSE)
 
 
 def caddy_env_refs() -> set[str]:
@@ -214,3 +240,95 @@ class TestOrchestrationShape:
         assert "uv sync" in text and "--frozen" in text
         assert "--no-editable" in text
         assert (ROOT / "uv.lock").exists(), "uv.lock 必须入库，否则 --frozen 无从谈起"
+
+
+class TestLanOverride:
+    """局域网叠加层。
+
+    ------------------------------------------------------------------------
+    它为什么存在
+    ------------------------------------------------------------------------
+
+    生产的 Caddyfile 走 ACME，需要真域名——所以局域网/本机测试此前只能手搓
+    ``docker run``。后果是**照文档敲的 `docker compose restart` 会失败**：
+    用户在 deploy/ 下执行，撞上 `XINGCHA_DOMAIN is missing a value`，而在跑的容器
+    压根不是 compose 起的、compose 管不到。正规路径不覆盖真实用法，那就是文档在骗人。
+    """
+
+    @pytest.fixture(scope="class")
+    def lan(self) -> dict:
+        return _load_compose(COMPOSE_LAN)
+
+    def test_the_override_exists_and_parses(self, lan: dict):
+        assert set(lan["services"]) <= {"xingcha", "caddy"}
+
+    def test_ports_are_overridden_not_appended(self, lan: dict):
+        """``ports`` 必须用 ``!override``。
+
+        compose 对列表默认是**追加**，所以不覆盖的话生产那份的 80/443 会继续被占——
+        本机很可能已经有别的东西在用它们，而"我明明只想开 8443"却把 443 占掉是一个
+        说不清的副作用。实测踩过。
+        """
+        raw = COMPOSE_LAN.read_text(encoding="utf-8")
+        assert "ports: !override" in raw, "ports 没有 !override，80/443 会被一起占用"
+        assert "volumes: !override" in raw, "volumes 没有 !override，会挂两份 Caddyfile"
+
+    def test_caddy_volume_is_separate_from_production(self, lan: dict):
+        """证书状态卷要与生产分开。
+
+        内部 CA 与 ACME 的状态混在同一个卷里，切换模式时会带着上一次的配置，
+        表现为"端口上没人监听"——一个查不到原因的现象。
+        """
+        mounts = " ".join(lan["services"]["caddy"]["volumes"])
+        assert "caddy_lan_data" in mounts
+        assert "caddy_data:" not in mounts
+
+    def test_env_file_is_passed_into_the_container(self, lan: dict):
+        """**这是「上游可切换」在 Docker 下能用的前提。**
+
+        容器不继承宿主环境（Docker 的隔离语义），所以 DEEPSEEK_API_KEY 一类不透传
+        进来就扫不到，后台的「环境里扫到的」那一栏是空的。顺带也带进
+        XINGCHA_ADMIN_PASSWORD——那正是用户"我 .env 里设了怎么不生效"的根因：
+        我此前用 docker run 手工列举环境变量，根本没传它。
+        """
+        entries = lan["services"]["xingcha"]["env_file"]
+        assert any((e if isinstance(e, str) else e.get("path")) == ".env" for e in entries), (
+            "没有把 .env 注入容器"
+        )
+
+    def test_lan_caddyfile_uses_the_internal_ca(self):
+        """局域网 IP 与 localhost 拿不到公网证书。"""
+        raw = CADDYFILE_LAN.read_text(encoding="utf-8")
+        assert "tls internal" in raw
+        assert "acme_ca" not in raw, "局域网配置不该走 ACME"
+
+    def test_lan_site_address_has_no_hostname(self):
+        """站点地址**只写端口**。
+
+        写成 ``https://<IP>:8443`` 会撞上 IP 证书的固有限制：SNI 里不允许放 IP
+        （RFC 6066），于是 curl 发出的 SNI 与站点地址对不上，Caddy 直接拒绝握手
+        （``TLS alert internal error``）——而证书本身是对的，SAN 里确实有那个 IP。
+        实测踩过：openssl 能连、curl 不能，差别就在 SNI。
+        """
+        raw = CADDYFILE_LAN.read_text(encoding="utf-8")
+        assert re.search(r"^:\{\$XINGCHA_LAN_PORT", raw, re.M), "站点地址不该带主机名"
+        assert not re.search(r"^https://", raw, re.M)
+
+    def test_lan_caddy_reaches_xingcha_by_service_name(self):
+        """按 compose 服务名寻址，所以 xingcha **不需要**发布宿主端口——与生产一致。"""
+        assert "reverse_proxy xingcha:8720" in CADDYFILE_LAN.read_text(encoding="utf-8")
+
+    def test_override_does_not_publish_xingcha_ports(self, lan: dict):
+        """叠加层也不能给 xingcha 开宿主端口。
+
+        开了就绕过 Caddy，而且 Docker 的 DOCKER-USER 链会绕过 ufw。
+        """
+        assert "ports" not in lan["services"].get("xingcha", {})
+
+    def test_lan_keeps_the_streaming_flush(self):
+        """少这一行，流式就变成"等全部生成完再一次性吐出"。
+
+        叠加层是**测试用的**，所以它更不能与生产在这类行为上分叉——分叉了就测不出
+        真实体验。
+        """
+        assert "flush_interval -1" in CADDYFILE_LAN.read_text(encoding="utf-8")

@@ -153,6 +153,38 @@ OpenRouter 侧的额度上限是唯一不依赖星槎正常工作的那道闸。
 
 ---
 
+## 局域网 / 本机测试
+
+生产那份编排走 ACME，需要**真域名**。要在局域网 IP 或 localhost 上试，用叠加层：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
+```
+
+`.env` 里补三项（都不是密钥）：
+
+```
+XINGCHA_DOMAIN=192.168.183.132     # compose 的解析期守卫要求它非空
+ACME_EMAIL=none@localhost          # 局域网用不到，同上
+XINGCHA_LAN_HOST=192.168.183.132   # 你的局域网 IP
+XINGCHA_LAN_PORT=8443              # 不占宿主 80/443
+```
+
+然后开 `https://<你的IP>:8443`。**浏览器会报证书不受信任**——局域网 IP 拿不到公网
+证书，用的是 Caddy 内部 CA 自签，点"继续"即可。
+
+几点：
+
+- **局域网也必须 HTTPS。** 后台会话 cookie 是 `secure=True`（生产永远在 TLS
+  后面），明文 HTTP 下浏览器会拒绝存它，症状是"登录成功又被弹回登录页"的死循环。
+- 叠加层把整个 `.env` 注入容器（`env_file`）。这是**「上游可切换」在 Docker 下能用
+  的前提**：容器不继承宿主环境，`DEEPSEEK_API_KEY` 一类不透传进来就扫不到。
+  代价是这些值会出现在 `docker inspect` 里。
+- 其余（容器形状、卷、日志上限、健康检查、xingcha 零宿主端口）完全沿用生产那一份
+  ——测的就是要上线的那套东西。
+
+---
+
 ## 更新
 
 ```bash
