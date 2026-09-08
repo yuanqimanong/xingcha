@@ -25,3 +25,6 @@ build/
 # 编辑器
 .vscode/
 .idea/
+
+# 局域网演示用的临时 Caddy 配置
+.lan-demo/

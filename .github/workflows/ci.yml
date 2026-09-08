@@ -133,6 +133,23 @@ jobs:
             xingcha db verify
           '
 
+      - name: 镜像里的静态资源齐不齐
+        # 模板引用的每个 static 文件都必须**在镜像里**存在。
+        #
+        # 源码树里的测试（tests/test_admin.py::test_every_script_src_is_served_by_us）
+        # 查的是源码，查不到打包这一层。实测踩过：新加的 web/static/app.js 没进旧
+        # 镜像，容器里 /admin/static/app.js 是 404 —— 而复制按钮与危险操作的二次
+        # 确认全靠它，页面看起来正常、点了没反应。
+        run: |
+          for f in $(grep -rhoP 'src="/admin/static/\K[^"]+' src/xingcha/web/templates/ | sort -u); do
+            docker run --rm --entrypoint sh xingcha:ci -c \
+              "test -f /opt/venv/lib/python3.13/site-packages/xingcha/web/static/$f" \
+              || { echo "::error::模板引用了 static/$f，但镜像里没有"; exit 1; }
+            echo "  static/$f ok"
+          done
+          # 反向：CSS 里 url() 引到的字体/图片同理
+          test -f src/xingcha/web/static/style.css
+
       - name: 缺必填变量时 compose 必须立刻失败
         # 而不是把失败推迟成容器的无限重启循环。这是 A13。
         run: |
