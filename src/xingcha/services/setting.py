@@ -33,6 +33,7 @@ KNOWN_KEYS: frozenset[str] = frozenset(
     {
         C.SETTING_KEY_OPENROUTER_API_KEY,
         C.SETTING_KEY_OPENROUTER_BASE_URL,
+        C.SETTING_KEY_UPSTREAM_ACTIVE_ENV,
         C.SETTING_KEY_TRACE_ENDPOINT,
         C.SETTING_KEY_TRACE_PUBLIC_KEY,
         C.SETTING_KEY_TRACE_SECRET_KEY,
@@ -63,7 +64,12 @@ async def set_(session: AsyncSession, keyring: Keyring, key: str, value: str) ->
     enc = keyring.encrypt(value)
     is_secret = key in SECRET_KEYS
     if row is None:
-        session.add(Setting(key=key, value_enc=enc, is_secret=is_secret, updated_at=utcnow()))
+        # 用 merge 而不是 add：并发/重入下同一个 key 可能已被另一条路径插入，
+        # 而 add 会撞唯一约束。真踩过：import_env_once 连着写 base_url 与 api_key，
+        # 中间那次 get() 因为 value_enc IS NULL 返回 None，于是又插一次。
+        await session.merge(
+            Setting(key=key, value_enc=enc, is_secret=is_secret, updated_at=utcnow())
+        )
     else:
         row.value_enc = enc
         row.is_secret = is_secret
@@ -85,7 +91,12 @@ async def list_keys(session: AsyncSession) -> list[tuple[str, bool, str]]:
     return [(r.key, r.is_secret, r.updated_at) for r in rows]
 
 
-async def import_env_once(session: AsyncSession, keyring: Keyring, env_key: str | None) -> bool:
+async def import_env_once(
+    session: AsyncSession,
+    keyring: Keyring,
+    env_key: str | None,
+    env_base_url: str | None = None,
+) -> bool:
     """把环境变量里的上游 key 一次性导入 DB。
 
     **只在 DB 里还没有值时生效**，之后永久忽略。这样既让"首次启动填个环境变量就能跑"
@@ -94,16 +105,20 @@ async def import_env_once(session: AsyncSession, keyring: Keyring, env_key: str 
     """
     if not env_key:
         return False
+    # base_url 与 key 一起导入：只导 key 的话，用户在 .env 里写了 XINGCHA_BASE_URL
+    # 指向自己的中转，首次启动却仍然去打 openrouter.ai —— 那是一次带着 key 的错投。
+    if env_base_url and not await get(session, keyring, C.SETTING_KEY_OPENROUTER_BASE_URL):
+        await set_(session, keyring, C.SETTING_KEY_OPENROUTER_BASE_URL, env_base_url.strip())
     existing = await get(session, keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
     if existing:
         log.warning(
-            "环境变量 XINGCHA_OPENROUTER_API_KEY 被忽略：数据库里已有上游 key。"
+            "环境变量 XINGCHA_API_KEY 被忽略：数据库里已有上游 key。"
             "长期配置请在管理面修改，或用 `xingcha config set openrouter.api_key -`。"
         )
         return False
     await set_(session, keyring, C.SETTING_KEY_OPENROUTER_API_KEY, env_key)
     log.warning(
-        "已把环境变量 XINGCHA_OPENROUTER_API_KEY 导入数据库并加密保存。"
+        "已把环境变量 XINGCHA_API_KEY 导入数据库并加密保存。"
         "建议从 .env 里删掉它——环境变量会出现在 docker inspect 与 /proc/<pid>/environ。"
     )
     return True

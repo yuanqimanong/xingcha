@@ -1068,6 +1068,155 @@ async def agent_export(slug: str, request: Request) -> Response:
 
 
 # =============================================================================
+# 上游切换
+# =============================================================================
+
+
+async def _upstream_context(request: Request) -> dict[str, Any]:
+    from ..services import agent as agent_svc
+    from ..services import upstream_env as ue
+
+    state = request.app.state.xc
+    async with state.sessionmaker() as s:
+        active_env = await setting_svc.get(s, state.keyring, C.SETTING_KEY_UPSTREAM_ACTIVE_ENV)
+        raw_key = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
+        base_url = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_BASE_URL)
+        agents = await agent_svc.list_all(s)
+
+    discovered = ue.discover()
+    default_key, _ = ue.default_from_env()
+
+    return {
+        "active": {
+            "env_name": active_env or (C.ENV_DEFAULT_API_KEY if default_key else ""),
+            "label": C.vendor_label(active_env) if active_env else "默认",
+            "masked": setting_svc.mask(raw_key) if raw_key else "",
+            "base_url": base_url or "",
+            "configured": bool(raw_key),
+            "model_count": len(state.catalog.all()),
+            "catalog_stale": state.catalog.is_stale,
+        },
+        "discovered": discovered,
+        "default_present": bool(default_key),
+        "agent_count": len(agents),
+        # 容器里扫不到宿主环境变量（Docker 不继承）。页面必须说，否则本机看到一排、
+        # 上线发现空的会被当成功能坏了。
+        "in_container": Path("/.dockerenv").exists(),
+    }
+
+
+@router.get("/upstreams")
+async def upstreams_page(request: Request) -> Response:
+    await require_admin(request)
+    csrf = await _ensure_csrf_cookie(request)
+    resp = _render(
+        request, "upstreams.html", {**await _upstream_context(request), "csrf": csrf.value}
+    )
+    csrf.apply(resp)
+    return resp
+
+
+@router.post("/upstreams/probe")
+async def upstreams_probe(
+    request: Request,
+    env_name: str = Form(...),
+    base_url: str = Form(default=""),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """切换前的体检。**只读**——不写任何设置，不动运行时。
+
+    分成 probe / switch 两步而不是一步切完：切上游会打断所有现有 Agent（模型名在
+    新上游不存在），而那个后果必须在切之前看得见。
+    """
+    await guard_mutation(request, csrf_token)
+    from ..services import agent as agent_svc
+    from ..services import upstream_env as ue
+
+    state = request.app.state.xc
+    resolved = (base_url.strip() or C.base_url_for_env(env_name) or "").strip()
+    if not resolved:
+        raise Denied(f"{env_name} 不是已知厂商，请填写 base_url。")
+    try:
+        checked = check_upstream_url(resolved)
+    except UnsafeUpstreamURL as e:
+        raise Denied(f"base_url 被拒绝：{e}") from e
+
+    api_key = ue.read_key(env_name)
+    if not api_key:
+        raise Denied(f"环境变量 {env_name} 现在读不到值——是不是已经从 .env 里删了？")
+
+    async with state.sessionmaker() as s:
+        agents = await agent_svc.list_all(s)
+    # 模型名在 spec_json 里（AgentSpec 的一个字段），没有独立列
+    models: dict[str, str] = {}
+    for a, v in agents:
+        if v is None:
+            continue
+        model = json.loads(v.spec_json).get("model")
+        if isinstance(model, str) and model:
+            models[a.slug] = model
+
+    probe = await ue.probe_switch(
+        env_name=env_name,
+        base_url=checked.url,
+        api_key=api_key,
+        agent_models=models,
+        timeout=state.settings.request_timeout,
+    )
+    return security_headers(
+        _render(request, "_upstream_probe.html", {"probe": probe, "csrf": csrf_token})
+    )
+
+
+@router.post("/upstreams/switch")
+async def upstreams_switch(
+    request: Request,
+    env_name: str = Form(...),
+    base_url: str = Form(...),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """真正切过去。
+
+    选中的 key 从环境变量读出来后**加密落库**——环境只是发现来源，不是长期存放处
+    （它会进 ``docker inspect`` 与 ``/proc/<pid>/environ``）。
+
+    切完必须做三件收尾，少一件就会留下难查的问题：
+    1. 重装上游客户端（``load_upstream``）；
+    2. **重拉模型目录**——它是判档与定价的主价源，不拉的话每条记录都是
+       ``cost_source=unknown``；
+    3. **清运行时缓存**——Agent 实例把 provider 烤进去了，不清则旧 key 继续被用。
+    """
+    await guard_mutation(request, csrf_token)
+    from ..services import upstream_env as ue
+
+    state = request.app.state.xc
+    try:
+        checked = check_upstream_url(base_url.strip())
+    except UnsafeUpstreamURL as e:
+        raise Denied(f"base_url 被拒绝：{e}") from e
+
+    api_key = ue.read_key(env_name)
+    if not api_key:
+        raise Denied(f"环境变量 {env_name} 现在读不到值。")
+
+    async with state.sessionmaker() as s:
+        await setting_svc.set_(s, state.keyring, C.SETTING_KEY_OPENROUTER_API_KEY, api_key)
+        await setting_svc.set_(s, state.keyring, C.SETTING_KEY_OPENROUTER_BASE_URL, checked.url)
+        await setting_svc.set_(s, state.keyring, C.SETTING_KEY_UPSTREAM_ACTIVE_ENV, env_name)
+        await s.commit()
+
+    from ..app import load_upstream
+
+    await load_upstream(state)
+    up = state.upstream.config
+    if up is not None:
+        await state.catalog.refresh(state.upstream.client(), up.api_key)
+    state.runtimes.clear()
+
+    return security_headers(RedirectResponse("/admin/upstreams", status_code=303))
+
+
+# =============================================================================
 # 配额
 # =============================================================================
 

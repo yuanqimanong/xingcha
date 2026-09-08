@@ -1,0 +1,149 @@
+{% extends "_shell.html" %}
+{% block title %}上游{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>上游</h1>
+    <p>
+      星槎是<strong>单出口</strong>：同一时刻只有一个上游生效，业务代码永远只认
+      <code>base_url</code> + 一把 <code>sk-xc-</code>。这一页只做一件事——换掉那个出口。
+    </p>
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head">
+    <h2>目前使用</h2>
+    {% if active.configured %}
+      <span class="badge ok">{{ active.label }}</span>
+    {% else %}
+      <span class="badge danger">未配置</span>
+    {% endif %}
+  </div>
+  <div class="card-body flush">
+    {% if active.configured %}
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><th>来源</th><td class="mono">{{ active.env_name or '手动填写' }}</td></tr>
+          <tr><th>API key</th><td class="mono">{{ active.masked }}</td></tr>
+          <tr><th>base_url</th><td class="mono truncate">{{ active.base_url }}</td></tr>
+          <tr>
+            <th>模型目录</th>
+            <td>
+              {{ active.model_count }} 个
+              {% if active.catalog_stale %}<span class="badge warn">已过期</span>{% endif %}
+              {% if active.model_count == 0 %}
+                <div class="hint">目录为空。判档会一律回落 T2，费用来源会是 <code>unknown</code>。</div>
+              {% endif %}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">还没有上游</div>
+      <div class="small">在下面挑一个，或到「设置」页手填。</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>环境里扫到的</h2>
+    <span class="badge">{{ discovered | length }} 个</span>
+  </div>
+  <div class="card-body">
+    {% if in_container %}
+    <div class="notice warn mb4">
+      <strong>星槎跑在容器里，扫不到宿主的环境变量。</strong>
+      Docker 不继承宿主环境——要让某个厂商 key 出现在这里，得在
+      <code>docker-compose.yml</code> 的 <code>environment:</code> 里显式透传。
+    </div>
+    {% endif %}
+
+    <p class="muted small mb4">
+      只认内置名单里的厂商变量名（大小写不敏感），所以 <code>GITHUB_TOKEN</code>
+      这类不会被误列。<strong>选中的那把会加密落库</strong>，环境变量只作为发现来源——
+      它会出现在 <code>docker inspect</code> 与 <code>/proc/&lt;pid&gt;/environ</code> 里，不是长期存放处。
+    </p>
+
+    {% if discovered %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>厂商</th><th>环境变量</th><th>key</th><th>base_url</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for u in discovered %}
+          <tr>
+            <td>
+              <strong>{{ u.label }}</strong>
+              {% if u.env_name.upper() == active.env_name.upper() and active.configured %}
+                <span class="badge ok">生效中</span>
+              {% endif %}
+              {% if not u.has_catalog %}
+                <span class="badge warn" title="这个上游没有 /models 端点">无目录</span>
+              {% endif %}
+            </td>
+            <td class="mono dim">{{ u.env_name }}</td>
+            <td class="mono">{{ u.masked }}</td>
+            <td class="mono dim truncate" title="{{ u.base_url or '' }}">
+              {{ u.base_url or '需要你填' }}
+            </td>
+            <td class="num">
+              <form method="post" action="/admin/upstreams/probe"
+                    hx-post="/admin/upstreams/probe" hx-target="#probe-result" hx-swap="innerHTML">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="env_name" value="{{ u.env_name }}">
+                {% if u.base_url %}
+                  <input type="hidden" name="base_url" value="{{ u.base_url }}">
+                {% else %}
+                  <input name="base_url" type="text" class="mono" required
+                         placeholder="https://…/v1" style="width:15rem">
+                {% endif %}
+                <button class="btn sm" type="submit">
+                  检查并切换
+                  <span class="htmx-indicator">…</span>
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">环境里没有扫到厂商 key</div>
+      <div class="small">
+        在 <code>.env</code> 里写一个即可，例如：
+      </div>
+      <div class="mt4"><code>DEEPSEEK_API_KEY=sk-…</code></div>
+      <div class="hint mt4">
+        写完要重启星槎——环境变量在进程启动时读取。
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div id="probe-result" class="mt4"></div>
+
+<div class="card mt5">
+  <div class="card-head"><h2>切换会影响什么</h2></div>
+  <div class="card-body">
+    <p class="muted small">
+      <strong>你现有的 {{ agent_count }} 个 Agent 里写的是模型名</strong>（如
+      <code>openai/gpt-5</code>）。换上游之后那些模型可能不存在，对应的 Agent 会开始报错。
+      所以点「检查并切换」时会先用新 key 拉一次目录，把要失效的 Agent 列出来给你确认，
+      拉不通就直接拒绝切换。
+    </p>
+    <p class="muted small mt4">
+      裸模型直通不受影响——它把你给的 model 原样转发，换上游就是换了可用模型的集合。
+    </p>
+  </div>
+</div>
+{% endblock %}

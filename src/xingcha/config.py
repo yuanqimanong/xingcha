@@ -5,7 +5,7 @@
 
 注意这里**没有** OpenRouter API key：它由管理员在 Web 上填写、Fernet 加密后存进
 ``setting`` 表。放进环境变量会让"Web 表单配置"这条主线断掉，而且环境变量会进
-``docker inspect`` 与 ``/proc/<pid>/environ``。唯一的例外是 :attr:`Settings.openrouter_api_key`
+``docker inspect`` 与 ``/proc/<pid>/environ``。唯一的例外是 :attr:`Settings.api_key`
 ——它只在**首次启动**时一次性导入 DB 并告警，之后永久忽略（见 services/setting.py）。
 """
 
@@ -15,7 +15,7 @@ import logging
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from . import contract as C
@@ -64,8 +64,21 @@ class Settings(BaseSettings):
     public_url: str | None = None
 
     # --- 上游 ---
-    #: 仅用于**首次启动**时把 key 导入 DB，之后永久忽略。长期配置在设置页里改。
-    openrouter_api_key: str | None = None
+    #: 默认上游。仅用于**首次启动**时导入 DB，之后由管理面/CLI 接管。
+    #:
+    #: 用通用名 ``XINGCHA_API_KEY`` / ``XINGCHA_BASE_URL`` 而不是把厂商名写进变量名：
+    #: 上游是可切换的，名字里带 OPENROUTER 会在切到别家之后变成谎言。
+    #:
+    #: ``validation_alias`` 保留旧名 ``XINGCHA_OPENROUTER_API_KEY``——改配置项名是
+    #: 破坏性变更，而"升级对用户无感"是这个项目的头号承诺。两个都设时新名优先。
+    api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("XINGCHA_API_KEY", "XINGCHA_OPENROUTER_API_KEY"),
+    )
+    base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("XINGCHA_BASE_URL", "XINGCHA_OPENROUTER_BASE_URL"),
+    )
 
     # --- 运行护栏 ---
     #: 必须 ≥1：传 0 会让 pydantic-ai 在建 Agent 时抛 UserError（实测），

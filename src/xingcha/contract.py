@@ -203,8 +203,30 @@ SLUG_RESERVED: Final[frozenset[str]] = frozenset(
 #: 保留前缀：留给星槎将来可能内置的 Agent。
 SLUG_RESERVED_PREFIX: Final = "xc-"
 
-#: 上游裸模型 id。一定含 ``/``（``vendor/name``），可带 ``:free`` / ``:batch`` 变体后缀。
+#: **隐式**上游裸模型 id：一定含 ``/``（``vendor/name``），可带 ``:free`` / ``:batch``
+#: 变体后缀。这条不能放宽——含不含 ``/`` 正是隐式分派的判据（见 classify_model）。
 UPSTREAM_MODEL_RE: Final = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$")
+
+#: **显式**上游模型 id（``xc:model/<id>``）：不要求含 ``/``。
+#:
+#: ------------------------------------------------------------------------------
+#: 为什么显式通道要比隐式宽
+#: ------------------------------------------------------------------------------
+#:
+#: 上游是可切换的（见 UPSTREAM_ENV_CANDIDATES），而各家的 id 命名习惯不同：
+#:
+#:   聚合方（OpenRouter / 硅基流动 / Together）   ``vendor/name``      含斜杠
+#:   直连厂商（DeepSeek / Moonshot / Groq / 智谱） ``deepseek-v4-flash`` **不含斜杠**
+#:
+#: 只认含斜杠的话，切到任何直连厂商之后直通就完全不可用——不含斜杠的名字会被当成
+#: Agent slug，返回 model_not_found。实测踩过。
+#:
+#: 但**隐式规则绝不放宽**：那条"不含 / 就是 Agent slug，查不到直接 404"守着一件事——
+#: 一个拼错的 slug 不能静默变成一次真实的付费调用。所以放宽只发生在调用方**显式
+#: 写了 xc:model/** 的时候：那一刻意图没有歧义，不存在"以为在调 Agent"的可能。
+#:
+#: 这是纯加法（原先 400 的输入现在 200），不影响任何既有调用方。
+EXPLICIT_UPSTREAM_MODEL_RE: Final = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 
 #: 星槎显式命名空间前缀。
 #:
@@ -248,6 +270,10 @@ def classify_model(model: str) -> ModelRef:
     2. 否则含 ``/`` → 上游裸模型 id，原样透传
     3. 其余 → Agent slug；查不到直接 404，**绝不猜测性地转发给上游**
 
+    第 1 条与第 2 条对"合法的上游 id"要求不同：显式通道**不要求含 ``/``**，
+    因为直连厂商（DeepSeek / Groq / 智谱）的 id 没有斜杠。隐式那条必须要求，
+    否则第 3 条就无从判断。
+
     第 3 条的"绝不回落"很重要：如果查不到 Agent 就试着当上游模型转发出去，那么一个
     拼错的 slug 会静默变成一次真实的付费调用，而调用方以为自己在调 Agent。
     """
@@ -265,7 +291,9 @@ def classify_model(model: str) -> ModelRef:
             validate_slug(value)
             return ModelRef(ModelKind.AGENT, value, explicit=True)
         if kind == EXPLICIT_KIND_MODEL:
-            if not UPSTREAM_MODEL_RE.match(value):
+            # 显式通道不要求含 ``/``：直连厂商的 id 没有斜杠。见
+            # EXPLICIT_UPSTREAM_MODEL_RE 的说明。
+            if not EXPLICIT_UPSTREAM_MODEL_RE.match(value):
                 raise ModelRefInvalid(f"不是合法的上游 model id：{value!r}")
             return ModelRef(ModelKind.UPSTREAM, value, explicit=True)
         raise ModelRefInvalid(
@@ -663,6 +691,139 @@ REQUIRED_JOURNAL_MODE: Final = "wal"
 #: 环境变量会进 ``docker inspect`` 与 ``/proc/<pid>/environ``，不是长期存放处。
 SETTING_KEY_OPENROUTER_API_KEY: Final = "openrouter.api_key"
 SETTING_KEY_OPENROUTER_BASE_URL: Final = "openrouter.base_url"
+
+#: 当前生效的上游来自哪个环境变量名。**只用于展示**，不参与解析。
+#:
+#: 真正生效的 key 与 base_url 仍然存在上面那两个加密项里——切换只是把选中的那把
+#: 复制进去。这样 ``load_upstream`` 一行都不用改，切换功能的爆炸半径被限制在
+#: 一次 setting 写入。
+SETTING_KEY_UPSTREAM_ACTIVE_ENV: Final = "upstream.active_env"
+
+#: 可切换的上游：环境变量名 → 该厂商的 OpenAI 兼容 base_url。**闭集，一处定义。**
+#:
+#: ------------------------------------------------------------------------------
+#: 为什么按环境变量名建表，而不是猜 key 的前缀
+#: ------------------------------------------------------------------------------
+#:
+#: 猜前缀不可行：硅基流动、DeepSeek、Moonshot、Together、Fireworks、Requesty
+#: **全都发 ``sk-`` 开头的 key**，彼此不可区分。猜错的后果不是"配置不生效"，
+#: 是把凭据发给错误的 base_url —— 一次真实的 key 外泄。
+#:
+#: 按变量名建表则有一个关键优势：**表里存的是 base_url，而端点地址比变量名稳定得多。**
+#: 变量名各家文档天天变（``DEEPINFRA_API_KEY`` / ``DEEPINFRA_TOKEN``、
+#: ``AIMLAPI_`` / ``AIML_``、``GOOGLE_`` / ``GEMINI_``），所以同一个厂商允许多个
+#: 变量名指向同一个 base_url；而端点几年不动。
+#:
+#: 表里没有的变量名不会被扫出来（见 :func:`is_known_upstream_env`）——宁可少认，
+#: 也不要把 ``GITHUB_TOKEN`` 当成模型 key 列进管理面。
+#:
+#: ------------------------------------------------------------------------------
+#: 只收 OpenAI 兼容的厂商
+#: ------------------------------------------------------------------------------
+#:
+#: 星槎的整条链路是 OpenAI 兼容协议（``/v1/chat/completions``）。所以
+#: **Anthropic / Google Gemini 原生 / AWS Bedrock / Replicate 这些不在表里**：
+#: 它们的协议不同，填进来只会在第一次调用时以一个难懂的 4xx 失败。
+#: 需要它们请走 OpenRouter 一类的聚合方，那才是星槎设计里的位置。
+UPSTREAM_ENV_CANDIDATES: Final[dict[str, str]] = {
+    # 聚合方（推荐：一把 key 打通几乎所有模型，也是星槎的默认形态）
+    "OPENROUTER_API_KEY": "https://openrouter.ai/api/v1",
+    "SILICONFLOW_API_KEY": "https://api.siliconflow.cn/v1",
+    "SILICON_API_KEY": "https://api.siliconflow.cn/v1",  # 旧文档里的变体
+    "TOGETHER_API_KEY": "https://api.together.xyz/v1",
+    "TOGETHERAI_API_KEY": "https://api.together.xyz/v1",
+    "FIREWORKS_API_KEY": "https://api.fireworks.ai/inference/v1",
+    "DEEPINFRA_API_KEY": "https://api.deepinfra.com/v1/openai",
+    "DEEPINFRA_TOKEN": "https://api.deepinfra.com/v1/openai",
+    "REQUESTY_API_KEY": "https://router.requesty.ai/v1",
+    "AIMLAPI_API_KEY": "https://api.aimlapi.com/v1",
+    "AIML_API_KEY": "https://api.aimlapi.com/v1",
+    "PORTKEY_API_KEY": "https://api.portkey.ai/v1",
+    # 直连厂商
+    "OPENAI_API_KEY": "https://api.openai.com/v1",
+    "DEEPSEEK_API_KEY": "https://api.deepseek.com/v1",
+    "MOONSHOT_API_KEY": "https://api.moonshot.cn/v1",
+    "GROQ_API_KEY": "https://api.groq.com/openai/v1",
+    "MISTRAL_API_KEY": "https://api.mistral.ai/v1",
+    "XAI_API_KEY": "https://api.x.ai/v1",
+    "PERPLEXITY_API_KEY": "https://api.perplexity.ai",
+    "GEMINI_API_KEY": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "GOOGLE_API_KEY": "https://generativelanguage.googleapis.com/v1beta/openai",
+    # 国内厂商。都实测过端点活着（无鉴权打 /models 或 /chat/completions 得 4xx）。
+    "ZHIPUAI_API_KEY": "https://open.bigmodel.cn/api/paas/v4",
+    "DASHSCOPE_API_KEY": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "ARK_API_KEY": "https://ark.cn-beijing.volces.com/api/v3",
+    "MINIMAX_API_KEY": "https://api.minimax.chat/v1",
+    "STEPFUN_API_KEY": "https://api.stepfun.com/v1",
+    "BAICHUAN_API_KEY": "https://api.baichuan-ai.com/v1",
+    # 其余聚合/推理方
+    "NOVITA_API_KEY": "https://api.novita.ai/v3/openai",
+    "CEREBRAS_API_KEY": "https://api.cerebras.ai/v1",
+    "HYPERBOLIC_API_KEY": "https://api.hyperbolic.xyz/v1",
+}
+
+#: 这些上游**没有 /models 端点**（实测 404），而星槎的模型目录是判档与定价的主价源。
+#:
+#: 后果不是不能用，是：切到它们之后目录为空 → 每条记录 `cost_source=unknown`、
+#: 判档一律回落 T2。管理面要把这句话说出来，否则用户会以为是星槎坏了。
+UPSTREAM_ENV_WITHOUT_CATALOG: Final[frozenset[str]] = frozenset({"PERPLEXITY_API_KEY"})
+
+#: 星槎自己的默认上游变量名。**这一对优先于上面任何一个。**
+#:
+#: 用 ``XINGCHA_API_KEY`` / ``XINGCHA_BASE_URL`` 这样的通用名，而不是把厂商名写进
+#: 变量名：上游是可切换的，名字里带 ``OPENROUTER`` 会在切到别家之后变成谎言。
+#:
+#: 旧名 ``XINGCHA_OPENROUTER_API_KEY`` 仍然认（见 config.Settings）——改配置名是
+#: 破坏性变更，而"升级对用户无感"是这个项目的头号承诺。
+ENV_DEFAULT_API_KEY: Final = "XINGCHA_API_KEY"
+ENV_DEFAULT_BASE_URL: Final = "XINGCHA_BASE_URL"
+
+
+#: 星槎自己那一对默认变量的可接受写法。**大小写不敏感，且认旧名。**
+#:
+#: 旧名 ``XINGCHA_OPENROUTER_API_KEY`` 必须继续认：改配置项名是破坏性变更，
+#: 而"升级对用户无感"是这个项目的头号承诺。
+ENV_API_KEY_ALIASES: Final[tuple[str, ...]] = (
+    ENV_DEFAULT_API_KEY,
+    "XINGCHA_OPENROUTER_API_KEY",
+)
+ENV_BASE_URL_ALIASES: Final[tuple[str, ...]] = (
+    ENV_DEFAULT_BASE_URL,
+    "XINGCHA_OPENROUTER_BASE_URL",
+)
+
+
+def is_known_upstream_env(name: str) -> bool:
+    """这个环境变量名是否是已知厂商的上游 key。
+
+    **大小写不敏感。** ``.env`` 里写小写（``deepseek_api_key``）是常见习惯，而
+    ``os.environ`` 在 Linux 上区分大小写——只认大写会让人以为功能坏了。
+    """
+    return name.upper() in UPSTREAM_ENV_CANDIDATES
+
+
+def base_url_for_env(name: str) -> str | None:
+    """已知厂商的 base_url；未知则 ``None``（由管理员在页面上填）。"""
+    return UPSTREAM_ENV_CANDIDATES.get(name.upper())
+
+
+def has_catalog(name: str) -> bool:
+    """这个上游有没有 ``/models`` 端点。没有则目录为空，见上面的说明。"""
+    return name.upper() not in UPSTREAM_ENV_WITHOUT_CATALOG
+
+
+def vendor_label(name: str) -> str:
+    """给管理面显示的厂商名：去掉 ``_API_KEY`` / ``_TOKEN`` 后缀。
+
+    不另建一张"变量名 → 中文名"的表：那是第二份需要维护的映射，而它带来的
+    可读性提升不值得（``DEEPSEEK`` 已经足够清楚）。
+    """
+    upper = name.upper()
+    for suffix in ("_API_KEY", "_API_TOKEN", "_TOKEN", "_KEY"):
+        if upper.endswith(suffix):
+            return upper[: -len(suffix)]
+    return upper
+
 
 #: Langfuse 凭据。**走加密存储而不是环境变量**，理由与上游 key 完全相同：
 #: 环境变量会出现在 ``docker inspect`` 与 ``/proc/<pid>/environ`` 里。

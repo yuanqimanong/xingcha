@@ -1,0 +1,76 @@
+{% if not probe.can_switch %}
+<div class="card">
+  <div class="card-head">
+    <h2>不能切到 {{ probe.label }}</h2>
+    <span class="badge danger">目录拉取失败</span>
+  </div>
+  <div class="card-body">
+    <p class="muted small">
+      用这把 key 拉 <code class="mono">{{ probe.base_url }}/models</code> 没有成功。
+      切过去只会让服务变成不可用，所以这里拒绝。
+    </p>
+    {% if probe.error %}<div class="notice warn mt4 mono small">{{ probe.error }}</div>{% endif %}
+    <div class="hint mt4">常见原因：key 不对、端点地址不对、或这台机器到不了那个地址（要代理）。</div>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-head">
+    <h2>切到 {{ probe.label }}？</h2>
+    {% if probe.broken %}<span class="badge warn">{{ probe.broken | length }} 个 Agent 会失效</span>
+    {% else %}<span class="badge ok">无 Agent 受影响</span>{% endif %}
+  </div>
+  <div class="card-body">
+    <div class="table-wrap mb4">
+      <table>
+        <tbody>
+          <tr><th>base_url</th><td class="mono truncate">{{ probe.base_url }}</td></tr>
+          <tr>
+            <th>模型目录</th>
+            <td>
+              {% if probe.catalog_ok %}拉取成功，{{ probe.model_count }} 个模型
+              {% else %}这个上游没有 <code>/models</code> 端点——目录会是空的{% endif %}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    {% if not probe.catalog_ok %}
+    <div class="notice warn mb4">
+      目录为空的后果：<strong>判档一律回落 T2</strong>（拿不到
+      <code>structured_outputs</code> 能力），<strong>费用来源是 <code>unknown</code></strong>
+      （拿不到单价）。功能可用，账单不准。
+    </div>
+    {% endif %}
+
+    {% if probe.broken %}
+    <div class="notice warn mb4">
+      <strong>下面这些 Agent 的模型在 {{ probe.label }} 上不存在</strong>，切过去之后它们的
+      调用会开始返回上游错误。改法是编辑 Agent、把模型换成新上游有的那个。
+    </div>
+    <div class="table-wrap mb4">
+      <table>
+        <thead><tr><th>Agent</th><th>当前模型</th></tr></thead>
+        <tbody>
+          {% for b in probe.broken %}
+          <tr><td class="mono">{{ b.slug }}</td><td class="mono dim">{{ b.model }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/admin/upstreams/switch">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="env_name" value="{{ probe.env_name }}">
+      <input type="hidden" name="base_url" value="{{ probe.base_url }}">
+      <button class="btn primary" type="submit"
+              data-confirm="切到 {{ probe.label }}？{% if probe.broken %}{{ probe.broken | length }} 个 Agent 会开始报错。{% endif %}">
+        确认切换
+      </button>
+      <a class="btn" href="/admin/upstreams">取消</a>
+    </form>
+  </div>
+</div>
+{% endif %}

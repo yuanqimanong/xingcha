@@ -591,6 +591,45 @@ class TestNamedFieldsStayInTheirTable:
             )
 
 
+class TestExplicitChannelIsWiderThanImplicit:
+    """``xc:model/`` 不要求含 ``/``，隐式那条要求。**这个差异是有意的。**
+
+    上游是可切换的，而各家 id 命名习惯不同：聚合方是 ``vendor/name``，直连厂商
+    （DeepSeek / Groq / 智谱）**没有斜杠**。只认含斜杠的话，切到任何直连厂商之后
+    直通完全不可用——实测踩过，返回的是 model_not_found。
+
+    但隐式规则**绝不能**跟着放宽：那条"不含 / 就是 Agent slug、查不到直接 404"
+    守着一件事——一个拼错的 slug 不能静默变成一次真实的付费调用。
+    """
+
+    @pytest.mark.parametrize(
+        "model",
+        ["xc:model/deepseek-v4-flash", "xc:model/gpt-4o", "xc:model/glm-4.6"],
+    )
+    def test_explicit_accepts_slashless_ids(self, model: str):
+        ref = C.classify_model(model)
+        assert ref.kind is C.ModelKind.UPSTREAM
+        assert ref.explicit is True
+
+    def test_explicit_still_accepts_slashed_ids(self):
+        assert C.classify_model("xc:model/openai/gpt-5").value == "openai/gpt-5"
+
+    @pytest.mark.parametrize("model", ["deepseek-v4-flash", "gpt-4o", "glm-4"])
+    def test_implicit_did_not_get_wider(self, model: str):
+        """**这条是整个放宽的安全边界。**
+
+        不含 ``/`` 的名字仍然被当作 Agent slug。它一旦回落上游，一个拼错的 slug
+        就会静默变成一次付费调用，而调用方以为自己在调 Agent。
+        """
+        assert C.classify_model(model).kind is C.ModelKind.AGENT
+
+    def test_explicit_still_rejects_garbage(self):
+        """放宽不等于不校验：带空格、超长的一律拒。"""
+        for bad in ["xc:model/bad name", "xc:model/" + "a" * 300, "xc:model/"]:
+            with pytest.raises(C.ModelRefInvalid):
+                C.classify_model(bad)
+
+
 def test_contract_module_has_no_internal_imports():
     """契约处在依赖图最底层，不 import 任何 xingcha 模块（开发计划 §6 标准 1）。
 

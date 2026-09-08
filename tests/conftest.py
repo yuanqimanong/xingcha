@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from collections.abc import Iterator
@@ -316,6 +317,34 @@ def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_real_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """**测试绝不碰真实凭据。**
+
+    ``Settings.model_config`` 带 ``env_file=".env"``，所以仓库根目录那份 .env
+    会被读进来——里面是开发者的真 key。真踩过：把字段从 ``openrouter_api_key``
+    改名成 ``api_key`` 之后，.env 里的 ``xingcha_api_key`` 突然对测试生效，
+    四条"上游未配置"的用例集体失败，而根因离症状很远。
+
+    更要紧的是另一半：一旦测试拿到真 key，任何一个打上游的用例都会**真的花钱、
+    真的把请求发出去**。所以这里 autouse 地把两条来源都掐断：
+
+    - ``env_file`` 指向一个不存在的路径（tmp 下）；
+    - 环境里所有已知厂商的 key 变量全部删掉。
+    """
+    from xingcha import contract as C
+    from xingcha.config import Settings
+
+    monkeypatch.setitem(Settings.model_config, "env_file", str(tmp_path / "no.env"))
+    for name in list(os.environ):
+        upper = name.upper()
+        if C.is_known_upstream_env(upper) or upper in (
+            *C.ENV_API_KEY_ALIASES,
+            *C.ENV_BASE_URL_ALIASES,
+        ):
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(scope="session")

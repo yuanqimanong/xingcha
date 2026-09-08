@@ -141,7 +141,7 @@ async def load_upstream(state: AppState) -> None:
     async with state.sessionmaker() as session:
         # 环境变量只在首次启动时一次性导入，之后永久忽略
         if await setting_svc.import_env_once(
-            session, state.keyring, state.settings.openrouter_api_key
+            session, state.keyring, state.settings.api_key, state.settings.base_url
         ):
             await session.commit()
 
