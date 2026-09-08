@@ -1,0 +1,95 @@
+# 星槎 · 编排。**一个文件、一个服务、一个容器。**
+#
+# 此前是三个 compose 文件（生产 / 局域网 / Windows）加两份 Caddyfile，外层再靠
+# `.env` 里的 COMPOSE_FILE 把它们拼起来。收敛掉的理由很直接：那些差异全都是
+# **同一个东西的参数**——监听哪个地址、哪个端口、数据放哪儿——而参数应该是变量，
+# 不是文件。三份文件的真实代价是它们会各自漂移，且只在真的 `up` 时才暴露。
+#
+# Caddy 也去掉了：明文 HTTP 直连。代价是明确的——后台密码与 sk-xc- 密钥在网络上
+# 是裸传的，同网段的人能读到。这是一次明确的取舍（自己的局域网），不是遗漏。
+# 要重新戴上 TLS 的话，在前面放任何一个反代即可，星槎的 cookie 会跟着请求协议
+# 自动带上 Secure（见 web/routes.py 的 _cookie_secure）。
+#
+# 用法一律走 ../deploy/xc（或 xc.ps1），它替你把 -f 与 --env-file 传好：
+#
+#     ./deploy/xc start        构建并启动，数据不动
+#     ./deploy/xc redeploy     清空数据从零开始
+#
+# 直接手敲的话（路径相对于仓库根）：
+#
+#     docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
+
+# 项目名写死。不写的话 compose 用 compose 文件所在目录名，也就是 "deploy"——
+# 容器会叫 deploy-xingcha-1，而所有文档、脚本与运维记忆里都是 xingcha-xingcha-1。
+name: xingcha
+
+services:
+  xingcha:
+    build:
+      # 相对路径以 **compose 文件所在目录** 为基准（这里是 deploy/），所以 .. 是仓库根。
+      context: ..
+      dockerfile: Dockerfile
+    image: xingcha:local
+    restart: unless-stopped
+
+    # 宿主上绑哪个地址，**默认只绑回环**。
+    #
+    # 这一条是有意的默认值：映射出去的端口会走 Docker 的 DOCKER-USER 链，
+    # **绕过 ufw**——你在防火墙里写的 deny 对它无效。所以"让整个局域网能访问"
+    # 必须是一次显式的选择（在 .env 里写 XINGCHA_BIND_ADDR=0.0.0.0），
+    # 而不是装上就默认对外。
+    ports:
+      - "${XINGCHA_BIND_ADDR:-127.0.0.1}:${XINGCHA_WEB_PORT:-8720}:8720"
+
+    # 宿主的 .env 直接注进容器：后台密码（XINGCHA_ADMIN_PASSWORD）与各厂商的
+    # key 变量（DEEPSEEK_API_KEY 之类，上游页会读它们）都从这里来。
+    #
+    # 注意这与命令行的 `--env-file` **不是一回事**，很容易踩：
+    #   · `--env-file X` 只决定 compose 拿什么去插值 ${...}；
+    #   · 这里的 `env_file:` 决定容器里真正有哪些环境变量。
+    # 所以 `--env-file 别的文件` 不会改变容器读到的密码——它读的始终是 ../.env。
+    # 路径写死是有意的：唯一支持的入口是 deploy/xc，而它只用仓库根的 .env。
+    env_file:
+      - ../.env
+
+    environment:
+      # 这几项由编排决定，**排在 env_file 之后所以会覆盖它**——避免 .env 里
+      # 不小心留了一行 XINGCHA_PORT 就把容器内的监听端口改掉。
+      XINGCHA_DATA_DIR: /data
+      XINGCHA_HOST: 0.0.0.0
+      XINGCHA_PORT: "8720"
+      # 后台里展示的 curl 示例用它。协议是 http——见文件头那段取舍。
+      XINGCHA_PUBLIC_URL: http://${XINGCHA_WEB_HOST:-localhost}:${XINGCHA_WEB_PORT:-8720}
+      XINGCHA_LOG_LEVEL: ${XINGCHA_LOG_LEVEL:-INFO}
+
+    volumes:
+      # 默认宿主目录（../data，即仓库根下的 data/）。
+      #
+      # Windows 上要改成命名卷：`XINGCHA_DATA_MOUNT=xingcha_data`。Docker Desktop
+      # 经 9p/virtiofs 把 Windows 目录挂进虚拟机，那是网络文件系统，**SQLite 的
+      # WAL 在上面会静默降级**——症状是零星的 database is locked，只在并发写时出现。
+      - ${XINGCHA_DATA_MOUNT:-../data}:/data
+
+    # 30 秒是折中。设成和 request_timeout(600s) 一样长的话，每次升级要等 10 分钟；
+    # 设成 0 的话，正在跑的调用会被硬切。已对齐的升级档位接受"长请求可能被切断"。
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        # 不限的话日志会涨满磁盘，而整个产品就是一个 SQLite 文件：磁盘一满就是
+        # 写失败 + 迁移失败 + 无法启动，根因却在监控里完全看不见。这是准入项 A8。
+        max-size: "20m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8720/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  # 只有 XINGCHA_DATA_MOUNT=xingcha_data 时才会真的被创建（Windows 那条路径）。
+  # 声明在这里但没人用的命名卷不会被创建，所以对 Linux 部署没有任何副作用。
+  xingcha_data:

@@ -55,6 +55,18 @@
   --s4: 16px;
   --s5: 24px;
   --s6: 32px;
+  /* 一行里标签占的高度。**固定它**，是为了让同一行里所有控件的顶边由构造对齐，
+     而不是靠邻居恰好一样高。13px × 1.4 的行盒 ≈ 18px。 */
+  --label-line: 18px;
+
+  /* 登录页的背景层。亮色：一层极淡的水墨渐层，不要星点。 */
+  --auth-canvas: radial-gradient(120% 90% at 50% -10%, #ffffff 0%, var(--paper) 55%, #eef2ef 100%);
+  --auth-river: rgba(14, 110, 110, 0.07);
+  --auth-star: rgba(14, 110, 110, 0.18);
+  --auth-vignette: radial-gradient(120% 80% at 50% 120%, rgba(20, 26, 32, 0.08), transparent 70%);
+  --auth-card-bg: rgba(255, 255, 255, 0.86);
+  --auth-card-rule: var(--rule);
+  --auth-card-sheen: rgba(255, 255, 255, 0.9);
   --s7: 48px;
   --s8: 64px;
 
@@ -98,6 +110,15 @@
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px -8px rgba(0, 0, 0, 0.55);
     --shadow-3: 0 10px 36px -10px rgba(0, 0, 0, 0.7);
+
+    /* 登录页：夜空 + 星河。星点靠 --auth-star，星河带靠 --auth-river。 */
+    --auth-canvas: radial-gradient(130% 100% at 50% -20%, #16232a 0%, #0d1317 55%, #080b0e 100%);
+    --auth-river: rgba(120, 205, 196, 0.14);
+    --auth-star: rgba(230, 243, 241, 0.8);
+    --auth-vignette: radial-gradient(120% 75% at 50% 118%, rgba(0, 0, 0, 0.55), transparent 68%);
+    --auth-card-bg: rgba(22, 29, 36, 0.78);
+    --auth-card-rule: rgba(120, 205, 196, 0.16);
+    --auth-card-sheen: rgba(255, 255, 255, 0.06);
   }
 }
 
@@ -127,6 +148,15 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px -8px rgba(0, 0, 0, 0.55);
   --shadow-3: 0 10px 36px -10px rgba(0, 0, 0, 0.7);
+
+  /* 登录页：夜空 + 星河。与上面那份系统偏好的定义保持一致。 */
+  --auth-canvas: radial-gradient(130% 100% at 50% -20%, #16232a 0%, #0d1317 55%, #080b0e 100%);
+  --auth-river: rgba(120, 205, 196, 0.14);
+  --auth-star: rgba(230, 243, 241, 0.8);
+  --auth-vignette: radial-gradient(120% 75% at 50% 118%, rgba(0, 0, 0, 0.55), transparent 68%);
+  --auth-card-bg: rgba(22, 29, 36, 0.78);
+  --auth-card-rule: rgba(120, 205, 196, 0.16);
+  --auth-card-sheen: rgba(255, 255, 255, 0.06);
 }
 
 /* ==========================================================================
@@ -745,15 +775,35 @@ textarea {
   resize: vertical;
   min-height: 96px;
 }
+/* 一行放多个字段。
+ *
+ * **顶边对齐 + 标签行等高**，而不是底边对齐。
+ *
+ * 曾经是 `align-items: flex-end`，代价是：任何一个字段带 .hint 就比邻居高，
+ * 底边对齐之后它的控件反而**更靠上**、标签更靠上；而同一行里的提交按钮会去对齐
+ * 那条说明文字的底边，落得比所有控件低半行。配额页四个标签落在四个不同高度上、
+ * 密钥页的「签发」比下拉低几像素，都是同一个原因。
+ *
+ * 现在的做法把对齐变成构造性质的：标签行高度固定 → 控件的顶边 = 标签行 + 间距，
+ * 与邻居有没有说明无关；说明挂在下面，不参与任何对齐。 */
 .form-row {
   display: flex;
   gap: var(--s3);
-  align-items: flex-end;
+  align-items: flex-start;
   flex-wrap: wrap;
 }
 .form-row > .field {
   flex: 1 1 200px;
   margin-bottom: 0;
+}
+.form-row > .field > label {
+  min-height: var(--label-line);
+  margin-bottom: var(--s2);
+}
+/* 行里的按钮没有标签，手动降到控件那一行——否则它会贴在行顶。 */
+.form-row > .btn,
+.form-row > button {
+  margin-top: calc(var(--label-line) + var(--s2));
 }
 
 /* --- 提示条 --- */
@@ -831,35 +881,163 @@ textarea {
 
 /* --- 登录页 --- */
 
+/*
+ * 「乘槎泛星河」——星槎这个名字来自浮槎渡海、《星槎胜览》，所以登录页是全站唯一
+ * 一处放开审美的地方：一条斜贯画面的星河，卡片浮在上面。
+ *
+ * 三条自我约束：
+ *
+ * 1. **纯 CSS，零外部资源。** 星点是几层 radial-gradient，星河是一条带模糊边缘的
+ *    linear-gradient。没有图片、没有字体、没有 CDN——"离线可用"是硬约束，而登录页
+ *    恰恰是第一个被看到的页面，它不能是唯一那个需要联网的。
+ * 2. **明暗两套都要成立。** 星河在亮色主题下会很蠢，所以亮色下换成一层极淡的
+ *    水墨渐层，同一套结构、不同的 token。
+ * 3. **动效可以没有。** 星河有一段极慢的漂移（90s 一轮），prefers-reduced-motion
+ *    下直接停掉，不是减速。
+ */
+
 .auth-shell {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: var(--s5);
+  position: relative;
+  overflow: hidden;
+  background: var(--auth-canvas);
 }
+
+/* 星河：一条斜带，带上叠着疏密不均的星点。
+   `background-blend-mode` 让星点只在带子里亮起来，带子之外自然衰减——
+   不需要 mask，也就不需要为 mask 的浏览器差异做回落。 */
+.auth-shell::before {
+  content: "";
+  position: absolute;
+  inset: -30% -10%;
+  background:
+    radial-gradient(1px 1px at 4% 81%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 8% 80%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 13% 68%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 17% 65%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 22% 60%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 26% 61%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 30% 63%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 35% 55%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 39% 56%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 43% 45%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 48% 54%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 52% 59%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 57% 46%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 61% 53%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 65% 38%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 70% 28%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 74% 31%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 78% 21%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 83% 12%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 87% 23%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 92% 5%, var(--auth-star) 50%, transparent 51%),
+    radial-gradient(2px 2px at 96% 14%, var(--auth-star) 50%, transparent 51%),
+    linear-gradient(102deg, transparent 30%, var(--auth-river) 50%, transparent 70%);
+  animation: river-drift 90s linear infinite;
+  pointer-events: none;
+}
+
+/* 底部压一层暗角，让卡片下方沉下去，视觉重心落在卡片上而不是背景上。 */
+.auth-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--auth-vignette);
+  pointer-events: none;
+}
+
+@keyframes river-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-6%, 3%, 0);
+  }
+}
+
 .auth-card {
+  position: relative;
+  z-index: 1;
   width: 100%;
-  max-width: 380px;
-  background: var(--surface);
-  border: 1px solid var(--rule);
+  max-width: 396px;
+  background: var(--auth-card-bg);
+  backdrop-filter: blur(14px) saturate(1.1);
+  border: 1px solid var(--auth-card-rule);
   border-radius: var(--r3);
-  box-shadow: var(--shadow-3);
+  box-shadow: var(--shadow-3), inset 0 1px 0 var(--auth-card-sheen);
   padding: var(--s6);
 }
-.auth-brand {
+
+/* 品牌锁定块：印章 + 中文字标 + 拉丁字标。三者的基线关系是固定的，
+   不随 setup / 登录两种模式变——变的只有下面那行标题。 */
+.auth-lockup {
   display: flex;
   align-items: center;
   gap: var(--s3);
+  padding-bottom: var(--s4);
   margin-bottom: var(--s5);
+  border-bottom: 1px solid var(--rule);
+}
+.auth-seal {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 23px;
+  font-weight: 600;
+  color: #fff;
+  /* 印章：主色到深一档的斜向渐层 + 一圈内高光，避免纯色方块的塑料感。 */
+  background: linear-gradient(150deg, var(--accent) 0%, var(--accent-hover) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 6px 16px -8px var(--accent);
+}
+.auth-word {
+  font-size: 1.32rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.15;
+}
+.auth-latin {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  color: var(--ink-4);
+  margin-top: 3px;
 }
 .auth-title {
-  font-size: 1.25rem;
+  font-size: 15px;
   font-weight: 600;
+  margin-bottom: var(--s2);
 }
 .auth-sub {
   color: var(--ink-3);
   font-size: 13px;
-  margin-top: 2px;
+  line-height: 1.6;
+  margin-bottom: var(--s4);
+}
+.auth-foot {
+  margin-top: var(--s5);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--rule);
+  font-size: 11.5px;
+  color: var(--ink-4);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 480px) {
+  .auth-card {
+    padding: var(--s5);
+  }
+  /* 窄屏上星河的斜带会被裁得只剩一角，不如收掉，留干净的底色。 */
+  .auth-shell::before {
+    opacity: 0.5;
+  }
 }
 
 /* --- 工具类 --- */

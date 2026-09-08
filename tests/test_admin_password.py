@@ -72,15 +72,24 @@ class TestPriorityRule:
     def test_neither_means_setup_flow(self):
         assert ws.env_password_in_effect(None, None) is False
 
-    def test_short_env_password_is_refused_not_downgraded(self):
-        """短于下限**一律拒用**，不是"警告后放过"。
+    def test_short_env_password_takes_effect_and_is_only_flagged(self):
+        """短于建议下限**照用**，只在启动时警告一句。
 
-        一个 4 位的后台密码在公网机器上是实打实的洞，而这个功能的意义只是方便。
+        原先是"一律拒用"，理由是后台能改写上游 base_url、弱密码等于把付费 key
+        交出去。放宽是一次明确的决定：拒用的实际后果是"我在 .env 写了一行、重启、
+        发现还是要走首次设密"——而这条捷径的全部意义就是省掉那个流程，拒用等于
+        把功能废掉。强度交给用户判断，我们只保证他被告知。
+
+        表单那条路径**不放宽**（见 TestEmptyMeansUnset 的最后一条）：环境变量是
+        运维写在自己机器上的文件，表单是任何能打开这一页的人在设。
         """
-        assert ws.env_password_usable("a" * (MIN_ADMIN_PASSWORD_LEN - 1)) is False
-        assert ws.env_password_usable("a" * MIN_ADMIN_PASSWORD_LEN) is True
-        # 拒用之后回落到库/首次设密，用户不会被锁在门外
-        assert ws.env_password_in_effect(None, "short") is False
+        short = "a" * (MIN_ADMIN_PASSWORD_LEN - 1)
+        assert ws.env_password_usable(short) is True
+        assert ws.env_password_in_effect(None, short) is True
+        assert ws.verify_admin_password(None, short, short) is True
+        # 但它必须能被标出来，否则那条警告无从触发
+        assert ws.env_password_is_weak(short) is True
+        assert ws.env_password_is_weak("a" * MIN_ADMIN_PASSWORD_LEN) is False
 
     def test_never_two_valid_passwords(self):
         """绝不"两个都能用"。
@@ -268,3 +277,68 @@ class TestNeverLeaks:
 
     def test_login_page_never_shows_it(self, env_only: TestClient):
         assert ENV_PW not in env_only.get("/admin/login").text
+
+
+# =============================================================================
+# 空值 = 没设置
+# =============================================================================
+
+
+class TestEmptyMeansUnset:
+    """``.env`` 里键在、值空是**最常见**的形态——从 ``.env.example`` 抄过来就是这样。
+
+    它的意思显然是"我还没填"，所以必须与"填了个短的"分开：**空 = 没设置**，
+    走首次设密，不抱怨；**非空 = 生效**，不管多短（短的话启动时警告一次）。
+
+    真踩过：一行空值，服务回落到首次设密，而启动日志一个字没说。
+    """
+
+    @pytest.mark.parametrize("raw", [None, "", " ", "   ", "\t", "\n", " \t\n "])
+    def test_blank_is_treated_as_not_set(self, raw: str | None):
+        assert ws.normalize_env_password(raw) == ""
+        assert not ws.env_password_usable(raw)
+        # 空值不是"弱密码"，是"没设置"——不该有任何抱怨。
+        assert not ws.env_password_is_weak(raw)
+
+    def test_blank_falls_back_to_the_first_time_setup_flow(self):
+        assert not ws.env_password_in_effect(None, "")
+        assert not ws.env_password_in_effect(None, "   ")
+
+    @pytest.mark.parametrize("raw", ["short", "x", "1234567890"])
+    def test_short_but_present_takes_effect_and_is_flagged_weak(self, raw: str):
+        """短密码**照用**。
+
+        这是一条经过一次决定的放宽：拒用会让"在 .env 写一行"这条捷径失去全部意义
+        （用户重启后发现还是要走首次设密）。代价用一条启动警告承担。
+        """
+        assert ws.env_password_usable(raw)
+        assert ws.env_password_in_effect(None, raw)
+        assert ws.verify_admin_password(None, raw, raw)
+        assert ws.env_password_is_weak(raw), "短密码要能被标出来，否则警告无从触发"
+
+    def test_a_long_env_password_is_not_flagged(self):
+        assert not ws.env_password_is_weak("a-very-long-password")
+
+    def test_surrounding_whitespace_is_stripped_on_both_sides_of_the_comparison(self):
+        """两头空白去掉，否则你按看到的字符输入永远登不进去。
+
+        判断"设了没"与"校验对不对"必须走**同一个**归一化，否则会出现最难查的状态：
+        启动日志说环境变量生效，而没有任何输入能通过校验。
+        """
+        padded = "  a-very-long-password  "
+        assert ws.env_password_usable(padded)
+        assert ws.verify_admin_password(None, "a-very-long-password", padded)
+        assert not ws.verify_admin_password(None, padded, padded)
+
+    def test_a_blank_value_never_disturbs_a_stored_password(self):
+        stored = ws.hash_password("stored-password-x")
+        assert ws.verify_admin_password(stored, "stored-password-x", "")
+        assert not ws.verify_admin_password(stored, "wrong", "  ")
+
+    def test_the_browser_setup_flow_keeps_its_floor(self):
+        """放宽**只针对环境变量**。
+
+        表单是"任何能打开这一页的人"在设，环境变量是运维写在自己机器上的文件里——
+        两者的威胁模型不同，所以下限也不同。
+        """
+        assert MIN_ADMIN_PASSWORD_LEN >= 12

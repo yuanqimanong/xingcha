@@ -4,17 +4,24 @@
 `sk-xc-` 密钥与 `model` 字符串永不改变，升级期间接受 1–2 秒中断。
 
 ```bash
-cd /opt/xingcha/deploy && ./deploy.sh
+./deploy/xc update
 ```
 
 就这一条。下面是它背后发生的事，以及出问题时该看哪里。
+
+下文若干命令要直接对容器说话。compose 文件在 `deploy/` 下，所以得显式传——
+先设个简写，后面都用它：
+
+```bash
+DC="docker compose -f deploy/docker-compose.yml --env-file .env"
+```
 
 ---
 
 ## 升级时发生了什么
 
 ```
-git reset --hard origin/master     以远程为准，丢弃部署机上的代码改动
+git pull --ff-only                 拉代码；工作区脏时**直接拒绝**，不会毁掉未提交的改动
 docker compose build               重新构建镜像
 docker compose up -d               停旧容器（最多等 30 秒）→ 起新容器
   └─ 容器启动时：
@@ -60,8 +67,8 @@ SSE 帧序列全部写在 [CONTRACT.md](CONTRACT.md) 里，由 `contract.py` 的
 长请求被切断是已选定档位接受的代价。`stop_grace_period` 设成 30 秒是折中：
 设成和 `request_timeout`（600 秒）一样长的话，每次升级要等 10 分钟。
 
-> 设计上没有堵死零中断：应用除 SQLite 外无状态，日后改 Caddyfile 成两上游 +
-> health check 即可做蓝绿。前提是迁移向后兼容，而那已经由 expand-contract 纪律保证。
+> 设计上没有堵死零中断：应用除 SQLite 外无状态，日后在前面放一个反代做两上游 +
+> health check 即可蓝绿。前提是迁移向后兼容，而那已经由 expand-contract 纪律保证。
 
 ---
 
@@ -72,9 +79,8 @@ SSE 帧序列全部写在 [CONTRACT.md](CONTRACT.md) 里，由 `contract.py` 的
 ### 只回代码（schema 没变）
 
 ```bash
-cd /opt/xingcha
-git reset --hard <上一个 commit>
-cd deploy && ./deploy.sh
+git checkout <上一个 commit>
+./deploy/xc start
 ```
 
 新版本没有加迁移时，旧代码跑在新库上是安全的——库里只是多了几列没人读。
@@ -82,9 +88,9 @@ cd deploy && ./deploy.sh
 ### 代码 + schema 都要回
 
 ```bash
-docker compose exec xingcha xingcha db downgrade <目标 revision> --yes
-cd /opt/xingcha && git reset --hard <上一个 commit>
-cd deploy && ./deploy.sh
+$DC exec xingcha xingcha db downgrade <目标 revision> --yes
+git checkout <上一个 commit>
+./deploy/xc start
 ```
 
 `downgrade` **总是先备份**。每个迁移都必须有能跑通的 `downgrade()`，
@@ -93,8 +99,8 @@ cd deploy && ./deploy.sh
 ### 数据本身出问题
 
 ```bash
-docker compose exec xingcha ls /data/backups
-docker compose exec xingcha xingcha db restore /data/backups/xingcha-<时间戳>.db --yes
+$DC exec xingcha ls /data/backups
+$DC exec xingcha xingcha db restore /data/backups/xingcha-<时间戳>.db --yes
 docker compose restart xingcha
 ```
 
@@ -108,7 +114,7 @@ docker compose restart xingcha
 
 ```bash
 # 1 取一份线上库的崩溃一致副本
-docker compose exec xingcha xingcha db backup --tag pre-upgrade-drill
+$DC exec xingcha xingcha db backup --tag pre-upgrade-drill
 
 # 2 在副本上跑新版本的迁移
 cp data/backups/xingcha-<时间戳>-pre-upgrade-drill.db /tmp/drill.db
@@ -133,7 +139,7 @@ sqlite3 /tmp/drill.db "SELECT COUNT(*), SUM(input_tokens) FROM run_usage;"
 轮换密钥是纯加法（在文件头部插一行新 key，旧密文照常解得开）：
 
 ```bash
-docker compose exec xingcha python -c \
+$DC exec xingcha python -c \
   "from pathlib import Path; from xingcha.crypto import Keyring; Keyring.load(Path('/data/secret.key')).rotate()"
 docker compose restart xingcha
 ```

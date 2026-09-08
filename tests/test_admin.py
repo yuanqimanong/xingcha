@@ -98,6 +98,34 @@ class TestSessionCookie:
         assert "samesite=strict" in low, "SameSite=Strict 是 CSRF 的第一层"
         assert "path=/admin" in low, "作用域限定在 /admin，不要发给 /v1"
 
+    def test_secure_follows_the_request_scheme(self, settings: Settings):
+        """``Secure`` **跟随请求协议**，不写死。
+
+        上面那条用的是 ``https://testserver``，验的是"HTTPS 下必须带 Secure"。
+        这一条验反面：**纯 HTTP 部署下必须不带**。
+
+        写死 True 的代价不是"更安全"，而是彻底不可用：浏览器直接丢掉 Secure cookie，
+        用户看到"密码输对了却一直跳回登录页"，而服务端日志显示登录成功、会话已签发。
+        两边都正常，是最难查的一类。（``localhost`` 例外——浏览器把它当安全上下文，
+        所以本机开发看不出问题，只有换成局域网 IP 才炸。真踩过这个形状。）
+
+        当前部署形态就是明文 HTTP（Caddy 已移除），所以这一条不是假设。
+        """
+        with TestClient(create_app(settings), base_url="http://testserver") as c:
+            r = c.post(
+                "/admin/login",
+                data={"password": PASSWORD, "confirm": PASSWORD},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303, "HTTP 下也必须能登进去"
+            cookies = [v for k, v in r.headers.items() if k.lower() == "set-cookie"]
+            assert cookies, "一个 cookie 都没签发？"
+            for raw in cookies:
+                low = raw.lower()
+                assert "secure" not in low, f"HTTP 下不该带 Secure：{raw}"
+                # 丢掉 Secure **不等于**把其它防护一起丢掉
+                assert "samesite=strict" in low, f"SameSite 不能跟着一起没了：{raw}"
+
     def test_logout_clears_session(self, logged_in: TestClient):
         assert logged_in.get("/admin", follow_redirects=False).status_code == 200
         logged_in.get("/admin/logout", follow_redirects=False)

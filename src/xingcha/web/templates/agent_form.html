@@ -276,7 +276,7 @@
             <td style="text-align:right">
               {% if not v.current %}
               <form method="post" action="/admin/agents/{{ agent.slug }}/rollback"
-                    data-confirm="回滚到 v{{ v.version }}？会产生一个新版本，内容与它相同。">
+                    data-confirm="回滚到 v{{ v.version }}？当前指针挪回它，历史版本一个都不动。">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="version" value="{{ v.version }}">
                 <button class="btn sm" type="submit">回滚到这个版本</button>

@@ -115,6 +115,18 @@ async def _log_password_source(state: AppState) -> None:
             "环境变量 XINGCHA_ADMIN_PASSWORD **被忽略**：库里已有密码，先立者为准。"
             "要改用环境变量里那个，先跑 `xingcha admin reset-password`。"
         )
+    elif ws.env_password_is_weak(env):
+        # 生效了，但短。**只警告不拒绝**：强度是用户自己的取舍，而这条捷径的意义
+        # 就是省掉浏览器设密流程——拒用等于把它废掉。
+        #
+        # 但必须说一次：这个后台能改写上游 base_url，也就是能把付费 key 指到任意
+        # 地址，而端口往往是对整个局域网开的。
+        log.warning(
+            "环境变量 XINGCHA_ADMIN_PASSWORD 已生效，但只有 %d 位（建议至少 %d 位）。"
+            "后台可改写上游 base_url——弱密码的代价是你的上游 key。",
+            len(ws.normalize_env_password(env)),
+            C.MIN_ADMIN_PASSWORD_LEN,
+        )
 
 
 async def load_tracing(state: AppState) -> None:
@@ -290,7 +302,7 @@ async def _denied_handler(request: Request, exc: Exception) -> Response:
         HTMLResponse(
             f"<!doctype html><meta charset=utf-8>"
             f"<title>操作被拒绝</title>"
-            f"<link rel=stylesheet href=/admin/static/style.css>"
+            f'<link rel=stylesheet href="{web_routes.asset("style.css")}">'
             # 带上与 base.html 相同的 data: favicon。不带的话浏览器会去要
             # /favicon.ico，而那是一条 404——每一次"操作被拒绝"都在控制台留一条
             # 红色错误，把真正的问题淹掉。

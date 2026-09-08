@@ -430,6 +430,10 @@ class TestAgents:
         page.goto(f"{site.base_url}/admin/agents/versioned", wait_until="networkidle")
         rollback = page.locator("form[action$='/rollback'] button").first
         assert rollback.count(), "编辑页没有回滚按钮——M2 点名的「版本与回滚」"
+        # 这个表单带 data-confirm。**必须显式接受**：playwright 在没有 handler 时
+        # 自动 dismiss，表单于是从未提交，而失败信息会指向"回滚没生效"——
+        # 看起来像产品 bug，实际是测试没点"确定"。
+        page.once("dialog", lambda d: d.accept())
         rollback.click()
         page.wait_for_load_state("networkidle")
 
@@ -512,14 +516,80 @@ class TestQuota:
 # =============================================================================
 
 
-class TestSettings:
+class TestFormAlignment:
+    """一行里的多个字段必须**真的对齐**。
+
+    这是唯一能证明它的一层：CSS 改坏了不会让任何断言变红，而症状是"看起来歪"——
+    没人会为此写测试，于是它会一次次回来。
+
+    真实的坏法：``.form-row`` 曾经用 ``align-items: flex-end``（底边对齐），于是
+    任何一个字段带 .hint 就比邻居高，底边对齐之后它的控件反而**更靠上**；同一行里
+    的提交按钮又去对齐说明文字的底边，落得比所有控件低半行。配额页四个标签落在四个
+    不同高度上、密钥页的「签发」比下拉低几像素，都是这一个原因。
+
+    现在的做法把对齐变成构造性质的（标签行高度固定），所以这几条断言应当是**严格
+    相等**，不是"差不多"。
+    """
+
+    #: 这三页各有一个多字段横排的表单，且**恰好覆盖三种组合**：
+    #: 配额页有字段带说明、密钥页行尾有按钮、调用记录页两者都有。
+    PAGES: ClassVar[list[str]] = ["/admin/quota", "/admin/keys", "/admin/logs"]
+
+    @pytest.mark.parametrize("path", PAGES)
+    def test_labels_and_controls_in_a_row_share_a_baseline(self, site: LiveSite, page, path):
+        login(page, site)
+        page.goto(f"{site.base_url}{path}", wait_until="networkidle")
+        rows = page.evaluate("""() => {
+            const out = [];
+            for (const row of document.querySelectorAll('.form-row')) {
+                const fields = [...row.querySelectorAll(':scope > .field')];
+                if (fields.length < 2) continue;
+                // 换行之后不同视觉行的字段本来就不该对齐，所以按 label 的 top 分组
+                const labels = fields.map(f => f.querySelector('label')).filter(Boolean);
+                const sel = 'input, select, textarea';
+                const ctrls = fields.map(f => f.querySelector(sel)).filter(Boolean);
+                out.push({
+                    labels: labels.map(e => Math.round(e.getBoundingClientRect().top)),
+                    ctrls: ctrls.map(e => Math.round(e.getBoundingClientRect().top)),
+                    btns: [...row.querySelectorAll(':scope > button, :scope > .btn')]
+                            .map(e => Math.round(e.getBoundingClientRect().top)),
+                });
+            }
+            return out;
+        }""")
+        assert rows, f"{path} 上没找到多字段的 .form-row —— 这条断言失效了"
+        for i, row in enumerate(rows):
+            # 同一视觉行内（top 相同的那一组）必须严格对齐
+            for key in ("labels", "ctrls"):
+                by_line: dict[int, int] = {}
+                for top in row[key]:
+                    by_line[top] = by_line.get(top, 0) + 1
+                assert by_line, f"{path} 第 {i} 行没有 {key}"
+            # 每个字段的控件顶边只能落在少数几条线上（换行才会多一条）
+            lines = sorted(set(row["ctrls"]))
+            assert len(lines) <= 2, f"{path} 第 {i} 行的控件散在 {len(lines)} 个高度上：{lines}"
+            if row["btns"]:
+                assert set(row["btns"]) <= set(row["ctrls"]), (
+                    f"{path} 第 {i} 行的按钮没跟控件对齐："
+                    f"按钮 {row['btns']} vs 控件 {sorted(set(row['ctrls']))}"
+                )
+
+
+class TestUpstreamPage:
+    """上游页。
+
+    上游 key、连接自检、运行状况**从「设置」搬到了这里**——一页只回答一个问题
+    （出口是哪一个），设置页只留跨全站的东西。表单端点没变
+    （``/admin/settings/upstream``、``/admin/settings/test``），只有页面变了。
+    """
+
     def test_saved_key_is_never_shown_in_full(self, site: LiveSite, page):
         """页面上不能出现完整的上游 key。
 
         截图、录屏、肩窥、以及"把后台截图发到群里问问题"都是真实路径。
         """
         login(page, site)
-        page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
+        page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
         html = page.content()
         assert "sk-or-v1-e2e" not in html, "完整的上游 key 出现在页面上"
         assert "***" in page.inner_text("body")
@@ -529,7 +599,7 @@ class TestSettings:
         """改上游配置是全后台后果最严重的操作：这个表单被跨站提交一次，付费 key
         就会被送到攻击者的服务器。所以 CSRF 三层之外再加一道密码。"""
         login(page, site)
-        page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
+        page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
         page.fill("#api_key", "sk-or-v1-attacker")
         page.fill("#password", "wrong-password")
         page.click("form[action='/admin/settings/upstream'] button[type=submit]")
@@ -543,7 +613,7 @@ class TestSettings:
     def test_dangerous_base_url_is_refused(self, site: LiveSite, page):
         """A2：云元数据端点必须被拒，且报错要指出是什么问题。"""
         login(page, site)
-        page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
+        page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
         page.fill("#base_url", "http://169.254.169.254/v1")
         page.fill("#password", site.password)
         page.click("form[action='/admin/settings/upstream'] button[type=submit]")
@@ -557,7 +627,7 @@ class TestSettings:
         用的是**已保存**的配置（假上游会收到一次真请求）。
         """
         login(page, site)
-        page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
+        page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
         page.click("[hx-post='/admin/settings/test']")
         page.wait_for_function(
             "() => document.querySelector('#test-result')?.textContent.includes('模型')"
@@ -566,6 +636,8 @@ class TestSettings:
         )
         assert page.inner_text("#test-result").strip()
 
+
+class TestSettings:
     def test_trace_is_off_by_default_and_says_so(self, site: LiveSite, page):
         """可观测默认关，页面要说清"打开意味着提示词会离开这台机器"。"""
         login(page, site)

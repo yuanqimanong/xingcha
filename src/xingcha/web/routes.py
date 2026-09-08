@@ -8,12 +8,14 @@ double-submit token、Origin/Sec-Fetch-Site 校验。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,6 +39,48 @@ log = logging.getLogger(__name__)
 
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+
+
+# =============================================================================
+# 静态资源的版本号
+# =============================================================================
+
+
+@cache
+def asset(name: str) -> str:
+    """静态资源的带版本 URL，形如 ``/admin/static/style.css?v=1a2b3c4d``。
+
+    版本号是**文件内容的哈希**，不是应用版本号：开发期改一行 CSS 而版本号没变的
+    情况太常见，而症状恰恰是最难认的那种——新模板配旧样式表，页面上的东西看起来
+    "错位挤在一起"，而 HTML、CSS、Python 每一份单独看都是对的。
+
+    有了内容哈希，URL 随内容变，于是可以放心声明 ``immutable`` 长缓存：
+    平时零请求，升级后必取新的。这直接服务于"升级对用户透明"——用户不该需要知道
+    "改完样式要硬刷新"这件事。
+
+    ``@cache``：每个名字只读盘一次。文件在 wheel 里，进程生命周期内不会变。
+    """
+    digest = hashlib.sha256((HERE / "static" / name).read_bytes()).hexdigest()[:8]
+    return f"/admin/static/{name}?v={digest}"
+
+
+templates.env.globals["asset"] = asset
+
+
+class _VersionedStatic(StaticFiles):
+    """静态文件 + 长缓存。
+
+    URL 带内容哈希，所以 ``immutable`` 是**成立的**：同一个 URL 的内容永远不变。
+    不加这个头的话浏览器只能按启发式缓存——既可能每次都revalidate（白跑请求），
+    也可能几天不问一次（升级后看到旧样式）。两种都不是我们想要的。
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
 _throttle = ws.LoginThrottle()
@@ -222,10 +266,32 @@ async def login_page(request: Request) -> Response:
     return resp
 
 
+def cookie_secure(request: Request) -> bool:
+    """会话与 CSRF cookie 要不要带 ``Secure``。**跟随请求自身的协议，不写死。**
+
+    写死 ``True`` 的代价：纯 HTTP 部署下浏览器**直接丢掉** cookie，症状是"密码
+    输对了却一直跳回登录页"，而服务端日志显示登录成功、会话已签发——两边看起来
+    都正常，是最难查的一类。（``localhost`` 例外：浏览器把它当安全上下文，所以
+    本机开发看不出问题，只有换成局域网 IP 才炸。）
+
+    写死 ``False`` 的代价：HTTPS 部署下，攻击者可以把受害者引到同域的 http 链接，
+    让浏览器把凭证明文发出来。
+
+    所以只有一个正确答案——问这次请求本身。直连时 ``request.url.scheme`` 就是
+    真实协议。
+
+    **反代后面需要额外一步**：uvicorn 默认不读 ``X-Forwarded-Proto``（读了就等于
+    信任任何人伪造的那个头），所以放了反代之后要显式开 ``proxy_headers`` 并把
+    ``forwarded_allow_ips`` 限定到反代的地址。当前部署是直连 HTTP，没开。
+    """
+    return request.url.scheme == "https"
+
+
 @dataclass
 class _Csrf:
     value: str
     fresh: bool
+    secure: bool = True
 
     def apply(self, resp: Response) -> None:
         if self.fresh:
@@ -234,7 +300,7 @@ class _Csrf:
                 self.value,
                 httponly=False,  # 表单要读它；它本身不是凭证，只是"你能读到本站页面"的证明
                 samesite="strict",
-                secure=True,
+                secure=self.secure,
                 path="/admin",
             )
 
@@ -245,7 +311,7 @@ async def _ensure_csrf_cookie(request: Request) -> _Csrf:
         return _Csrf(existing, fresh=False)
     import secrets
 
-    return _Csrf(secrets.token_urlsafe(32), fresh=True)
+    return _Csrf(secrets.token_urlsafe(32), fresh=True, secure=cookie_secure(request))
 
 
 @router.post("/login")
@@ -296,26 +362,36 @@ async def login(
 
     _throttle.record_success(throttle_key)
     resp = RedirectResponse("/admin", status_code=303)
+    secure = cookie_secure(request)
     resp.set_cookie(
         ws.SESSION_COOKIE,
         new.token,
         httponly=True,
         samesite="strict",
-        secure=True,
+        secure=secure,
         path="/admin",
         max_age=state.settings.session_ttl_hours * 3600,
     )
     resp.set_cookie(
-        "xc_csrf", new.csrf, httponly=False, samesite="strict", secure=True, path="/admin"
+        "xc_csrf", new.csrf, httponly=False, samesite="strict", secure=secure, path="/admin"
     )
     return security_headers(resp)
 
 
 def _login_error(request: Request, message: str, *, setup: bool = False) -> Response:
+    # `env_managed` 也要传：漏了的话失败重渲染时"密码由环境变量托管"那行提示会消失，
+    # 于是用户在最需要这条信息的时刻（刚输错）看不到它。
+    env_managed = ws.env_password_in_effect(None, request.app.state.xc.settings.admin_password)
     return _render(
         request,
         "login.html",
-        {"setup": setup, "action": "/admin/login", "error": message, "csrf": ""},
+        {
+            "setup": setup,
+            "env_managed": env_managed,
+            "action": "/admin/login",
+            "error": message,
+            "csrf": "",
+        },
     )
 
 
@@ -808,7 +884,7 @@ async def test_upstream(request: Request) -> Response:
 def mount(app) -> None:
     """挂载后台。静态文件内嵌进 wheel，不走 CDN——离线可用是硬约束。"""
     app.include_router(router)
-    app.mount("/admin/static", StaticFiles(directory=str(HERE / "static")), name="xc-static")
+    app.mount("/admin/static", _VersionedStatic(directory=str(HERE / "static")), name="xc-static")
 
 
 # =============================================================================

@@ -95,27 +95,44 @@ def hash_password(password: str) -> str:
     return _hasher.hash(password)
 
 
-def env_password_usable(env_password: str | None) -> bool:
-    """环境变量里那个密码本身合不合格（不管它最终是否生效）。
+def normalize_env_password(env_password: str | None) -> str:
+    """把环境变量里的密码归一化。**空 / 只有空白 = 没设置。**
 
-    低于长度下限**一律拒用**，而不是"警告后放过"：一个 4 位的后台密码在公网机器上
-    是实打实的洞，而这个功能的全部意义是方便——方便不该以此为代价。
+    ``.env`` 里写 ``XINGCHA_ADMIN_PASSWORD=`` （键在、值空）是最常见的形态——
+    ``.env.example`` 抄过来就是这样。它的意思显然是"我还没填"，所以必须与
+    "填了一个坏值"区分开：前者不该有任何抱怨，后者必须报出来。
 
-    拒用之后会回落到库里的密码（或首次设密流程），所以用户不会被锁在门外，
-    只是那条捷径不生效。日志里会说清原因。
+    两头的空白一并去掉：``.env`` 的解析对首尾空白本来就不可靠，而一个首尾带空格的
+    密码是纯粹的陷阱——你按看到的字符输入，永远登不进去。
+
+    归一化只有这一处，登录校验与"设了没"的判断都走它。分成两份的话会出现最难查的
+    那种状态：**判断说设了、校验却对不上**，于是没人能登进去而日志说一切正常。
     """
-    if not env_password:
-        return False
-    if len(env_password) < C.MIN_ADMIN_PASSWORD_LEN:
-        log.error(
-            "环境变量 XINGCHA_ADMIN_PASSWORD 被忽略：长度 %d 不足 %d 位。"
-            "后台密码守着上游 key 与全部配置，太短的话这个便利不值得。"
-            "改长一点，或删掉它改用后台的首次设密流程。",
-            len(env_password),
-            C.MIN_ADMIN_PASSWORD_LEN,
-        )
-        return False
-    return True
+    return (env_password or "").strip()
+
+
+def env_password_usable(env_password: str | None) -> bool:
+    """环境变量里那个密码算不算"设了"。**任意非空即生效，不设长度门槛。**
+
+    这是一条经过一次决定的放宽。原先非空但短于 :data:`MIN_ADMIN_PASSWORD_LEN`
+    会被**拒用**——理由是后台能改写上游 ``base_url``，等于能把付费 key 指到任意
+    地址，所以弱密码不是"方便"而是洞。但拒用带来的实际后果是：用户在 .env 里写了
+    一行、重启、发现还是要走首次设密，而这条捷径的**全部意义就是省掉那个流程**。
+
+    现在的取法是：照用，但在启动时警告一次（见 ``app._log_password_source``）。
+    强度的判断交给用户，我们只保证他知道自己选了什么。
+
+    注意这不影响**浏览器首次设密**那条路径——那里仍然要求
+    :data:`MIN_ADMIN_PASSWORD_LEN` 位。两处的差别是有意的：环境变量是运维自己写在
+    自己机器上的文件里，而表单是任何能打开这一页的人在设。
+    """
+    return bool(normalize_env_password(env_password))
+
+
+def env_password_is_weak(env_password: str | None) -> bool:
+    """生效了，但短于建议下限。只用来决定"要不要在启动时提一句"。"""
+    normalized = normalize_env_password(env_password)
+    return bool(normalized) and len(normalized) < C.MIN_ADMIN_PASSWORD_LEN
 
 
 def env_password_in_effect(stored: str | None, env_password: str | None) -> bool:
@@ -152,7 +169,7 @@ def verify_admin_password(
     而普通的 ``==`` 会按字符逐位短路，泄漏前缀长度。
     """
     if env_password_in_effect(stored, env_password):
-        return secrets.compare_digest(password, env_password or "")
+        return secrets.compare_digest(password, normalize_env_password(env_password))
     return verify_password(stored, password)
 
 

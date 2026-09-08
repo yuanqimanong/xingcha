@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}星槎{% endblock %} · 星槎</title>
-<link rel="stylesheet" href="/admin/static/style.css">
-<script src="/admin/static/htmx.min.js" defer></script>
+<link rel="stylesheet" href="{{ asset('style.css') }}">
+<script src="{{ asset('htmx.min.js') }}" defer></script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230e6e6e'/><text x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='sans-serif'>槎</text></svg>">
 </head>
 <body>
 {% block body %}{% endblock %}
-<script src="/admin/static/app.js" defer></script>
+<script src="{{ asset('app.js') }}" defer></script>
 </body>
 </html>

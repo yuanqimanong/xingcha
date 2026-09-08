@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# 星槎的日常操作入口。
+#
+# 存在的理由：正确的命令太长，而**长命令里每一段都是踩过的坑**——
+#
+#   docker compose -f deploy/docker-compose.yml --env-file .env down \
+#     && sudo rm -rf data && docker compose -f ... up -d --build
+#
+# 这一行有三个陷阱：① 容器还在跑的时候删 data，进程握着已删除的 inode 继续写，
+# 表现是"我删了库，密码却还在"；② 删掉之后 Docker 会用 **root** 重建挂载点，
+# 容器里 uid 10001 写不进去，直接进重启循环；③ 忘了 down 直接删，同 ①。
+#
+# 所以这里只暴露两个动作：
+#
+#   ./xc start      —— 重新构建代码并起来，**data 一个字节都不动**
+#   ./xc redeploy   —— 连数据一起清空，从零开始（会问一次）
+#
+# 另外四个是顺手的：update / stop / logs / status。
+#
+# 这个脚本吸收了原来的 deploy.sh：那份脚本在 Caddy 去掉之后校验的还是已经不存在的
+# XINGCHA_DOMAIN / ACME_EMAIL，也就是**坏的**；它唯一的独特价值是"新机器上拉代码"，
+# 现在是这里的 update。
+
+set -euo pipefail
+# 脚本在 deploy/ 下，而 .env 与 compose 文件在仓库根。**从脚本自身的位置往上一级**，
+# 这样它在任何目录下被调用都对（`deploy/xc start`、`./xc start`、绝对路径都行）。
+cd "$(dirname "$(dirname "$(readlink -f "$0")")")"
+
+# 契约里读一个值。用 sed 而不是 `grep -oP ... \K`：这台机器上 `grep` 是 ugrep
+# 的 shim，PCRE 的 \K 不生效、返回 1，配上 set -e 就是**整个脚本静默退出**——
+# 没有任何输出，看起来像脚本坏了。
+from_contract() { sed -n "s/^$1[^=]*=[[:space:]]*\([0-9]\+\).*/\1/p" src/xingcha/contract.py | head -1; }
+from_env()      { sed -n "s/^$1=\(.*\)/\1/p" .env 2>/dev/null | head -1; }
+
+# 容器里的 UID。**从契约里读**，不写死——写死的那一刻它就会和 Dockerfile 漂移。
+UID_IN_CONTAINER=$(from_contract CONTAINER_UID)
+[ -n "$UID_IN_CONTAINER" ] || { echo "读不到 CONTAINER_UID（契约文件动过？）" >&2; exit 1; }
+DATA_DIR=./data
+
+# compose 文件与 .env 都显式传，**不依赖 COMPOSE_FILE 环境变量**：
+# 那东西的分隔符跟着 os.pathsep 走（Linux `:`、Windows `;`），而且它意味着
+# "在哪个目录下敲命令"会改变结果——正是上一版让人在 deploy/ 里 restart 失败的原因。
+c() { docker compose -f deploy/docker-compose.yml --env-file .env "$@"; }
+
+die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+say() { printf '\033[36m→ %s\033[0m\n' "$*"; }
+ok()  { printf '\033[32m✓ %s\033[0m\n' "$*"; }
+
+# 缺什么就给出**可以直接粘贴执行**的安装命令。只说"缺少 docker"没有用。
+need_docker() {
+  command -v docker >/dev/null 2>&1 || die "缺 docker。安装：curl -fsSL https://get.docker.com | sh"
+  docker compose version >/dev/null 2>&1 || die \
+    "缺 docker compose v2（v1 的 docker-compose 已 EOL，不支持）。安装：sudo apt install docker-compose-plugin"
+  docker info >/dev/null 2>&1 || die "docker 守护进程没在跑，或当前用户不在 docker 组。试：sudo usermod -aG docker $USER && newgrp docker"
+}
+
+need_env() {
+  need_docker
+  if [ ! -f .env ]; then
+    say ".env 不存在，从模板生成一份"
+    cp deploy/.env.example .env
+    ok "已生成 .env"
+    printf '  默认只绑回环（只有这台机器能访问）。要开给局域网，在 .env 里写\n'
+    printf '  XINGCHA_BIND_ADDR=0.0.0.0 与 XINGCHA_WEB_HOST=<你的 IP>，然后再跑一次。\n'
+    exit 0
+  fi
+}
+
+# data 目录必须存在、且属于容器里的那个 UID。
+#
+# 这一步是整个脚本存在的主要理由：Docker 在挂载点不存在时会用 root 创建它，
+# 而星槎以非 root 运行——于是首次部署、以及每一次"删了 data 重来"都会撞上
+# PermissionError，而症状只是容器无限重启。
+ensure_data_owner() {
+  mkdir -p "$DATA_DIR"
+  local owner
+  owner=$(stat -c '%u' "$DATA_DIR")
+  if [ "$owner" != "$UID_IN_CONTAINER" ]; then
+    say "data 目录属主是 UID $owner，容器里需要 $UID_IN_CONTAINER —— 用 sudo 改一次"
+    sudo chown -R "$UID_IN_CONTAINER:$UID_IN_CONTAINER" "$DATA_DIR"
+    sudo chmod 700 "$DATA_DIR"
+  fi
+  ok "data 目录就绪（属主 $UID_IN_CONTAINER，权限 700）"
+}
+
+wait_healthy() {
+  local name; name=$(c ps -q xingcha)
+  [ -n "$name" ] || die "xingcha 容器没起来。看 ./xc logs"
+  say "等健康检查…"
+  for _ in $(seq 1 60); do
+    case "$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null)" in
+      healthy) ok "healthy"; return 0 ;;
+      # 起不来的时候**立刻把日志摊开**，而不是让人等满 60 次再自己去找
+      *) [ "$(docker inspect -f '{{.State.Restarting}}' "$name")" = true ] && {
+           printf '\n'; c logs --tail 20 xingcha; die "容器在重启循环里（日志见上）"; } ;;
+    esac
+    sleep 2
+  done
+  printf '\n'; c logs --tail 30 xingcha
+  die "两分钟没等到 healthy（日志见上）"
+}
+
+show_url() {
+  local host port bind
+  host=$(from_env XINGCHA_WEB_HOST); [ -n "$host" ] || host=localhost
+  port=$(from_env XINGCHA_WEB_PORT); [ -n "$port" ] || port=8720
+  bind=$(from_env XINGCHA_BIND_ADDR); [ -n "$bind" ] || bind=127.0.0.1
+  printf '\n\033[1m  http://%s:%s\033[0m\n' "$host" "$port"
+  if [ "$bind" = 127.0.0.1 ]; then
+    printf '  只绑在回环上，别的设备访问不到。要开给局域网：在 .env 里写\n'
+    printf '  XINGCHA_BIND_ADDR=0.0.0.0，再 ./deploy/xc start。\n'
+    printf '  （注意：映射出去的端口走 DOCKER-USER 链，会绕过 ufw。）\n\n'
+  else
+    printf '  明文 HTTP：密码与 sk-xc- 密钥在网络上是裸传的。\n\n'
+  fi
+}
+
+case "${1:-}" in
+  start)
+    need_env; ensure_data_owner
+    say "构建并启动（保留 data）"
+    c up -d --build
+    wait_healthy; show_url
+    ;;
+
+  redeploy)
+    need_env
+    printf '\033[33m这会删掉 %s 里的全部数据：数据库、密钥环、备份。\033[0m\n' "$DATA_DIR"
+    printf '上游 key、后台密码、所有 Agent 与调用记录都会没有。输入 yes 继续：'
+    read -r answer
+    [ "$answer" = yes ] || die "已取消，什么都没动。"
+
+    # **先 down 再删**。反过来的话进程还握着已删除的 inode 继续写，
+    # 表现为"我删了库，密码却还在"——这一条是实际踩出来的。
+    say "停止容器"
+    c down
+    say "删除 $DATA_DIR"
+    sudo rm -rf "$DATA_DIR"
+    ensure_data_owner
+    say "构建并启动"
+    c up -d --build
+    wait_healthy
+    ok "全新实例。第一次打开 /admin 会引导设定密码（或按 .env 里的 XINGCHA_ADMIN_PASSWORD）"
+    show_url
+    ;;
+
+  update)
+    need_env
+    # `pull --ff-only` 而不是 `reset --hard`。
+    #
+    # 原来的 deploy.sh 用的是 reset --hard，理由是"部署机以远程为准"。但这个脚本
+    # 同样会在**开发机**上被跑，而那里 reset --hard 会不声不响地毁掉未提交的工作。
+    # 所以改成：脏工作区直接拒绝，让人自己决定怎么处理。
+    git diff --quiet && git diff --cached --quiet \
+      || die "工作区有未提交的改动。先 commit 或 stash，再 update。"
+    say "拉代码"
+    git pull --ff-only
+    say "构建并启动"
+    ensure_data_owner
+    c up -d --build
+    wait_healthy; show_url
+    ;;
+
+  stop)   c down; ok "已停止（data 保留）" ;;
+  logs)   shift; c logs -f --tail "${1:-50}" xingcha ;;
+  status)
+    c ps
+    printf '\n'; c exec -T xingcha xingcha admin status 2>/dev/null || true
+    ;;
+
+  *)
+    cat <<'EOF'
+星槎
+
+  ./xc start        重新构建代码并启动，data 不动（日常用这个）
+  ./xc update       拉代码 + 重新构建启动（工作区脏时会拒绝）
+  ./xc redeploy     清空 data 从零开始（会问一次 yes）
+  ./xc stop         停止，data 保留
+  ./xc logs [n]     跟随日志
+  ./xc status       容器状态 + 后台账号状态
+EOF
+    exit 1
+    ;;
+esac

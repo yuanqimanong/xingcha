@@ -1,265 +1,157 @@
-# 部署（Linux · docker compose）
+# 部署
 
-一键拉代码 → 构建镜像 → `docker compose up -d` → Caddy 自动 TLS。
+**一个容器、一个 compose 文件、明文 HTTP。**
 
-> 只支持 docker compose 这一种形态。不同时提供 systemd 与裸 Dockerfile 两条路：
-> 三种并列等于把三套运维范式一起变成事实上的接口，日后砍掉任一种都是毁约。
+```bash
+git clone git@github.com:yuanqimanong/xingcha.git
+cd xingcha && ./deploy/xc start
+```
+
+首次会从 `deploy/.env.example` 生成一份 `.env` 并停下来，让你决定要不要开给局域网。
+填完再跑一次 `./deploy/xc start` 就起来了。Windows 用 `.\deploy\xc.ps1`，动作名一样。
+
+---
+
+## 为什么没有 TLS / 没有反向代理
+
+早先这里是两个容器（xingcha + Caddy）、三份 compose、两份 Caddyfile，Caddy 负责
+自动签证书。现在收敛成单容器明文 HTTP，这是一次**明确的取舍**，代价必须写清楚：
+
+- **密码与 `sk-xc-` 密钥在网络上是裸传的。** 同网段的人 `tcpdump` 一开就能读到，
+  ARP 欺骗都不用做。
+- 之前那套用的是 Caddy 的内部 CA，浏览器不认，你每次都点"继续前往"。**那一档只防
+  被动嗅听**：主动中间人递一张自己的自签证书，你同样会点过去。除非把 Caddy 的根 CA
+  装进每台设备的信任库，否则它给的保护比看起来少。
+
+所以：**自己的局域网可以这么用；放公网必须在前面加 TLS。** 加法是在前面放任何一个
+反代（Caddy / nginx / Traefik），星槎的会话 cookie 会跟着请求协议自动带上 `Secure`
+（见 `web/routes.py` 的 `cookie_secure`）；你需要额外给 uvicorn 开
+`proxy_headers` 并把 `forwarded_allow_ips` 限定到反代的地址——**默认不开是有意的**，
+开了就等于信任任何人伪造的 `X-Forwarded-Proto`。
 
 ---
 
 ## 前置依赖
 
-| 工具 | 安装 |
-|------|------|
-| **Git** | `apt-get update && apt-get install -y git` |
-| **Docker** | `curl -fsSL https://get.docker.com \| sh` |
-| **Compose v2** | `apt-get install -y docker-compose-plugin`（v1 的 `docker-compose` 已 EOL，不支持） |
-
-一台 1C1G 的 VPS 足够。`deploy.sh` 会检查这些，缺什么就打印可直接执行的安装命令。
+`docker` 与 `docker compose` v2（v1 的 `docker-compose` 已 EOL，不支持）。
+缺什么 `xc` 会给出可以直接粘贴执行的安装命令。
 
 ---
 
-## 生产部署步骤（新加坡 VPS）
+## 日常动作
 
-> **顺序有讲究**。第 2、3、4 步做反了会卡在最后一步，而且 Let's Encrypt 撞了速率
-> 限制要等一周。
+| 命令 | 做什么 |
+|---|---|
+| `./deploy/xc start` | 重新构建代码并启动，**data 一个字节都不动** |
+| `./deploy/xc update` | 拉代码 + 重新构建启动（工作区脏时会拒绝，不会 `reset --hard`） |
+| `./deploy/xc redeploy` | 连数据一起清空，从零开始（会问一次 `yes`） |
+| `./deploy/xc stop` | 停止，data 保留 |
+| `./deploy/xc logs [n]` | 跟随日志 |
+| `./deploy/xc status` | 容器状态 + 后台账号状态 |
 
-### 1. 确认网络可达性
+`xc` 存在的理由是那条正确的手敲命令太长，而**长命令里每一段都是踩过的坑**：
 
-星槎要在这台机器上直连 OpenRouter：
+1. 容器还在跑的时候删 `data/`，进程握着已删除的 inode 继续写 —— 表现是"我删了库，
+   密码却还在"；
+2. 删掉之后 Docker 会用 **root** 重建挂载点，容器里 UID 10001 写不进去 ——
+   直接进重启循环；
+3. `COMPOSE_FILE` 那种"在哪个目录敲命令会改变结果"的配置 —— 在 `deploy/` 里
+   `restart` 直接失败。
 
-```bash
-curl -sS -o /dev/null -w '%{http_code}\n' https://openrouter.ai/api/v1/models
-```
-
-返回 `200` 才继续。这台机器**不需要**代理——星槎的 HTTP 客户端一律
-`trust_env=False`，不会继承机器级的 `ALL_PROXY`。如果机器上设了 socks5 代理而
-星槎又继承了它，服务会在构造阶段直接 `ImportError` 且报错完全看不出跟代理有关，
-所以这条路被显式堵死了。要走中转请在后台配 `openrouter.base_url`。
-
-### 2. 先做 DNS
-
-把域名的 A 记录指向这台机器的公网 IP，确认生效：
-
-```bash
-dig +short xc.example.com
-```
-
-**必须在起 Caddy 之前完成。** DNS 没生效时 Caddy 申请证书会失败，而失败次数会
-计入 Let's Encrypt 的速率限制。
-
-### 3. 再腾出 80/443
-
-如果这台机器上还跑着 Dify（或别的占用 80/443 的东西）：
+手敲的等价命令（路径相对于仓库根）：
 
 ```bash
-cd /path/to/dify/docker && docker compose down
+docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 ```
 
-先做 DNS 再停旧服务，是为了让"旧服务不可用"的窗口尽量短。
+---
 
-### 4. 克隆 + 首次部署
+## `.env`
+
+完整注释见 [`.env.example`](.env.example)。三项最常动的：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `XINGCHA_BIND_ADDR` | `127.0.0.1` | 宿主上绑哪个地址。**默认只有本机能访问**；开给局域网写 `0.0.0.0` |
+| `XINGCHA_WEB_PORT` | `8720` | 宿主端口 |
+| `XINGCHA_ADMIN_PASSWORD` | 空 | 留空 = 没设置，首次访问 `/admin` 引导设定 |
+
+`XINGCHA_BIND_ADDR` 的默认值是一条**安全属性**：映射出去的端口走 Docker 的
+`DOCKER-USER` 链，**会绕过 ufw** —— 你在防火墙里写的 deny 对它无效。所以"开给整个
+局域网"必须是一次显式选择，而不是装上就默认对外。
+
+**Windows 必须加一行** `XINGCHA_DATA_MOUNT=xingcha_data`：Docker Desktop 经
+9p/virtiofs 把 Windows 目录挂进虚拟机，那是网络文件系统，**SQLite 的 WAL 在上面会
+静默降级**——症状是零星的 `database is locked`，只在并发写时出现，压不出来也难复现。
+
+---
+
+## 初始化
+
+打开 `http://<地址>:8720/admin`。
+
+1. 首次访问引导**设置管理员密码**（至少 12 位，别复用其它服务的——这个后台能改写
+   上游 `base_url`）。
+
+   也可以在 `.env` 里预设 `XINGCHA_ADMIN_PASSWORD`，省掉这一步、也不怕忘。这一项
+   **任意长度都生效**（太短会在启动日志里警告一次）。**先立者为准**：库里一旦有了
+   密码，那一项就被忽略——这样任何能往 `.env` 写一行的人都顶不掉已建好的管理员密码。
+   要改用它，先跑 `./deploy/xc status` 确认状态，再
+   `docker compose -f deploy/docker-compose.yml --env-file .env exec xingcha xingcha admin reset-password`。
+
+   忘了密码走同一条 `admin reset-password`，之后重新访问 `/admin` 设定。密码只存
+   argon2id 哈希，没有别的找回途径。
+2. 「上游」页填 key（或从这台机器上已有的厂商 key 变量里一键切换）。
+3. 「密钥」页签发一把 `sk-xc-`，交给业务代码。
+
+验证打通：
 
 ```bash
-mkdir -p /opt && cd /opt
-git clone -b master git@github.com:yuanqimanong/xingcha.git
-cd xingcha/deploy
-./deploy.sh
-```
-
-首次会从 `deploy/.env.example` 生成 `.env` 然后**主动停下**，提示你填写。
-
-### 5. 填 `.env`
-
-```env
-XINGCHA_DOMAIN=xc.example.com
-ACME_EMAIL=you@example.com
-
-# 首次先用 staging 走一遍，确认链路后再注释掉
-ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory
-```
-
-### 6. 用 staging 证书跑通一遍
-
-```bash
-./deploy.sh
-curl -k https://xc.example.com/healthz     # -k 因为 staging 证书浏览器不认
-```
-
-拿到 `{"status":"ok"}` 说明 DNS、80 端口、防火墙、容器网络全都对了。
-
-### 7. 切正式证书
-
-注释掉 `.env` 里的 `ACME_CA`，然后：
-
-```bash
-docker compose up -d --force-recreate caddy
-curl https://xc.example.com/healthz          # 这次不用 -k
-```
-
-### 8. 初始化
-
-```
-浏览器打开 https://xc.example.com/admin
-```
-
-1. 首次访问会引导**设置管理员密码**（至少 12 位，别复用其它服务的密码——
-   这个后台能改写上游 base_url）
-
-   也可以在 `.env` 里预设 `XINGCHA_ADMIN_PASSWORD`，省掉这一步、也不怕忘。
-   **先立者为准**：库里一旦有了密码，那一项就被忽略——这样任何能往 `.env` 写一行
-   的人都顶不掉已建好的管理员密码。要改用它，先跑
-   `docker compose exec xingcha xingcha admin reset-password`。
-
-   忘了密码：`docker compose exec xingcha xingcha admin reset-password`，
-   然后重新访问 `/admin` 设定。密码只存 argon2id 哈希，没有别的找回途径。
-2. 「设置」页填 OpenRouter key
-3. 「密钥」页签发一把 `sk-xc-`，交给业务代码
-
-### 9. 验证打通
-
-```bash
-curl https://xc.example.com/v1/chat/completions \
+curl http://<地址>:8720/v1/chat/completions \
   -H "Authorization: Bearer sk-xc-1-..." \
   -H "Content-Type: application/json" \
   -d '{"model":"openai/gpt-5","messages":[{"role":"user","content":"说一句话"}]}'
 ```
 
-业务代码只需要改两行：
+业务代码只改两行：
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="https://xc.example.com/v1", api_key="sk-xc-1-...")
+client = OpenAI(base_url="http://<地址>:8720/v1", api_key="sk-xc-1-...")
 ```
 
-### 10. ⚠️ 到 OpenRouter 后台给这把上游 key 设信用上限
+### ⚠️ 到上游厂商后台给这把 key 设信用上限
 
-**即使星槎自己有配额闸，这一步也不能省。**
+星槎的配额是**事后判定**（调用完才知道花了多少），所以它不是最后一道钱刹车。
+上游侧的硬上限才是。
 
-星槎的配额是进程内计数的：进程没起来、迁移失败、或者你哪天把规则删了，闸就不在了。
-OpenRouter 侧的额度上限是唯一不依赖星槎正常工作的那道闸。
+### 在 `/admin/quota` 设一条配额
 
-### 11. 在 `/admin/quota` 设一条配额
-
-三级主体（用户 / 令牌 / Agent）× 三窗口（日 / 月 / 累计），金额与次数上限可分别设。
-
-两点要知道：
-
-- **金额扣的是上游报的实际费用**，拿不到才回落目录估价。运行列表里带 `~` 前缀的
-  是估价，不带的是实价。
-- **直通路径默认不受配额约束**（契约 §3.9 冻结了这一点）。要打开，设
-  `XINGCHA_QUOTA_ON_PASSTHROUGH=1` 并重启——注意这对调用方是一次**收紧**，
-  原本能跑的请求会开始收到 429。
-
----
-
-## 局域网 / 本机测试
-
-生产那份编排走 ACME，需要**真域名**。要在局域网 IP 或 localhost 上试，用叠加层：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
-```
-
-`.env` 里补三项（都不是密钥）：
-
-```
-XINGCHA_DOMAIN=192.168.183.132     # compose 的解析期守卫要求它非空
-ACME_EMAIL=none@localhost          # 局域网用不到，同上
-XINGCHA_LAN_HOST=192.168.183.132   # 你的局域网 IP
-XINGCHA_LAN_PORT=8443              # 不占宿主 80/443
-```
-
-然后开 `https://<你的IP>:8443`。**浏览器会报证书不受信任**——局域网 IP 拿不到公网
-证书，用的是 Caddy 内部 CA 自签，点"继续"即可。
-
-几点：
-
-- **局域网也必须 HTTPS。** 后台会话 cookie 是 `secure=True`（生产永远在 TLS
-  后面），明文 HTTP 下浏览器会拒绝存它，症状是"登录成功又被弹回登录页"的死循环。
-- 叠加层把整个 `.env` 注入容器（`env_file`）。这是**「上游可切换」在 Docker 下能用
-  的前提**：容器不继承宿主环境，`DEEPSEEK_API_KEY` 一类不透传进来就扫不到。
-  代价是这些值会出现在 `docker inspect` 里。
-- 其余（容器形状、卷、日志上限、健康检查、xingcha 零宿主端口）完全沿用生产那一份
-  ——测的就是要上线的那套东西。
-
----
-
-## 更新
-
-```bash
-cd /opt/xingcha/deploy
-./deploy.sh
-```
-
-拉最新代码 → 重新构建 → `up -d`。数据库迁移在容器启动时自动跑，**迁移前会自动
-备份**（`VACUUM INTO` 到 `data/backups/`）。
-
-升级期间有 1–2 秒中断，正在跑的长请求会被切断——这是已选定的升级档位接受的代价。
-`stop_grace_period` 是 30 秒的折中：设成和 `request_timeout`（600s）一样长的话，
-每次升级要等 10 分钟。
-
-只更新不启动：
-
-```bash
-./deploy.sh --no-run
-```
-
-> 更新对已存在的仓库执行 `git reset --hard origin/master`：**以远程为准、丢弃部署机
-> 上的本地代码改动**（`.env` 与 `data/` 是 untracked，不受影响）。部署机上不要手改代码。
+结构化 Agent 最坏会调 `1+重试次数` 次模型，一条跑飞的调用能花掉几倍的钱。
 
 ---
 
 ## 开机自启与崩溃重启
 
-已经有了：`restart: unless-stopped`。开机时 Docker 守护进程会把它拉起来，
-崩溃时也会。确认 Docker 自己开机自启：
-
-```bash
-systemctl enable docker
-```
+`restart: unless-stopped` 已在编排里，不需要 systemd 单元。
 
 ---
 
 ## 可观测（可选）
 
-后台的运行列表回答「跑了几次、花了多少、有没有报错」。它回答不了
-**「模型到底看到了什么、又吐回了什么」**——而调提示词的时间几乎全花在那个问题上。
+「设置」页配 OTLP endpoint（Langfuse 之类）。**默认关闭**——打开意味着提示词与模型
+输出会离开这台机器，而这个项目存在的理由恰恰是不想让请求经过别人手里，所以它必须是
+一次显式的决定，不能是升级的副作用。
 
-接上任意 OTLP 端点（Langfuse 最顺手）就能看到每次调用的完整消息、重试与耗时。
-
-**默认关。** 打开意味着提示词与模型输出会离开这台机器：
-
-```bash
-docker compose exec xingcha xingcha config set trace.endpoint -
-# https://你的langfuse域名/api/public/otel/v1/traces
-docker compose exec xingcha xingcha config set trace.public_key -
-docker compose exec xingcha xingcha config set trace.secret_key -
-# 命令行写的值在启动时读取，这一步不能省
-docker compose restart xingcha
-```
-
-或者在后台「设置 → 可观测」页填（要二次输密码——这个表单被跨站提交一次，攻击者
-就得到一份持续到达的对话副本）。
-
-几点：
-
-- **自建 Langfuse 在内网是允许的**（`http://10.x`、同一个 docker network 都行）。
-  上游地址那条链路会带着付费 key，所以内网一律拒；trace 这条不带 key，拒了反而
-  会把人推向托管服务，那是更差的隐私结果。云元数据端点两处都拒。
-- Langfuse 挂了、地址填错、证书过期——一律只降级成「看不到 trace」，不会影响调用。
-- 不想带内容：`XINGCHA_TRACE_INCLUDE_CONTENT=0`。但那样最主要的用处也就没了。
-- 当前状态在 `/readyz` 里可查（`trace` / `trace_endpoint` / `trace_includes_content`）。
-
-**直通路径不上报。** 它是字节级透明代理，没有可看的提示词——把它的字节塞进 span
-会和「原样转发」这条契约打架。直通的运行记录仍然在后台列表里。
+配好地址之后，每个 Agent 在自己的表单里选择要不要上报。
 
 ---
 
 ## 备份
 
 ```bash
-docker compose exec xingcha xingcha db backup
+DC="docker compose -f deploy/docker-compose.yml --env-file .env"
+$DC exec xingcha xingcha db backup
 ```
 
 用 `VACUUM INTO` 做**崩溃一致**的副本（`cp` 复制活库在 WAL 下不是崩溃一致的，
@@ -269,10 +161,10 @@ docker compose exec xingcha xingcha db backup
 
 ```bash
 # 数据库（含 token 哈希与 Fernet 密文）
-tar czf xingcha-db-$(date +%F).tgz -C /opt/xingcha/data backups
+tar czf xingcha-db-$(date +%F).tgz -C data backups
 
 # 密钥环 —— 单独存，最好加一层口令
-gpg -c /opt/xingcha/data/secret.key
+gpg -c data/secret.key
 ```
 
 把密文和密钥打进同一个包，等于让加密对「备份泄露」这个最现实的威胁提供零保护。
@@ -280,7 +172,7 @@ gpg -c /opt/xingcha/data/secret.key
 恢复：
 
 ```bash
-docker compose exec xingcha xingcha db restore /data/backups/xingcha-....db
+$DC exec xingcha xingcha db restore /data/backups/xingcha-....db
 ```
 
 > 密钥环丢失而数据库里已有密文时，星槎会**拒绝启动**。这是有意的：静默重新生成
@@ -290,7 +182,7 @@ docker compose exec xingcha xingcha db restore /data/backups/xingcha-....db
 ### 体检
 
 ```bash
-docker compose exec xingcha xingcha db verify
+$DC exec xingcha xingcha db verify
 ```
 
 只读，随时可跑。报告完整性、schema 版本、各表行数，以及**里面有多少条要靠密钥环
@@ -299,8 +191,7 @@ docker compose exec xingcha xingcha db verify
 ### 演练
 
 ```bash
-cd /opt/xingcha/deploy
-./drill.sh
+./deploy/drill.sh
 ```
 
 **「`data/backups/` 里躺着一堆 .db 文件」这件事本身什么都不证明。** 备份不可信的
@@ -314,35 +205,24 @@ cd /opt/xingcha/deploy
 复原。原目录是挪走而不是删掉，演练失败时它就是退路。演练期间**停机约一分钟**。
 
 ```bash
-./drill.sh --no-keyring   # 验证"只恢复数据库、忘了密钥环"确实会拒绝启动
-./drill.sh --keep         # 保留恢复出来的数据，不复原
+./deploy/drill.sh --no-keyring   # 验证"只恢复数据库、忘了密钥环"确实会拒绝启动
+./deploy/drill.sh --keep         # 保留恢复出来的数据，不复原
 ```
 
 **每次改动部署方式之后跑一次**，以及至少每季度一次。
 
 ---
 
-## 脚本参数
-
-| 参数 | 说明 |
-|---|---|
-| `--no-run` | 只拉代码 + 构建，不启动 |
-| `--repo-dir <目录>` | 仓库目录（全新机器指定克隆目标；默认取脚本上级 = 仓库根） |
-| `--repo-url <地址>` | 仓库地址（仅首次克隆用） |
-| `--branch <分支>` | 默认 `master` |
-
----
-
 ## 安全注意
 
-- **不要给 xingcha 容器加 `ports:`。** 加一行 `ports: 8720:8720` 会让应用直接暴露
-  在公网上，而且 **Docker 的 `DOCKER-USER` 链会绕过 ufw**：防火墙规则写了 deny，
-  映射出去的端口照样可达。对外只经 Caddy。
+- **对外是明文 HTTP。** 见开头那节。放公网前面必须加 TLS。
+- **默认只绑回环。** 改成 `0.0.0.0` 之前先想清楚：那个端口绕过 ufw。
 - **`data/` 目录不要放网络存储。** SQLite 的 WAL 在上面会静默降级，症状是零星的
   `database is locked`。星槎启动时会断言 WAL 并拒绝启动，但把它放对地方更省事。
+  （Windows 上的宿主目录就属于这一类，所以要用命名卷。）
 - **`.env` 里不要长期放上游 key。** 环境变量会出现在 `docker inspect` 与
   `/proc/<pid>/environ`。星槎只在首次启动时把它加密导入数据库并告警，之后永久忽略。
-- **后台密码要独立且足够长。** 它能改写上游 base_url——被打穿等于把付费 key 交出去。
+- **后台密码要独立且足够长。** 它能改写上游 `base_url`——被打穿等于把付费 key 交出去。
 - `data/` 权限是 `700`，数据库与备份是 `600`，容器以 UID 10001 非 root 运行。
 
 ---
@@ -351,11 +231,13 @@ cd /opt/xingcha/deploy
 
 | 症状 | 先看 |
 |---|---|
-| 容器起不来 | `docker compose logs xingcha`。启动时的断言（WAL、密钥环、迁移）失败都会打印明确原因 |
-| 证书签不下来 | `docker compose logs caddy`。多半是 DNS 没生效或 80 端口被占 |
-| `/v1` 返回 503 | 还没配 OpenRouter key。后台「设置」页（当场生效），或 `docker compose exec xingcha xingcha config set openrouter.api_key -` **后 `docker compose restart xingcha`**——命令行写的值在启动时读取，不重启不生效 |
-| 想看整体状况 | `docker compose exec xingcha xingcha doctor` |
-| 磁盘水位 | `curl -s https://<域名>/readyz`，低于 10% 会标 `degraded` |
+| 容器起不来 | `./deploy/xc logs`。启动时的断言（WAL、密钥环、迁移）失败都会打印明确原因 |
+| 重启循环 + `PermissionError: /data/backups` | `data/` 属主不对。`./deploy/xc start` 会自动 chown（要 sudo） |
+| 别的设备访问不到 | `XINGCHA_BIND_ADDR` 还是默认的 `127.0.0.1` |
+| 密码输对却一直跳回登录页 | cookie 带了 `Secure` 而你走的是 http。CI 有一条断言守这个，正常不该发生 |
+| `/v1` 返回 503 | 还没配上游 key。后台「上游」页（当场生效） |
+| 想看整体状况 | `./deploy/xc status`，或 `xingcha doctor` |
+| 磁盘水位 | `curl -s http://<地址>:8720/readyz`，低于 10% 会标 `degraded` |
 
 `xingcha doctor` 会一次性检查数据目录权限、schema 版本、密钥环、磁盘、代理环境变量
 与运行约束，并对机器级 socks5 代理这类"报错看不出根因"的情况给出解释。

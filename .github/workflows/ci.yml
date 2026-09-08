@@ -140,48 +140,62 @@ jobs:
         # 查的是源码，查不到打包这一层。实测踩过：新加的 web/static/app.js 没进旧
         # 镜像，容器里 /admin/static/app.js 是 404 —— 而复制按钮与危险操作的二次
         # 确认全靠它，页面看起来正常、点了没反应。
+        #
+        # 模板里的写法是 `{{ asset('app.js') }}`（asset 会附上内容哈希做缓存版本），
+        # 所以这里从 asset(...) 里取名字，而不是从 src="..." 里取。
         run: |
-          for f in $(grep -rhoP 'src="/admin/static/\K[^"]+' src/xingcha/web/templates/ | sort -u); do
+          names=$(grep -rhoP "asset\('\K[^']+" src/xingcha/web/templates/ | sort -u)
+          test -n "$names" || { echo "::error::一个 asset() 引用都没找到，检查这条断言本身"; exit 1; }
+          for f in $names; do
             docker run --rm --entrypoint sh xingcha:ci -c \
               "test -f /opt/venv/lib/python3.13/site-packages/xingcha/web/static/$f" \
               || { echo "::error::模板引用了 static/$f，但镜像里没有"; exit 1; }
             echo "  static/$f ok"
           done
-          # 反向：CSS 里 url() 引到的字体/图片同理
           test -f src/xingcha/web/static/style.css
 
-      - name: 缺必填变量时 compose 必须立刻失败
-        # 而不是把失败推迟成容器的无限重启循环。这是 A13。
+      - name: compose 配置合法，且默认只绑回环
+        # 默认值是一条**安全属性**，不是风格：映射出去的端口走 Docker 的
+        # DOCKER-USER 链，会绕过 ufw。所以"开给局域网"必须是 .env 里的一次显式
+        # 选择（XINGCHA_BIND_ADDR=0.0.0.0），装上就默认对外是不可接受的。
         run: |
-          if docker compose config >/dev/null 2>&1; then
-            echo "::error::缺 XINGCHA_DOMAIN / ACME_EMAIL 时 compose 应当失败，却成功了"
-            exit 1
-          fi
-          printf 'XINGCHA_DOMAIN=ci.example.com\nACME_EMAIL=ci@example.com\n' > .env
-          docker compose config >/dev/null
+          : > .env
+          docker compose -f deploy/docker-compose.yml --env-file .env config > /tmp/cfg.yml
+          grep -q '127.0.0.1:8720:8720' /tmp/cfg.yml \
+            || { echo "::error::默认没有绑在回环上"; cat /tmp/cfg.yml; exit 1; }
+          # 显式开给局域网时才应该出现 0.0.0.0
+          printf 'XINGCHA_BIND_ADDR=0.0.0.0\n' > .env
+          docker compose -f deploy/docker-compose.yml --env-file .env config \
+            | grep -q '0.0.0.0:8720:8720' \
+            || { echo "::error::XINGCHA_BIND_ADDR 没起作用"; exit 1; }
 
       - name: 整栈真的起得来
-        # 不只是"配置合法"。A13 的两个 blocker 都只在真 up 时才暴露：
-        # Caddy 拿到空 ACME_EMAIL 进重启循环、data/ 属主不对导致 PermissionError。
-        # 用 localhost + Caddy 内部 CA，除了向 Let's Encrypt 签证书之外全是真的。
+        # 不只是"配置合法"。此前两个 blocker 都只在真 up 时才暴露；现在虽然只剩
+        # 一个容器，data/ 属主不对导致 PermissionError 那条依然在。
         run: |
-          printf 'XINGCHA_DOMAIN=localhost\nACME_EMAIL=ci@example.com\n' > .env
+          : > .env
           mkdir -p data
-          sudo chown -R 10001:10001 data
+          # chmod 必须在 chown **之前**：换过属主之后 runner 用户就不是 owner 了，
+          # 再 chmod 直接 Operation not permitted。这一步此前是 CI 唯一的红点。
           chmod 700 data
-          docker compose up -d
+          sudo chown -R 10001:10001 data
+          docker compose -f deploy/docker-compose.yml --env-file .env up -d
           for i in $(seq 1 45); do
             [ "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1 2>/dev/null)" = healthy ] && break
             sleep 2
           done
-          docker compose ps
+          docker compose -f deploy/docker-compose.yml --env-file .env ps
           test "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1)" = healthy
-          # xingcha 绝不能映射宿主端口（DOCKER-USER 链会绕过 ufw）
-          test -z "$(docker port xingcha-xingcha-1)"
-          curl -fsS -k https://localhost/healthz | grep -q '"status":"ok"'
-          curl -fsS -k https://localhost/version | grep -q '"contract"'
-          test "$(curl -s -o /dev/null -w '%%{http_code}' -k https://localhost/v1/models)" = 401
+          curl -fsS http://127.0.0.1:8720/healthz | grep -q '"status":"ok"'
+          curl -fsS http://127.0.0.1:8720/version | grep -q '"contract"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8720/v1/models)" = 401
+          # 根路径跳后台
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8720/)" = 307
+          # 纯 HTTP 下 cookie **不能**带 Secure，否则浏览器丢掉它、用户永远登不进去
+          curl -s -D- -o /dev/null http://127.0.0.1:8720/admin/login | grep -i '^set-cookie' \
+            | grep -qi 'secure' && { echo "::error::HTTP 下 cookie 带了 Secure"; exit 1; }
+          echo "  cookie 未带 Secure ok"
 
       - name: 收尾
         if: always()
-        run: docker compose down -v || true
+        run: docker compose -f deploy/docker-compose.yml --env-file .env down -v || true

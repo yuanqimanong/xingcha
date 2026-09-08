@@ -9,7 +9,7 @@
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="https://xc.example.com/v1", api_key="sk-xc-1-...")
+client = OpenAI(base_url="http://192.168.1.10:8720/v1", api_key="sk-xc-1-...")
 
 # 裸模型直通
 client.chat.completions.create(model="openai/gpt-5", messages=[...])
@@ -29,7 +29,7 @@ client.chat.completions.create(model="extract", messages=[...])
 | 令牌签发 / 吊销 / 速率限制 | ✅ |
 | 调用记录与费用预估 | ✅ |
 | Web 管理后台 | ✅ |
-| docker compose + Caddy 自动 TLS | ✅ |
+| 一条命令部署（单容器 docker compose） | ✅ |
 | Agent（提示词 → 可调用的 model id） | ✅ |
 | 结构化输出保证：**四档全实现**（T1 / T2 / T1+ / T3） | ✅ |
 | schema 字段命名建议 | ✅ |
@@ -46,11 +46,29 @@ client.chat.completions.create(model="extract", messages=[...])
 
 ```bash
 git clone git@github.com:yuanqimanong/xingcha.git
-cd xingcha/deploy && ./deploy.sh     # 首次会生成 .env 并提示填写
+cd xingcha && ./deploy/xc start     # 首次会生成 .env 并停下来提示填写
 ```
 
-一台 1C1G 的 VPS 足够。两个容器（xingcha + caddy），一个 SQLite 文件，没有
-Postgres / Redis / 消息队列。
+日常就三条：
+
+```bash
+./deploy/xc start      # 重新构建代码并启动，data 不动
+./deploy/xc update     # 拉代码 + 重新构建启动
+./deploy/xc redeploy    # 清空 data 从零开始（会问一次 yes）
+```
+
+Windows 用 `.\deploy\xc.ps1`，动作名一样。
+
+一台 1C1G 的 VPS 足够。**一个容器、一个 compose 文件、一个 SQLite 文件**，没有
+Postgres / Redis / 消息队列，也没有反向代理。
+
+默认只绑回环（`127.0.0.1`），只有本机能访问。要开给局域网，在 `.env` 里写
+`XINGCHA_BIND_ADDR=0.0.0.0`——这必须是一次显式选择，因为映射出去的端口走
+Docker 的 DOCKER-USER 链，**会绕过 ufw**。
+
+对外是明文 HTTP：**密码与 `sk-xc-` 密钥在网络上是裸传的**。这适合自己的局域网；
+要放到公网上就在前面放一个反代做 TLS（星槎的 cookie 会跟着请求协议自动带
+`Secure`，但你需要给反代配好 `X-Forwarded-Proto` 的信任范围）。
 
 ---
 
@@ -90,10 +108,11 @@ CI 里还有一层**浏览器端到端**（42 条，Playwright + 系统的 chrom
 脚本那次，ASGI 层的全套测试是绿的，而复制密钥按钮无反应、危险操作的二次确认根本
 不弹。本机跑：`pytest -m browser`；跳过：`pytest -m "not browser"`。
 
-CI 还会构建镜像并**真的把整栈起起来**（`localhost` + Caddy 内部 CA），断言容器
-healthy、xingcha 零宿主端口、`/healthz` 通、`/v1` 无凭据 401。这一步是因为
-`Caddyfile` 引用的变量 compose 漏传过一次——那种问题不会让任何单测变红，症状只在
-真的 `docker compose up` 时出现。
+CI 还会构建镜像并**真的把整栈起起来**，断言容器 healthy、默认只绑回环、
+`/healthz` 通、`/v1` 无凭据 401、以及**纯 HTTP 下 cookie 不带 `Secure`**
+（带了浏览器就会丢掉它，症状是"密码输对却一直跳回登录页"，而服务端日志显示
+登录成功）。这一步存在是因为这类跨文件问题不会让任何单测变红——症状只在真的
+`docker compose up` 时出现。
 
 ---
 

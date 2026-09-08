@@ -46,16 +46,17 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 command -v docker >/dev/null || die "没有 docker。这个脚本是给已部署的机器用的。"
-[[ -f .env ]] || die "没有 .env。先跑 ./deploy.sh。"
+[[ -f .env ]] || die "没有 .env。先跑 ./deploy/xc start。"
 [[ -d data ]] || die "没有 data/。这台机器上还没有要演练的数据。"
 
-dc() { docker compose "$@"; }
+# compose 文件与 .env 显式传，与 deploy/xc 保持一致（不依赖 COMPOSE_FILE）
+dc() { docker compose -f deploy/docker-compose.yml --env-file .env "$@"; }
 xc() { dc exec -T xingcha xingcha "$@"; }
 
 # ---------------------------------------------------------------- 1 备份
 step "1/6 备份数据库 + 密钥环"
 dc ps --status running --services 2>/dev/null | grep -qx xingcha \
-  || die "xingcha 容器没在跑。先 docker compose up -d。"
+  || die "xingcha 容器没在跑。先 ./deploy/xc start。"
 
 xc db backup --tag drill >/dev/null
 LATEST="$(ls -t data/backups/*.db | head -1)"
@@ -70,7 +71,7 @@ ok "密钥环单独存到 $VAULT/secret.key（这一步是 A10 的关键：它�
 
 # ---------------------------------------------------------------- 2 体检
 step "2/6 体检这份备份"
-# 容器里 XINGCHA_DATA_DIR 已是 /data（见 docker-compose.yml），不传参就查最新那份
+# 容器里 XINGCHA_DATA_DIR 已是 /data（见 deploy/docker-compose.yml），不传参就查最新那份
 xc db verify || die "备份体检不过——演练到此为止，先修备份"
 
 # ---------------------------------------------------------------- 3 灾难
@@ -92,7 +93,7 @@ else
   cp "$VAULT/secret.key" data/secret.key
   chmod 600 data/secret.key
 fi
-# 容器里是非 root 用户（UID 10001），恢复出来的文件得归它
+# 容器里是非 root 用户（UID 10001，见 contract.CONTAINER_UID），恢复出来的文件得归它
 docker run --rm -v "$PWD/data:/data" alpine:3 chown -R 10001:10001 /data >/dev/null 2>&1 || \
   warn "chown 没跑成（本机可能拉不到 alpine 镜像）；若容器起不来先手动 chown 10001:10001 data"
 

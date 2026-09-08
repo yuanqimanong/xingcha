@@ -1,14 +1,33 @@
 {% extends "base.html" %}
-{% block title %}登录{% endblock %}
+{% block title %}{{ '设置管理员密码' if setup else '登录' }}{% endblock %}
 {% block body %}
+{#
+  登录页是全站唯一一处放开审美的地方——它是第一个被看到的页面，而"星槎"这个名字
+  本身有画面：乘槎泛星河。背景那条星河是纯 CSS（几层 radial-gradient + 一条斜带），
+  没有图片也没有字体，离线可用这条硬约束在第一屏就得成立。
+
+  两种模式共用同一个结构：
+    setup    首次使用，设密码 + 再输一次
+    login    已有密码，只输一次
+  变的只有标题、说明与按钮文案；品牌锁定块与页脚两种模式完全一致。
+#}
 <div class="auth-shell">
   <form class="auth-card" method="post" action="{{ action }}">
-    <div class="auth-brand">
-      <div class="brand-mark">槎</div>
+    <div class="auth-lockup">
+      <div class="auth-seal">槎</div>
       <div>
-        <div class="auth-title">{{ '设置管理员密码' if setup else '星槎' }}</div>
-        <div class="auth-sub">{{ '首次使用，请先设定一个密码' if setup else '管理后台' }}</div>
+        <div class="auth-word">星槎</div>
+        <div class="auth-latin">XĪNGCHÁ</div>
       </div>
+    </div>
+
+    <div class="auth-title">{{ '设置管理员密码' if setup else '管理后台' }}</div>
+    <div class="auth-sub">
+      {%- if setup -%}
+        首次使用。这个密码是后台的唯一凭据，库里只存 argon2id 哈希，忘了取不回来。
+      {%- else -%}
+        把 <code>base_url</code> 指向这里、填一把 <code>sk-xc-</code> 密钥，业务代码就能调任意上游模型。
+      {%- endif -%}
     </div>
 
     {% if error %}
@@ -17,26 +36,32 @@
 
     {% if setup %}
     <div class="alert info">
-      <div>后台暴露在公网上，且能改写上游 base_url。请用一个足够长的独立密码，
-      不要复用其它服务的密码。</div>
+      <div>这个后台能改写上游 <code>base_url</code>——也就是能把你的付费 key 指到任意地址。
+        请用一个足够长的独立密码，不要复用其它服务的。</div>
     </div>
     {% endif %}
 
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <div class="field">
       <label for="password">密码</label>
-      <input id="password" name="password" type="password" autocomplete="{{ 'new-password' if setup else 'current-password' }}"
-             required minlength="{{ 12 if setup else 1 }}" autofocus>
+      {# minlength 与后端校验用同一个常量：写死数字会出现"前端放过、后端拒绝"，
+         而那个错误从用户视角完全说不清。 #}
+      <input id="password" name="password" type="password"
+             autocomplete="{{ 'new-password' if setup else 'current-password' }}"
+             required minlength="{{ min_password_len if setup else 1 }}" autofocus>
       {% if setup %}<div class="hint">至少 {{ min_password_len }} 位。</div>{% endif %}
       {% if env_managed %}<div class="hint">密码由环境变量托管（<code>XINGCHA_ADMIN_PASSWORD</code>）。</div>{% endif %}
     </div>
     {% if setup %}
     <div class="field">
       <label for="confirm">再输一次</label>
-      <input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="{{ min_password_len }}">
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password"
+             required minlength="{{ min_password_len }}">
     </div>
     {% endif %}
     <button class="btn primary" type="submit" style="width:100%">{{ '设置并登录' if setup else '登录' }}</button>
+
+    <div class="auth-foot">v{{ version }} · 契约 v{{ contract }} · 自托管，数据不出这台机器</div>
   </form>
 </div>
 {% endblock %}

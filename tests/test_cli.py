@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 
 import pytest
+import typer.main
 from typer.testing import CliRunner
 
 from xingcha import config as config_mod
@@ -76,21 +77,31 @@ def run(cli: CliRunner, *args: str, stdin: str | None = None):
 
 class TestClosedSet:
     def _subcommands(self, cli: CliRunner, group: str) -> set[str]:
-        out = run(cli, group, "--help").output
-        # typer 的 help 是带框的表格，命令名在每行开头（去掉框线与空白之后）
-        names = set()
-        for line in out.splitlines():
-            stripped = line.strip().lstrip("│").strip()
-            head = stripped.split(" ", 1)[0]
-            if (
-                head
-                and head.replace("-", "").isascii()
-                and head.replace("-", "").isalnum()
-                and not head.startswith("-")
-                and head not in {"Usage", "Options", "Commands"}
-            ):
-                names.add(head)
-        return names
+        """某个命令组下**已注册**的子命令名。
+
+        走 click 的命令树，**不解析 --help 的渲染结果**。曾经解析过，代价是 CI 里
+        九个命令组一起"消失"：``GITHUB_ACTIONS`` 一存在，typer 就强制开颜色
+        （``rich_utils.FORCE_TERMINAL``），命令名变成 ``\x1b[1;36mserve\x1b[0m``，
+        逐行取首词的解析器把每一行都判成非字母数字而丢掉。本机复现不出来，因为
+        非交互 shell 的 ``TERM=dumb`` 恰好让 typer 关掉颜色——**同一份代码，两台
+        机器两种结果**，而红的那台看起来像"命令真的没了"。
+
+        闭集要断言的是"命令注册了没有"，那是命令树里的事实；help 长什么样是渲染，
+        受终端宽度、颜色、locale 影响。拿渲染结果去证注册事实，是把一条确定的断言
+        建在一堆环境变量上。
+        """
+        root = typer.main.get_command(app)
+        # 按 `.commands` 鸭子判定，**不用 isinstance(click.Group)**：typer 0.27 内置了
+        # 自己的一份 click（``typer._click``），TyperGroup 的基类是
+        # ``typer._click.core.Command`` 而不是 ``click.core.Group``——拿装在环境里的
+        # click 去 isinstance 恒为假，而失败信息会说"顶层不是命令组"。
+        commands = getattr(root, "commands", None)
+        assert isinstance(commands, dict), "顶层命令树取不到（typer 的实现换了？）"
+        if group == "--help":
+            return set(commands)
+        sub = getattr(commands.get(group), "commands", None)
+        assert isinstance(sub, dict), f"`xingcha {group}` 这个命令组不存在"
+        return set(sub)
 
     def test_every_promised_group_exists(self, cli: CliRunner):
         top = self._subcommands(cli, "--help")
@@ -114,7 +125,7 @@ class TestClosedSet:
         闭集的意义是"改它要经过一次决定"，而不是"文档里恰好列了几条"。
         """
         top = self._subcommands(cli, "--help")
-        extras = top - set(CLOSED_SET) - {"Commands"}
+        extras = top - set(CLOSED_SET)
         assert not extras, f"这些命令不在 §3.13 闭集里：{sorted(extras)}"
 
     def test_no_command_advertises_a_command_that_does_not_exist(self, cli: CliRunner):
