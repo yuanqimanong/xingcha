@@ -145,6 +145,9 @@ def _render(request: Request, template: str, ctx: dict[str, Any]) -> HTMLRespons
         or f"http://{state.settings.host}:{state.settings.port}",
         "flash": None,
         "theme": "",
+        # 密码长度下限：前端 minlength 与后端校验必须是同一个值，否则用户会被一个
+        # 说不清的错误挡住（前端放过、后端拒绝）。
+        "min_password_len": C.MIN_ADMIN_PASSWORD_LEN,
     }
     resp = templates.TemplateResponse(request, template, {**base, **ctx})
     return security_headers(resp)  # type: ignore[return-value]
@@ -257,8 +260,10 @@ async def login(
 
         setup = not admin.password_hash
         if setup:
-            if len(password) < 12:
-                return _login_error(request, "密码至少 12 位。", setup=True)
+            if len(password) < C.MIN_ADMIN_PASSWORD_LEN:
+                return _login_error(
+                    request, f"密码至少 {C.MIN_ADMIN_PASSWORD_LEN} 位。", setup=True
+                )
             if password != confirm:
                 return _login_error(request, "两次输入的密码不一致。", setup=True)
             admin.password_hash = ws.hash_password(password)
@@ -611,6 +616,48 @@ async def update_upstream(
     return security_headers(RedirectResponse("/admin/settings", status_code=303))
 
 
+@router.post("/settings/password")
+async def change_password(
+    request: Request,
+    current: str = Form(...),
+    new_password: str = Form(...),
+    confirm: str = Form(...),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """改后台密码。
+
+    改完**吊销所有会话，包括当前这个**——用户会被踢回登录页。这不是疏漏：
+    改密码的场景往往正是"我怀疑密码泄漏了"，那一刻留着任何一个旧会话都等于没改。
+    自己也被踢是可接受的代价（重新登录一次），而"只踢别人"需要区分会话来源，
+    多一层不必要的逻辑。
+
+    忘了密码走 ``xingcha admin reset-password``——密码只存 argon2id 哈希，
+    这里也取不回来。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+
+    if new_password != confirm:
+        raise Denied("两次输入的新密码不一致，未做任何修改。")
+    if len(new_password) < C.MIN_ADMIN_PASSWORD_LEN:
+        raise Denied(f"新密码至少 {C.MIN_ADMIN_PASSWORD_LEN} 位，未做任何修改。")
+
+    async with state.sessionmaker() as s:
+        admin = await ws.get_admin(s)
+        if admin is None or not ws.verify_password(admin.password_hash, current):
+            raise Denied("当前密码不正确，未做任何修改。")
+        if new_password == current:
+            raise Denied("新密码与当前密码相同，未做任何修改。")
+        admin.password_hash = ws.hash_password(new_password)
+        await ws.revoke_all(s)
+        await s.commit()
+
+    resp = security_headers(RedirectResponse("/admin/login", status_code=303))
+    # 会话已经在库里被吊销，cookie 留着只会让下一次请求白跑一遍鉴权
+    resp.delete_cookie("xc_session", path="/admin")
+    return resp
+
+
 @router.post("/settings/trace")
 async def update_trace(
     request: Request,
@@ -801,7 +848,15 @@ async def agents_page(request: Request) -> Response:
 
 def _empty_form() -> Any:
     return SimpleNamespace(
-        slug="", name="", description="", instructions="", model="", schema="", tier="T2", retries=2
+        slug="",
+        name="",
+        description="",
+        instructions="",
+        model="",
+        schema="",
+        tier="T2",
+        retries=2,
+        **_settings_view({}),
     )
 
 
@@ -810,10 +865,48 @@ async def _model_choices(state: Any) -> tuple[list[Any], int]:
     return models, sum(1 for m in models if m.supports_native_schema)
 
 
+async def _form_shell(request: Request) -> dict[str, Any]:
+    """三个 handler（new / edit / save 出错回填）共用的表单上下文。
+
+    写三份的话，加一个分区就要改三处——而漏掉一处的症状是"新建页有这个字段、
+    编辑页没有"，一种很晚才会被发现的不一致。
+    """
+    from ..core import builder
+
+    state = request.app.state.xc
+    models, native = await _model_choices(state)
+    tracing = state.tracing
+    return {
+        "models": models,
+        "native_count": native,
+        "tiers": _tier_options(),
+        "model_settings": builder.model_settings_fields(),
+        "capabilities": builder.form_capabilities(),
+        # 可观测那一栏要知道地址配了没：没配就不该给一个勾了没用的开关
+        "trace_endpoint": tracing.endpoint if tracing is not None else "",
+        "trace_include_content": tracing.include_content if tracing is not None else False,
+    }
+
+
+def _settings_view(spec: dict[str, Any]) -> dict[str, Any]:
+    """模型参数/能力/可观测 三块的回填值。"""
+    from ..core import builder
+
+    view = builder.form_view(spec)
+    settings = view["settings"]
+    filled = {k: v for k, v in settings.items() if v not in ("", None)}
+    return {
+        "settings": settings,
+        "has_settings": bool(filled),
+        "settings_count": len(filled),
+        "capabilities": view["capabilities"],
+        "instrumented": view["instrumented"],
+    }
+
+
 @router.get("/agents/new")
 async def agent_new(request: Request) -> Response:
     await require_admin(request)
-    models, native = await _model_choices(request.app.state.xc)
     csrf = await _ensure_csrf_cookie(request)
     resp = _render(
         request,
@@ -824,13 +917,11 @@ async def agent_new(request: Request) -> Response:
             "form": _empty_form(),
             "action": "/admin/agents/save",
             "csrf": csrf.value,
-            "models": models,
-            "native_count": native,
-            "tiers": _tier_options(),
             "versions": [],
             "hints": [],
             "error": None,
             "saved": None,
+            **await _form_shell(request),
         },
     )
     csrf.apply(resp)
@@ -885,9 +976,9 @@ async def agent_edit(slug: str, request: Request) -> Response:
         else "",
         tier=resolved.tier.value if resolved.out_schema else "",
         retries=spec.get("retries", 2),
+        **_settings_view(spec),
     )
 
-    models, native = await _model_choices(state)
     csrf = await _ensure_csrf_cookie(request)
     resp = _render(
         request,
@@ -898,10 +989,8 @@ async def agent_edit(slug: str, request: Request) -> Response:
             "form": form,
             "action": "/admin/agents/save",
             "csrf": csrf.value,
-            "models": models,
-            "native_count": native,
-            "tiers": _tier_options(),
             "versions": version_rows,
+            **await _form_shell(request),
             "error": None,
             # 取走上一次保存的结果（经 flash 跨过 303）。一次性：刷新页面不再提示。
             "saved": _take_saved(request, session),
@@ -927,11 +1016,25 @@ async def agent_save(
 ) -> Response:
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
+    from ..core import builder
     from ..errors import XingchaError
     from ..services import agent as agent_svc
 
+    # 模型参数与能力用 ms_* / cap_* 前缀收，而不是逐个声明 Form 参数：
+    # 字段清单由官方 schema 驱动（见 builder.FORM_MODEL_SETTINGS），逐个声明就等于
+    # 把那份清单抄第二遍，而两份清单迟早会不一致。
+    raw = await request.form()
+    settings_raw = {
+        field: str(raw.get(f"ms_{field}") or "") for field, _, _ in builder.model_settings_fields()
+    }
+    caps = [name for name, _, _ in builder.form_capabilities() if raw.get(f"cap_{name}")]
+    if raw.get("instrument"):
+        # 可观测就是 Instrumentation 这个 capability——不是 AgentSpec 的顶层字段
+        caps.append(builder.CAPABILITY_INSTRUMENTATION)
+
     native_ok = state.catalog.supports_native_schema(model)
     try:
+        model_settings = builder.model_settings_from_form(settings_raw)
         async with state.sessionmaker() as s:
             result = await agent_svc.save(
                 s,
@@ -942,15 +1045,17 @@ async def agent_save(
                 model=model.strip(),
                 schema_text=output_schema,
                 requested_tier=C.Tier(tier) if tier else None,
-                capabilities=None,
+                capabilities=caps or None,
+                model_settings=model_settings or None,
                 retries=max(0, min(5, retries)),
                 native_ok=native_ok,
             )
             await s.commit()
     except XingchaError as e:
-        # 表单错误回到表单页并保留用户填的内容——跳到一个错误页会让人白填一遍
-        models, native = await _model_choices(state)
+        # 表单错误回到表单页并保留用户填的内容——跳到一个错误页会让人白填一遍。
+        # 模型参数与能力也要保留：只回填前半截的话，用户会以为那些设置没生效。
         csrf = await _ensure_csrf_cookie(request)
+        filled = {k: v for k, v in settings_raw.items() if v.strip()}
         form = SimpleNamespace(
             slug=slug,
             name=name,
@@ -960,6 +1065,11 @@ async def agent_save(
             schema=output_schema,
             tier=tier,
             retries=retries,
+            settings=settings_raw,
+            has_settings=bool(filled),
+            settings_count=len(filled),
+            capabilities=set(caps),
+            instrumented=builder.CAPABILITY_INSTRUMENTATION in caps,
         )
         resp = _render(
             request,
@@ -970,13 +1080,11 @@ async def agent_save(
                 "form": form,
                 "action": "/admin/agents/save",
                 "csrf": csrf.value,
-                "models": models,
-                "native_count": native,
-                "tiers": _tier_options(),
                 "versions": [],
                 "hints": [],
                 "error": e.message,
                 "saved": None,
+                **await _form_shell(request),
             },
         )
         csrf.apply(resp)

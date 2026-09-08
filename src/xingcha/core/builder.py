@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Final
 
 import httpx2
 from openai import AsyncOpenAI
@@ -163,14 +163,26 @@ def make_provider(
 
 
 def enable_instrumentation(tracing: Any) -> None:
-    """把 pydantic-ai 的埋点接到我们的 tracer 上。
+    """装配 pydantic-ai 的埋点，但**默认不开**。
 
     这是本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
-    ``instrument_all`` 是全局设置，而星槎的每个 Agent 都是自己构造的，没有一个会
-    单独声明 ``Instrumentation`` 能力——所以全局一次就够，不必逐个 Agent 传。
 
-    埋点做的事就是把每次模型请求的消息与响应记成 span 属性。这也正是"trace 含内容"
-    这个开关真正控制的东西。
+    ------------------------------------------------------------------------
+    为什么是"按 Agent 开"而不是全局开
+    ------------------------------------------------------------------------
+
+    埋点做的事是把每次模型请求的**完整消息与响应**记成 span 属性，然后发到外部
+    地址。这件事的答案在不同 Agent 之间通常不同：一个跑客户合同的 Agent 与一个
+    跑内部分类的 Agent，对"对话内容能不能离开这台机器"的回答不该被一个全局开关
+    统一。
+
+    ``instrument_all(settings)`` 设的是**默认值**——它只作用于没有单独声明
+    ``Instrumentation`` 能力的 Agent。所以这里传 ``False``：默认谁都不上报，
+    想上报的 Agent 在 spec 里声明那个 capability。
+
+    ``instrument_all`` 仍然要调（而不是完全不调）：pydantic-ai 需要一个
+    tracer_provider 才知道往哪儿发，而那是全局基础设施——**地址是全局的，
+    开关是按 Agent 的**。
     """
     from pydantic_ai import Agent
     from pydantic_ai.models.instrumented import InstrumentationSettings
@@ -185,6 +197,75 @@ def enable_instrumentation(tracing: Any) -> None:
             include_binary_content=False,  # 图片/音频进 span 会把体积撑爆
         )
     )
+
+
+#: 表单要暴露的模型参数，**按官方 ModelSettings 的字段名**。
+#:
+#: 只列这几个：它们是调模型时真会动的旋钮。其余（``extra_body`` / ``logit_bias`` /
+#: ``extra_headers`` / ``tool_choice``）要么是逃生舱、要么形状复杂到表单放不下——
+#: 那些走「导出 bundle 手改 agent.yaml 再 apply」这条路。
+#:
+#: 每一项都在 :func:`model_settings_fields` 里对着官方 schema 校验过存在，所以
+#: pydantic-ai 哪天改了字段名，构建期就会红，而不是在某次调用时静默失效。
+FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str], ...]] = (
+    # (字段名, 中文标签, 提示)
+    ("temperature", "temperature", "0 最确定、越高越发散。抽取类任务通常设 0。"),
+    ("top_p", "top_p", "核采样。与 temperature 二选一调，同时调难以推理。"),
+    ("max_tokens", "max_tokens", "单次回复的上限。设太小会让长回答被截断。"),
+    ("seed", "seed", "同样输入尽量给同样输出。多数上游只是尽力而为，不保证。"),
+    ("presence_penalty", "presence_penalty", "抑制重复出现的话题。范围 -2 ~ 2。"),
+    ("frequency_penalty", "frequency_penalty", "抑制重复用词。范围 -2 ~ 2。"),
+    ("top_k", "top_k", "只从概率最高的 k 个词里采样。部分上游不支持。"),
+    ("timeout", "timeout（秒）", "**单次**上游请求的超时，不是整轮。长思考模型要放宽。"),
+)
+
+#: 能力清单里对**单用户自托管**真正有用、且不需要额外参数的那些。
+#:
+#: 全列 14 个只会让表单变成一份 pydantic-ai 内部术语表——``PrefixTools`` /
+#: ``SetToolMetadata`` / ``IncludeToolReturnSchemas`` 是给框架使用者调工具协议的，
+#: 在这个后台里勾了也没有可观察的效果。
+#:
+#: ``Instrumentation`` 不在这里：它由「可观测」分区单独呈现（语义完全不同——那是
+#: "把这个 Agent 的对话发到外部"，与"给模型加个能力"不该并列在同一个勾选框列表里）。
+#:
+#: MCP 也不在这里：它需要服务器地址与鉴权，得先有一个配置页。
+FORM_CAPABILITIES: Final[tuple[tuple[str, str, str], ...]] = (
+    ("Thinking", "思考", "让模型先想再答。只有支持推理的模型有效，会多花 token。"),
+    ("WebSearch", "联网搜索", "模型可以自己搜。**上游必须支持**，否则请求会被拒。"),
+    ("WebFetch", "网页抓取", "模型可以自己取网页正文。同样依赖上游支持。"),
+    ("ToolSearch", "工具搜索", "工具很多时让模型先检索再调用。"),
+    ("ImageGeneration", "图像生成", "让模型能出图。上游不支持时请求会被拒。"),
+)
+
+#: 可观测那一项对应的 capability 名。单独拎出来，见 FORM_CAPABILITIES 的说明。
+CAPABILITY_INSTRUMENTATION: Final = "Instrumentation"
+
+
+def model_settings_fields() -> tuple[tuple[str, str, str], ...]:
+    """表单要用的模型参数，**对着官方 schema 校验过**。
+
+    不校验的话，pydantic-ai 改字段名之后表单会静默失效：填了 temperature、
+    存进 spec、``extra='ignore'`` 把它吞掉——你以为设了、实际跑的是默认值。
+    """
+    known = set(_spec_schema()["$defs"]["ModelSettings"].get("properties", {}))
+    missing = [name for name, _, _ in FORM_MODEL_SETTINGS if name not in known]
+    if missing:  # pragma: no cover - 只在上游改名时触发
+        raise RuntimeError(
+            f"这些字段在官方 ModelSettings 里不存在了：{missing}。"
+            f"pydantic-ai 改了字段名，FORM_MODEL_SETTINGS 要跟着改。"
+        )
+    return FORM_MODEL_SETTINGS
+
+
+def form_capabilities() -> tuple[tuple[str, str, str], ...]:
+    """表单要用的能力，**对着官方 CAPABILITY_TYPES 校验过**。"""
+    known = set(declarable_capabilities())
+    missing = [name for name, _, _ in FORM_CAPABILITIES if name not in known]
+    if missing:  # pragma: no cover
+        raise RuntimeError(f"这些能力在 pydantic-ai 里不存在了：{missing}")
+    if CAPABILITY_INSTRUMENTATION not in known:  # pragma: no cover
+        raise RuntimeError("Instrumentation 能力不见了，可观测的按 Agent 开关无从实现")
+    return FORM_CAPABILITIES
 
 
 def _strip_prefix(model: str) -> str:
@@ -364,6 +445,71 @@ def spec_from_form(
         # output 校验重试——写成那样会让重试预算看起来设了、实际没设。
         spec["retries"] = retries
     return spec
+
+
+def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
+    """表单里的模型参数 → ``model_settings`` dict。
+
+    **空字符串一律丢弃，不写成 0 或 null。** 表单里留空的意思是"不设这一项、用
+    上游默认"，而写进 spec 的 ``temperature: 0`` 是一个截然不同的指令——把留空
+    当成 0 会静默把每个 Agent 都变成确定性输出。
+
+    类型按官方 schema 走：整数字段收 int，其余收 float。收错类型的话
+    ``AgentSpec`` 的 ``extra='ignore'`` 不会报错，它会**静默丢掉**那一项。
+    """
+    ints = {"max_tokens", "seed", "top_k"}
+    out: dict[str, Any] = {}
+    for field, _, _ in model_settings_fields():
+        text = (raw.get(field) or "").strip()
+        if not text:
+            continue
+        try:
+            out[field] = int(text) if field in ints else float(text)
+        except ValueError as e:
+            from ..errors import AgentSpecInvalid
+
+            raise AgentSpecInvalid(f"{field} 不是合法的数字：{text!r}") from e
+    return out
+
+
+def capability_names(caps: list[Any]) -> set[str]:
+    """从 spec 的 capabilities 里取出能力名。**三种形状都要认。**
+
+    ``validate_spec`` 会把 ``["Thinking"]`` **规范化成**
+    ``[{"name": "Thinking"}]``，而手写的 agent.yaml 里还可能是
+    ``[{"Thinking": {...参数}}]``。
+
+    只认一种的下场：反填时把 ``{"name": "Thinking"}`` 的第一个 key 当成能力名，
+    于是每个 Agent 都被读成开了一个叫 ``name`` 的能力——**编辑页所有勾都是空的，
+    一保存就把用户设过的能力全清掉**。实测踩过。
+    """
+    out: set[str] = set()
+    for cap in caps:
+        if isinstance(cap, str):
+            out.add(cap)
+        elif isinstance(cap, dict):
+            # 规范形状：{"name": "Thinking", ...}；带参数形状：{"Thinking": {...}}
+            named = cap.get("name")
+            if isinstance(named, str) and named:
+                out.add(named)
+            else:
+                out.update(k for k in cap if isinstance(k, str))
+    return out
+
+
+def form_view(spec: dict[str, Any]) -> dict[str, Any]:
+    """AgentSpec → 表单要回填的值。是 :func:`spec_from_form` 的反向。
+
+    编辑一个 Agent 时必须能看到**当前的**参数值。反填不了的话，编辑就等于重填——
+    而"我只是想改一句提示词"会把之前设过的 temperature 悄悄清掉。
+    """
+    settings = spec.get("model_settings") or {}
+    names = capability_names(spec.get("capabilities") or [])
+    return {
+        "settings": {k: settings.get(k, "") for k, _, _ in model_settings_fields()},
+        "capabilities": names,
+        "instrumented": CAPABILITY_INSTRUMENTATION in names,
+    }
 
 
 #: 供 doctor 与设置页显示。

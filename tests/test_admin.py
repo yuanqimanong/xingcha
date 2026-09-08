@@ -365,11 +365,26 @@ class TestSettingsMutation:
         assert r.status_code == 303
 
     def test_saved_key_is_masked_in_ui(self, logged_in: TestClient):
-        """页面上不能出现完整的上游 key —— 截图、录屏、肩窥都是真实路径。"""
+        """页面上不能出现完整的上游 key —— 截图、录屏、肩窥都是真实路径。
+
+        上游配置在**上游页**（/admin/upstreams），不在设置页：那一页专管"出口是
+        哪一个"，配置、自检、切换在一起才说得通。
+        """
+        self.test_valid_update_succeeds(logged_in)
+        body = logged_in.get("/admin/upstreams").text
+        assert "sk-or-v1-legit" not in body
+        assert "***" in body
+
+    def test_settings_page_no_longer_holds_the_upstream_key(self, logged_in: TestClient):
+        """设置页**不该**再出现上游 key —— 它整块搬走了。
+
+        这条防的是"搬走了但忘了删"：两处都能改同一个值时，用户改了一处、另一处
+        显示的还是旧的，而没人知道哪个是真的。
+        """
         self.test_valid_update_succeeds(logged_in)
         body = logged_in.get("/admin/settings").text
         assert "sk-or-v1-legit" not in body
-        assert "***" in body
+        assert 'action="/admin/settings/upstream"' not in body, "上游表单还留在设置页"
 
 
 class TestTraceMutation:

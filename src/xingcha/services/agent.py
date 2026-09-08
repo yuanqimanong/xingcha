@@ -174,6 +174,7 @@ async def save(
     schema_text: str | None,
     requested_tier: Tier | None,
     capabilities: list[str] | None,
+    model_settings: dict[str, Any] | None = None,
     retries: int,
     native_ok: bool,
     changelog: str = "",
@@ -205,6 +206,7 @@ async def save(
         instructions=instructions,
         model=model,
         capabilities=capabilities,
+        model_settings=model_settings,
         retries=retries,
     )
     # schema 也写进 spec：导出物靠它工作（from_file 没有 output_type 注入点），

@@ -108,6 +108,18 @@ def setup(
         provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
         processor = BatchSpanProcessor(exporter)
         provider.add_span_processor(processor)
+
+        # **必须设成 OTel 全局 provider。**
+        #
+        # 可观测是"按 Agent 开"的（见 builder.enable_instrumentation）：想上报的
+        # Agent 在 spec 里声明 ``capabilities: [Instrumentation]``。而那个 capability
+        # 的默认构造**不带 tracer_provider**——它去拿 OTel 的全局 provider。
+        #
+        # 不设全局的话：声明了能力的 Agent 拿到一个 no-op provider，**一个 span 都
+        # 不发，而且不报错**。实测确认过：设全局之前 +0 个 span，设之后 +2 且带内容。
+        from opentelemetry import trace as otel_trace
+
+        otel_trace.set_tracer_provider(provider)
     except Exception:
         # 装配失败只丢可观测，不丢服务。**这条不能改成抛**：一个写错的 endpoint
         # 会变成"服务起不来"，而它本来只该是"看不到 trace"。

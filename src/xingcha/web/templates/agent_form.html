@@ -4,18 +4,33 @@
 <div class="page-head">
   <div>
     <h1>{{ '新建 Agent' if is_new else agent.name }}</h1>
-    {% if not is_new %}<p>标识 <code>{{ agent.slug }}</code> · 当前 v{{ agent.version }}。<strong>标识发布后不能改</strong>——调用方的代码里写着它。</p>{% endif %}
+    {% if is_new %}
+    <p>Agent 就是一段被固定下来的提示词 + 一份输出约定。建好之后业务代码把
+      <code>model</code> 换成它的标识即可，不改别的。</p>
+    {% else %}
+    <p>标识 <code>{{ agent.slug }}</code> · 当前 v{{ agent.version }}。
+      <strong>标识发布后不能改</strong>——调用方的代码里写着它。</p>
+    {% endif %}
   </div>
 </div>
 
-{% if error %}<div class="alert danger"><div><div class="alert-title">没有保存</div><div style="white-space:pre-wrap">{{ error }}</div></div></div>{% endif %}
-{% if saved %}<div class="alert ok"><div>已保存为 v{{ saved.version }}{% if saved.tier_note %} —— {{ saved.tier_note }}{% endif %}</div></div>{% endif %}
+{% if error %}
+<div class="alert danger">
+  <div><div class="alert-title">没有保存</div><div style="white-space:pre-wrap">{{ error }}</div></div>
+</div>
+{% endif %}
+{% if saved %}
+<div class="alert ok">
+  <div>已保存为 v{{ saved.version }}{% if saved.tier_note %} —— {{ saved.tier_note }}{% endif %}</div>
+</div>
+{% endif %}
 
 <form method="post" action="{{ action }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
 
-  <div class="card mb5">
-    <div class="card-head"><h2>基本</h2></div>
+  {# ---------------------------------------------------------------- 基本 #}
+  <section class="card mb4">
+    <div class="card-head"><h2>基本信息</h2></div>
     <div class="card-body">
       <div class="form-row">
         <div class="field">
@@ -23,28 +38,20 @@
           <input id="slug" name="slug" class="mono" value="{{ form.slug }}" {% if not is_new %}readonly{% endif %}
                  required pattern="[a-z][a-z0-9]*(-[a-z0-9]+)*" minlength="2" maxlength="48"
                  placeholder="extract">
-          <div class="hint">这就是对外的 <code>model</code> 值。小写字母、数字与连字符；<strong>发布后不可更改</strong>。</div>
+          <div class="hint">
+            这就是对外的 <code>model</code> 值。小写字母、数字与连字符；<strong>发布后不可更改</strong>。
+          </div>
         </div>
         <div class="field">
           <label for="name">名称</label>
           <input id="name" name="name" value="{{ form.name }}" required maxlength="60" placeholder="合同抽取">
+          <div class="hint">只用于后台与模型列表的展示。</div>
         </div>
       </div>
       <div class="field">
         <label for="description">说明</label>
         <input id="description" name="description" value="{{ form.description }}" maxlength="200"
-               placeholder="一句话说明它做什么，会出现在模型列表里">
-      </div>
-    </div>
-  </div>
-
-  <div class="card mb5">
-    <div class="card-head"><h2>提示词与模型</h2></div>
-    <div class="card-body">
-      <div class="field">
-        <label for="instructions">指令</label>
-        <textarea id="instructions" name="instructions" rows="8" required
-                  placeholder="你是一个合同信息抽取助手……">{{ form.instructions }}</textarea>
+               placeholder="一句话说明它做什么，会出现在 /v1/models 里">
       </div>
       <div class="field">
         <label for="model">模型</label>
@@ -54,43 +61,67 @@
           {% for m in models %}<option value="{{ m.id }}">{{ m.name or m.id }}</option>{% endfor %}
         </datalist>
         <div class="hint">
-          {% if models %}目录里有 {{ models|length }} 个可用模型，其中 {{ native_count }} 个支持原生结构化输出。
-          {% else %}模型目录还没拉到——先在<a href="/admin/settings">设置</a>里配好上游 key。{% endif %}
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="field" style="flex:0 1 180px">
-          <label for="retries">校验重试次数</label>
-          <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
-          <div class="hint">最坏情况会调用 <strong>1+{{ form.retries }}</strong> 次模型。</div>
+          {% if models %}
+            目录里有 {{ models|length }} 个可用模型，其中 {{ native_count }} 个支持原生结构化输出。
+          {% else %}
+            模型目录还没拉到——先到<a href="/admin/upstreams">上游</a>页配好 key。
+          {% endif %}
         </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="card mb5">
+  {# ---------------------------------------------------------------- 提示词 #}
+  <section class="card mb4">
     <div class="card-head">
-      <h2>输出</h2>
+      <h2>提示词</h2>
+      <span class="dim small mono" id="instr-count"></span>
+    </div>
+    <div class="card-body">
+      <div class="field">
+        <label for="instructions">系统提示词</label>
+        <textarea id="instructions" name="instructions" rows="12" required
+                  placeholder="你是一个合同信息抽取助手。&#10;&#10;规则：&#10;- 只输出原文里出现的信息，不要推断&#10;- 找不到的字段留空，不要编"
+                  >{{ form.instructions }}</textarea>
+        <div class="hint">
+          这段话会作为 <code>instructions</code> 进入每一次调用，<strong>调用方无法改写它</strong>——
+          请求里的 <code>system</code> 消息只会被<em>追加</em>在它之后。这是设计：提示词是你的资产。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# ---------------------------------------------------------------- 输出保证 #}
+  <section class="card mb4">
+    <div class="card-head">
+      <h2>输出保证</h2>
       <button type="button" class="btn sm" hx-post="/admin/agents/lint" hx-include="#output_schema,#tier"
               hx-target="#lint-result" hx-swap="innerHTML" hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
         检查字段命名 <span class="htmx-indicator">…</span>
       </button>
     </div>
     <div class="card-body">
-      <div class="field">
-        <label for="tier">保证档位</label>
-        <select id="tier" name="tier">
-          <option value="">纯文本（不定义 schema）</option>
-          {% for t in tiers %}
-          <option value="{{ t.value }}" {% if form.tier == t.value %}selected{% endif %}>
-            {{ t.value }} · {{ t.name }} —— 形状保证{{ t.shape }}，{{ t.content }}
-          </option>
-          {% endfor %}
-        </select>
-        <div class="hint">
-          档位的代价摆在这里由你选，而不是替你选最强的。
-          <strong>T2</strong> 会在输出不合规时自动重试（成本随重试放大，但不承担对齐税）；
-          <strong>T3</strong> 只把 schema 当提示，不做任何校验。
+      <div class="form-row">
+        <div class="field">
+          <label for="tier">保证档位</label>
+          <select id="tier" name="tier">
+            <option value="">纯文本（不定义 schema）</option>
+            {% for t in tiers %}
+            <option value="{{ t.value }}" {% if form.tier == t.value %}selected{% endif %}>
+              {{ t.value }} · {{ t.name }} —— 形状保证{{ t.shape }}，{{ t.content }}
+            </option>
+            {% endfor %}
+          </select>
+          <div class="hint">
+            档位的代价摆在这里由你选，而不是替你选最强的。
+            <strong>T2</strong> 输出不合规时自动重试（成本随重试放大，但不承担对齐税）；
+            <strong>T3</strong> 只把 schema 当提示，不做任何校验。
+          </div>
+        </div>
+        <div class="field" style="flex:0 1 200px">
+          <label for="retries">校验重试次数</label>
+          <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
+          <div class="hint">最坏会调用 <strong>1+{{ form.retries }}</strong> 次模型，token 按整轮累计计费。</div>
         </div>
       </div>
       <div class="field">
@@ -102,11 +133,110 @@
           一条灾难性回溯就能让服务停摆）与指向外部的 <code>$ref</code>。留空即纯文本输出。
         </div>
       </div>
-      <div id="lint-result">
-        {% if hints %}{% include "_lint.html" %}{% endif %}
+      <div id="lint-result">{% if hints %}{% include "_lint.html" %}{% endif %}</div>
+    </div>
+  </section>
+
+  {# ---------------------------------------------------------------- 模型参数 #}
+  <details class="card mb4" {% if form.has_settings %}open{% endif %}>
+    <summary class="card-head">
+      <h2>模型参数</h2>
+      <span class="dim small">
+        {% if form.has_settings %}已设 {{ form.settings_count }} 项{% else %}全部留空 = 用上游默认{% endif %}
+      </span>
+    </summary>
+    <div class="card-body">
+      <p class="muted small mb4">
+        <strong>留空就是不设这一项。</strong>留空与填 <code>0</code> 是两件不同的事——
+        前者用上游默认，后者是一条明确的指令。
+      </p>
+      <div class="grid-params">
+        {% for field, label, hint in model_settings %}
+        <div class="field">
+          <label for="ms_{{ field }}">{{ label }}</label>
+          <input id="ms_{{ field }}" name="ms_{{ field }}" class="mono" inputmode="decimal"
+                 value="{{ form.settings.get(field, '') }}" placeholder="默认">
+          <div class="hint">{{ hint }}</div>
+        </div>
+        {% endfor %}
       </div>
     </div>
-  </div>
+  </details>
+
+  {# ---------------------------------------------------------------- 能力 #}
+  <details class="card mb4" {% if form.capabilities %}open{% endif %}>
+    <summary class="card-head">
+      <h2>能力</h2>
+      <span class="dim small">
+        {% if form.capabilities %}已开 {{ form.capabilities | length }} 项{% else %}未开启{% endif %}
+      </span>
+    </summary>
+    <div class="card-body">
+      <p class="muted small mb4">
+        由 pydantic-ai 的官方能力清单驱动（不是星槎自己发明的开关）。
+        <strong>这些依赖上游支持</strong>——上游不支持时请求会被它直接拒掉，而不是静默降级。
+      </p>
+      <div class="check-list">
+        {% for name, label, hint in capabilities %}
+        <label class="check">
+          <input type="checkbox" name="cap_{{ name }}" value="1"
+                 {% if name in form.capabilities %}checked{% endif %}>
+          <span>
+            <strong>{{ label }}</strong> <code class="dim">{{ name }}</code>
+            <span class="hint">{{ hint }}</span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="hint mt4">
+        <strong>MCP</strong> 也在官方清单里，但它需要服务器地址与鉴权，得先有一个配置页——
+        还没做。要用工具的话现在走导出 bundle 手改 <code>agent.yaml</code> 那条路。
+      </div>
+    </div>
+  </details>
+
+  {# ---------------------------------------------------------------- 可观测 #}
+  <details class="card mb5" {% if form.instrumented %}open{% endif %}>
+    <summary class="card-head">
+      <h2>可观测</h2>
+      <span class="dim small">
+        {% if form.instrumented %}上报中{% else %}不上报{% endif %}
+      </span>
+    </summary>
+    <div class="card-body">
+      {% if trace_endpoint %}
+      <label class="check">
+        <input type="checkbox" name="instrument" value="1" {% if form.instrumented %}checked{% endif %}>
+        <span>
+          <strong>上报这个 Agent 的 trace</strong>
+          <span class="hint">
+            每次调用的完整消息、重试与耗时会发到
+            <code class="mono">{{ trace_endpoint }}</code>。
+            {% if trace_include_content %}
+            <strong>包含提示词与模型输出。</strong>
+            {% else %}
+            当前配置<strong>不含</strong>内容，只有耗时与 token。
+            {% endif %}
+          </span>
+        </span>
+      </label>
+      <div class="hint mt4">
+        按 Agent 单独开，而不是全局一刀切：一个跑客户合同的 Agent 与一个跑内部
+        分类的 Agent，对"对话内容能不能离开这台机器"的答案通常不一样。
+      </div>
+      {% else %}
+      <div class="notice mb4">
+        还没配上报地址。到<a href="/admin/settings">设置 → 可观测</a>填好之后，
+        这里就能按 Agent 勾选。
+      </div>
+      <label class="check" style="opacity:.5">
+        <input type="checkbox" disabled>
+        <span><strong>上报这个 Agent 的 trace</strong>
+          <span class="hint">需要先配置上报地址</span></span>
+      </label>
+      {% endif %}
+    </div>
+  </details>
 
   <div class="row">
     <button class="btn primary" type="submit">{{ '创建' if is_new else '保存为新版本' }}</button>
@@ -119,12 +249,13 @@
 </form>
 
 {% if not is_new %}
-<div class="alert info mt4">
+<div class="alert info mt5">
   <div>
     <div class="alert-title">随时能带走</div>
-    <div>导出的是一个 zip：<code>agent.yaml</code> 是标准的 pydantic-ai
+    <div>导出的是一个目录：<code>agent.yaml</code> 是标准的 pydantic-ai
       <code>AgentSpec</code>（不是星槎的私有格式），<code>run.py</code> 零星槎依赖，
-      <strong>校验行为一并保留</strong>。里面的 README 如实写了保留与丢失了什么。</div>
+      <strong>校验行为一并保留</strong>。改完还能用
+      <code>xingcha agent apply</code> 导回来。</div>
   </div>
 </div>
 {% endif %}
@@ -144,7 +275,8 @@
             <td class="mono small dim">{{ v.created }}</td>
             <td style="text-align:right">
               {% if not v.current %}
-              <form method="post" action="/admin/agents/{{ agent.slug }}/rollback">
+              <form method="post" action="/admin/agents/{{ agent.slug }}/rollback"
+                    data-confirm="回滚到 v{{ v.version }}？会产生一个新版本，内容与它相同。">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">
                 <input type="hidden" name="version" value="{{ v.version }}">
                 <button class="btn sm" type="submit">回滚到这个版本</button>

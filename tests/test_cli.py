@@ -40,6 +40,7 @@ CLOSED_SET = {
     "agent": {"apply", "list", "show", "export"},
     "db": {"upgrade", "downgrade", "backup", "restore", "verify"},
     "quota": {"set", "list", "unset"},
+    "admin": {"reset-password", "status"},
 }
 
 SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}

@@ -492,6 +492,93 @@ td.dim {
   font-weight: 600;
 }
 
+/* 可折叠的分区卡片。
+ *
+ * 用原生 details/summary 而不是 JS 折叠：CSP 是 script-src 'self'，而更重要的是
+ * 折叠这种纯展示交互不该依赖 JS——JS 没加载时表单必须仍然可填完可提交。
+ * （复制按钮那次的教训：JS 被 CSP 挡掉之后页面看起来正常、功能是死的。） */
+details.card > summary {
+  cursor: pointer;
+  list-style: none;
+  /* 与 .card-head 同形，这样展开与不展开的卡片头看起来是一致的 */
+  padding: var(--s4) var(--s5);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+  transition: background 0.12s;
+}
+details.card > summary::-webkit-details-marker {
+  display: none;
+}
+details.card > summary::after {
+  content: "▸";
+  color: var(--ink-3);
+  font-size: 11px;
+  transition: transform 0.15s;
+}
+details.card[open] > summary::after {
+  transform: rotate(90deg);
+}
+details.card > summary:hover {
+  background: var(--surface-2);
+}
+details.card[open] > summary {
+  border-bottom: 1px solid var(--rule);
+}
+details.card > summary h2 {
+  margin: 0;
+}
+
+/* 模型参数：多列网格。单列铺开的话八个数字输入框会把页面拉得很长，
+ * 而它们彼此独立、没有阅读顺序。 */
+.grid-params {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--s4) var(--s5);
+}
+
+/* 勾选列表。每一项是「标题 + 一句为什么」——只给一个能力名（Thinking）等于
+ * 把 pydantic-ai 的内部术语摆给用户看。 */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.check:hover {
+  border-color: var(--ink-3);
+  background: var(--surface-2);
+}
+.check input[type="checkbox"] {
+  margin-top: 2px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+.check > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.check code {
+  font-size: 11px;
+}
+.check .hint {
+  margin: 0;
+}
+
 .empty {
   padding: var(--s7) var(--s5);
   text-align: center;
