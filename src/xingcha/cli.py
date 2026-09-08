@@ -142,7 +142,7 @@ def serve(
 
     if bind_host == "0.0.0.0":
         typer.secho(
-            "⚠ 正在监听 0.0.0.0。星槎默认只监听 127.0.0.1，生产环境应由 Caddy 前置、"
+            "⚠ 正在监听 0.0.0.0。星槎默认只监听 127.0.0.1；对外暴露时应由反代前置、"
             "容器不映射宿主端口。\n"
             "  注意 Docker 的 DOCKER-USER 链会绕过 ufw：即使防火墙规则写了 deny，"
             "映射出去的端口照样可达。",
@@ -150,12 +150,20 @@ def serve(
             err=True,
         )
 
+    # 只有显式配了信任范围才读 X-Forwarded-*。见 Settings.trusted_proxies：
+    # 默认谁都不信，因为那个头决定 cookie 要不要带 Secure。
+    trusted = settings.trusted_proxies
+    if trusted:
+        typer.secho(f"→ 信任来自 {trusted} 的 X-Forwarded-* 头", fg=typer.colors.CYAN, err=True)
+
     uvicorn.run(
         "xingcha.app:create_app",
         factory=True,
         host=bind_host,
         port=bind_port,
         reload=reload,
+        proxy_headers=bool(trusted),
+        forwarded_allow_ips=trusted or "",
         # 单 worker 是硬约束：进程级并发上限、用量缓冲、SQLite 单写者全都依赖它。
         workers=C.REQUIRED_WORKERS,
         log_config=None,

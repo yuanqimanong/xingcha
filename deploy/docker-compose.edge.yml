@@ -1,0 +1,53 @@
+# 接进共享网关（../edge）的叠加层。**可选，且只在这一种拓扑下用。**
+#
+# 为什么这次可以有第二个文件：
+#
+#   上一轮我把三份 compose 收敛成一份，理由是那些差异（绑哪个地址、哪个端口、
+#   数据放哪儿）**全都是同一个东西的参数**，而参数应该是变量。
+#
+#   这一份不是参数，是**拓扑**：独立跑（自己发布端口）和挂在共享网关后面
+#   （不发布任何端口、加入外部网络）是两种结构。把它压进同一份文件需要一堆
+#   互相排斥的变量——"networks 写不写"根本没法用变量表达（compose 的
+#   networks 不能靠 ${} 条件出现），硬做只会得到一份没人能读懂的文件。
+#
+# 改了两件事：
+#   1. 加入外部网络 edge，让网关能按服务名找到它（docker 内部 DNS）
+#   2. **不再发布任何宿主端口** —— 对外只经网关，这样也就重新拿回了
+#      "xingcha 零宿主端口"那条更强的性质（端口不再绕过 ufw）
+#
+# 用法：
+#     ./deploy/xc start --edge
+#
+# 网关侧还要把 Caddyfile 里 :8443 的 reverse_proxy 指到 xingcha:8720（默认已经是），
+# 然后 ../edge/edge reload。
+
+services:
+  xingcha:
+    # `!override` 而不是让它合并：compose 对 ports 这类列表默认是**追加**，
+    # 不覆盖。少了它，基础那份的宿主端口映射会继续存在——那就等于既走网关
+    # 又留着一个绕过 ufw 的直连口，而两条路的 TLS 状态完全不同。
+    ports: !override []
+
+    expose:
+      - "8720"
+
+    environment:
+      # 后台里展示的 curl 示例要用**网关**的地址，不是直连地址。
+      # 写错的话用户复制那条命令会连不上，而错误信息指不到"该走网关"。
+      XINGCHA_PUBLIC_URL: https://${XINGCHA_WEB_HOST:-localhost}:${EDGE_PORT_XINGCHA:-8443}
+
+      # 信任网关发来的 X-Forwarded-Proto，否则**会话 cookie 不带 Secure**。
+      #
+      # 网关到应用这一跳是 http，所以应用自己看到的 scheme 是 http，
+      # 于是 cookie_secure() 返回 False——浏览器那半段明明是 HTTPS，却少了一层
+      # 保护。而这件事功能上完全正常，没人会注意到。
+      #
+      # 这里敢写 `*`（信任所有来源）的理由很具体：**上面已经用 `!override` 清掉了
+      # 所有宿主端口**，这个容器唯一的入口就是 edge 网络里的网关。默认部署
+      # （不带这个叠加层）里它是空的，也就是谁都不信。
+      XINGCHA_TRUSTED_PROXIES: "*"
+
+networks:
+  default:
+    name: edge
+    external: true

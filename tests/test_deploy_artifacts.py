@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
@@ -72,13 +73,24 @@ class TestSingleFile:
     根本不对（``:`` vs ``;``），表现为"端口没开、也没有任何报错"。
     """
 
-    def test_the_only_compose_file_is_the_one_in_deploy(self):
+    #: 允许存在的 compose 文件，**闭集**。
+    #:
+    #: 基础那一份 + 一个可选的拓扑叠加层。多出任何一份都要经过一次决定：
+    #: 参数（端口、地址、数据位置）必须做成变量，只有**拓扑**（独立跑 vs 挂在
+    #: 共享网关后面）才配得上一个文件——因为 `networks` 这类字段没法靠 ${} 条件
+    #: 出现。此前三份文件（生产/局域网/Windows）全是参数，已经收敛掉了。
+    ALLOWED: ClassVar[list[str]] = [
+        "deploy/docker-compose.edge.yml",
+        "deploy/docker-compose.yml",
+    ]
+
+    def test_compose_files_are_a_closed_set(self):
         found = sorted(
             q.relative_to(ROOT).as_posix()
             for q in ROOT.rglob("docker-compose*.y*ml")
             if ".venv" not in q.parts and ".git" not in q.parts
         )
-        assert found == ["deploy/docker-compose.yml"], f"编排文件不止一份：{found}"
+        assert found == self.ALLOWED, f"编排文件与闭集不符：{found}"
 
     def test_caddy_is_really_gone(self):
         """Caddy 去掉了就要**彻底**去掉。
@@ -381,3 +393,67 @@ class TestOpsScripts:
         """
         for name, text in (("deploy/xc", sh), ("deploy/xc.ps1", ps1)):
             assert "--remove-orphans" in text, f"{name} 的 up/down 没带 --remove-orphans"
+
+
+# =============================================================================
+# 共享网关的叠加层
+# =============================================================================
+
+
+class TestEdgeOverlay:
+    """接进共享网关（../edge）的可选叠加层。
+
+    为什么这一份第二个 compose 文件是正当的，而此前那三份不是：**它是拓扑，不是
+    参数。** 独立跑（自己发布端口、明文 HTTP）与挂在网关后面（零宿主端口、HTTPS）
+    是两种结构；`networks` 这类字段没法靠 ``${}`` 条件出现，硬塞进一份文件只会
+    得到一堆互相排斥的变量。
+    """
+
+    @pytest.fixture(scope="class")
+    def edge(self) -> dict:
+        return yaml.safe_load(
+            (ROOT / "deploy" / "docker-compose.edge.yml")
+            .read_text(encoding="utf-8")
+            .replace("!override", "")
+        )
+
+    def test_it_publishes_no_host_ports(self, edge: dict):
+        """挂在网关后面时**必须零宿主端口**。
+
+        留着直连口等于同时存在两条入口，而两条的 TLS 状态完全不同：一条经网关是
+        HTTPS，一条直连是明文——而且直连那条走 DOCKER-USER 链，绕过 ufw。
+        """
+        assert edge["services"]["xingcha"]["ports"] == []
+
+    def test_ports_are_overridden_not_appended(self):
+        """compose 对 ports 默认是**追加**。少了 `!override`，基础那份的端口映射
+        会继续存在，上面那条性质就没了——而配置看起来完全正常。"""
+        raw = (ROOT / "deploy" / "docker-compose.edge.yml").read_text(encoding="utf-8")
+        assert "ports: !override" in raw
+
+    def test_it_joins_the_shared_external_network(self, edge: dict):
+        """网络必须是 external。让 compose 自建的话名字会带项目名前缀
+        （xingcha_edge），网关根本不在那个网络里——症状是网关一直 502
+        而两边容器都"在跑"。"""
+        assert edge["networks"]["default"] == {"name": "edge", "external": True}
+
+    def test_it_trusts_the_gateway_for_forwarded_proto(self, edge: dict):
+        """不信任 ``X-Forwarded-Proto`` 的话**会话 cookie 不带 Secure**。
+
+        网关到应用这一跳是 http，应用看到的 scheme 就是 http。浏览器那半段明明是
+        HTTPS，却少了一层保护——而功能完全正常，没人会注意到。
+        """
+        assert edge["services"]["xingcha"]["environment"]["XINGCHA_TRUSTED_PROXIES"] == "*"
+
+    def test_the_base_deployment_trusts_nobody(self, compose: dict):
+        """默认部署里**不能**有这一项。
+
+        无条件信任 X-Forwarded-* 意味着任何能直连应用的人都能左右它，而基础部署
+        恰恰是要发布宿主端口的。
+        """
+        assert "XINGCHA_TRUSTED_PROXIES" not in compose["services"]["xingcha"]["environment"]
+
+    def test_public_url_switches_to_https(self, edge: dict):
+        assert edge["services"]["xingcha"]["environment"]["XINGCHA_PUBLIC_URL"].startswith(
+            "https://"
+        )

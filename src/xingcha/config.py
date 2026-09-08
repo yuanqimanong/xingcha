@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     #: 对外的公开地址，用于生成回调/文档里的示例 URL。留空则用 host:port。
     public_url: str | None = None
 
+    #: 信任哪些反向代理发来的 ``X-Forwarded-*``。**默认谁都不信。**
+    #:
+    #: 为什么必须显式配：``X-Forwarded-Proto`` 决定了会话 cookie 要不要带
+    #: ``Secure``（见 web/routes.py 的 cookie_secure）。无条件信任它，任何能直连
+    #: 应用的人都可以伪造一个 ``X-Forwarded-Proto: https``——那本身危害有限，但
+    #: 同一个头也会影响日志里记录的来源 IP 与将来的重定向拼接，所以默认不信。
+    #:
+    #: 不配的话，放在 HTTPS 反代后面会出现一个很隐蔽的后果：应用以为自己在 http 上，
+    #: 于是 cookie 不带 Secure——功能完全正常，只是少了一层保护，没人会注意到。
+    #:
+    #: 取值是 uvicorn 的 ``forwarded_allow_ips``：逗号分隔的 IP/网段，或 ``*``。
+    #: 只有在"应用零宿主端口、唯一入口就是那个反代"时 ``*`` 才是合理的——
+    #: 共享网关那套（deploy/docker-compose.edge.yml）正是这种情形。
+    trusted_proxies: str | None = None
+
     # --- 上游 ---
     #: 默认上游。仅用于**首次启动**时导入 DB，之后由管理面/CLI 接管。
     #:
