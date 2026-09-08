@@ -30,16 +30,18 @@
         <label for="name">用途</label>
         <input id="name" name="name" type="text" required maxlength="60" placeholder="例如：本地开发、抽取服务">
       </div>
-      <div class="field" style="flex:0 1 160px">
+      <div class="field" style="flex:0 1 240px">
         <label for="days">有效期</label>
+        <div class="control-row">
         <select id="days" name="days">
           <option value="">永不过期</option>
           <option value="30">30 天</option>
           <option value="90">90 天</option>
           <option value="365">1 年</option>
         </select>
+        <button class="btn primary" type="submit">签发</button>
+        </div>
       </div>
-      <button class="btn primary" type="submit">签发</button>
     </form>
   </div>
 </div>

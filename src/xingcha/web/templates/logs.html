@@ -15,15 +15,17 @@
         <label for="model">模型</label>
         <input id="model" name="model" type="text" value="{{ filters.model or '' }}" placeholder="模型名（模糊匹配）">
       </div>
-      <div class="field" style="flex:0 1 150px">
+      <div class="field" style="flex:0 1 230px">
         <label for="status">状态</label>
+        <div class="control-row">
         <select id="status" name="status">
           <option value="">全部</option>
           <option value="ok" {% if filters.status == 'ok' %}selected{% endif %}>仅成功</option>
           <option value="error" {% if filters.status == 'error' %}selected{% endif %}>仅失败</option>
         </select>
+        <button class="btn" type="submit">筛选</button>
+        </div>
       </div>
-      <button class="btn" type="submit">筛选</button>
       {% if filters.model or filters.status %}<a class="btn ghost" href="/admin/logs">清除</a>{% endif %}
     </form>
   </div>

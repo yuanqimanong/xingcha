@@ -516,23 +516,41 @@ class TestQuota:
 # =============================================================================
 
 
+def open_manual_upstream_form(page) -> None:
+    """展开上游页的「手填上游」。
+
+    那个表单**故意**折叠在 ``<details>`` 里：这一页的主路径是从环境变量里发现的
+    上游中挑一个，手填是备用路径。所以测试必须像用户一样先点开它——
+    元素在 DOM 里但不可见，``page.fill`` 会等满 30 秒然后超时，而报错
+    （"element is not visible"）看起来像布局坏了。
+    """
+    page.click("summary:has-text('手填上游')")
+    page.wait_for_selector("#api_key", state="visible")
+
+
 class TestFormAlignment:
     """一行里的多个字段必须**真的对齐**。
 
     这是唯一能证明它的一层：CSS 改坏了不会让任何断言变红，而症状是"看起来歪"——
     没人会为此写测试，于是它会一次次回来。
 
-    真实的坏法：``.form-row`` 曾经用 ``align-items: flex-end``（底边对齐），于是
-    任何一个字段带 .hint 就比邻居高，底边对齐之后它的控件反而**更靠上**；同一行里
-    的提交按钮又去对齐说明文字的底边，落得比所有控件低半行。配额页四个标签落在四个
-    不同高度上、密钥页的「签发」比下拉低几像素，都是这一个原因。
+    两次真实的坏法，都记在这里：
 
-    现在的做法把对齐变成构造性质的（标签行高度固定），所以这几条断言应当是**严格
-    相等**，不是"差不多"。
+    1. ``.form-row`` 曾用 ``align-items: flex-end``（底边对齐）。任何一个字段带
+       .hint 就比邻居高，底边对齐之后它的控件反而**更靠上**；行尾的提交按钮又去
+       对齐说明文字的底边，落得比所有控件低半行。配额页四个标签落在四个不同高度上、
+       密钥页的「签发」比下拉低几像素，都是这一个原因。
+    2. 我第一次的修法是"给标签一个固定高度 18px"（13px × 1.4 的行盒）——**那是把
+       渲染结果写成常数**。CI 的 chromium 装的字体不同，行盒变成 22px，控件下移而
+       按固定值偏移的按钮不动，于是差 4px：**本机绿、CI 红**。
+
+    现在两件事都是构造性质的：顶边对齐 + 每个字段的第一个子元素都是同字体同字号的
+    单行 label（高度自然相等）；行尾按钮放进 ``.control-row``，与控件同处一行。
+    所以下面的断言可以要求**严格相等**（同一行的顶边）与**居中重合**（按钮 vs 控件）。
     """
 
-    #: 这三页各有一个多字段横排的表单，且**恰好覆盖三种组合**：
-    #: 配额页有字段带说明、密钥页行尾有按钮、调用记录页两者都有。
+    #: 这三页各有一个多字段横排的表单，且恰好覆盖三种组合：
+    #: 配额页有字段带说明、密钥页与调用记录页行尾有按钮。
     PAGES: ClassVar[list[str]] = ["/admin/quota", "/admin/keys", "/admin/logs"]
 
     @pytest.mark.parametrize("path", PAGES)
@@ -540,39 +558,64 @@ class TestFormAlignment:
         login(page, site)
         page.goto(f"{site.base_url}{path}", wait_until="networkidle")
         rows = page.evaluate("""() => {
+            const top = el => Math.round(el.getBoundingClientRect().top);
             const out = [];
             for (const row of document.querySelectorAll('.form-row')) {
                 const fields = [...row.querySelectorAll(':scope > .field')];
                 if (fields.length < 2) continue;
-                // 换行之后不同视觉行的字段本来就不该对齐，所以按 label 的 top 分组
-                const labels = fields.map(f => f.querySelector('label')).filter(Boolean);
-                const sel = 'input, select, textarea';
-                const ctrls = fields.map(f => f.querySelector(sel)).filter(Boolean);
-                out.push({
-                    labels: labels.map(e => Math.round(e.getBoundingClientRect().top)),
-                    ctrls: ctrls.map(e => Math.round(e.getBoundingClientRect().top)),
-                    btns: [...row.querySelectorAll(':scope > button, :scope > .btn')]
-                            .map(e => Math.round(e.getBoundingClientRect().top)),
-                });
+                const sel = 'input:not([type=hidden]), select, textarea';
+                out.push(fields.map(f => {
+                    const label = f.querySelector('label');
+                    const ctrl = f.querySelector(sel);
+                    return {
+                        label: label ? top(label) : null,
+                        ctrl: ctrl ? top(ctrl) : null,
+                    };
+                }));
             }
             return out;
         }""")
         assert rows, f"{path} 上没找到多字段的 .form-row —— 这条断言失效了"
-        for i, row in enumerate(rows):
-            # 同一视觉行内（top 相同的那一组）必须严格对齐
-            for key in ("labels", "ctrls"):
-                by_line: dict[int, int] = {}
-                for top in row[key]:
-                    by_line[top] = by_line.get(top, 0) + 1
-                assert by_line, f"{path} 第 {i} 行没有 {key}"
-            # 每个字段的控件顶边只能落在少数几条线上（换行才会多一条）
-            lines = sorted(set(row["ctrls"]))
-            assert len(lines) <= 2, f"{path} 第 {i} 行的控件散在 {len(lines)} 个高度上：{lines}"
-            if row["btns"]:
-                assert set(row["btns"]) <= set(row["ctrls"]), (
-                    f"{path} 第 {i} 行的按钮没跟控件对齐："
-                    f"按钮 {row['btns']} vs 控件 {sorted(set(row['ctrls']))}"
+        for i, fields in enumerate(rows):
+            # 按 label 的 top 分组：换行之后不同视觉行的字段本来就不该互相对齐
+            lines: dict[int, list[dict]] = {}
+            for f in fields:
+                lines.setdefault(f["label"], []).append(f)
+            for label_top, group in lines.items():
+                tops = {f["ctrl"] for f in group if f["ctrl"] is not None}
+                assert len(tops) <= 1, (
+                    f"{path} 第 {i} 行、标签在 y={label_top} 的这一组，"
+                    f"控件顶边散在 {sorted(tops)} —— 应当只有一个值"
                 )
+
+    @pytest.mark.parametrize("path", PAGES)
+    def test_a_row_terminal_button_sits_on_the_control_line(self, site: LiveSite, page, path):
+        """行尾按钮与它旁边的控件**垂直居中重合**。
+
+        按钮与输入框的内边距不同，高度可以不同——所以这里比的是中线，不是顶边。
+        比顶边就是过度约束，会在改一次按钮 padding 之后无意义地变红。
+        """
+        login(page, site)
+        page.goto(f"{site.base_url}{path}", wait_until="networkidle")
+        pairs = page.evaluate("""() => {
+            const mid = el => {
+                const r = el.getBoundingClientRect();
+                return r.top + r.height / 2;
+            };
+            const out = [];
+            for (const cr of document.querySelectorAll('.form-row .control-row')) {
+                const btn = cr.querySelector('button, .btn');
+                const ctrl = cr.querySelector('input, select, textarea');
+                if (btn && ctrl) out.push([mid(btn), mid(ctrl)]);
+            }
+            return out;
+        }""")
+        if not pairs:
+            pytest.skip(f"{path} 这一行没有行尾按钮")
+        for bm, cm in pairs:
+            assert abs(bm - cm) <= 2, (
+                f"{path} 的按钮中线 {bm} 与控件中线 {cm} 差了 {abs(bm - cm)}px"
+            )
 
 
 class TestUpstreamPage:
@@ -600,6 +643,7 @@ class TestUpstreamPage:
         就会被送到攻击者的服务器。所以 CSRF 三层之外再加一道密码。"""
         login(page, site)
         page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
+        open_manual_upstream_form(page)
         page.fill("#api_key", "sk-or-v1-attacker")
         page.fill("#password", "wrong-password")
         page.click("form[action='/admin/settings/upstream'] button[type=submit]")
@@ -614,6 +658,7 @@ class TestUpstreamPage:
         """A2：云元数据端点必须被拒，且报错要指出是什么问题。"""
         login(page, site)
         page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
+        open_manual_upstream_form(page)
         page.fill("#base_url", "http://169.254.169.254/v1")
         page.fill("#password", site.password)
         page.click("form[action='/admin/settings/upstream'] button[type=submit]")
