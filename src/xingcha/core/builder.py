@@ -344,6 +344,41 @@ def _strip_prefix(model: str) -> str:
     return model.split(":", 1)[1] if model.startswith("openrouter:") else model
 
 
+def native_ok(model_id: str, provider: Provider, *, catalog_says: bool) -> bool:
+    """这个模型**真的**能走原生 JSON Schema 约束吗（T1 / T1+ 的前提）。
+
+    ------------------------------------------------------------------------
+    必须问两个人，而且要取交集
+    ------------------------------------------------------------------------
+
+    此前只问模型目录。而真正的闸在 pydantic-ai 里，**在本地、发请求之前**就会拦：
+
+        if params.output_mode == 'native' and not profile.get('supports_json_schema_output', False):
+            raise UserError('Native structured output is not supported by this model.')
+
+    两个来源各自错一个方向（实测）：
+
+    * 目录说 yes、profile 说 no —— ``z-ai/glm-5.3-flash``、``qwen/qwen3.8-flash``
+      在 OpenRouter 目录里都标着 ``structured_outputs: true``。判档因此保住 T1、
+      **保存时不给任何降级提示**，然后每一次调用都失败。这一条最糟：管理员以为
+      自己拿到了最强的形状保证，实际拿到的是一个必然报错的 Agent。
+    * 目录说 no、profile 说 yes —— 厂商直连时目录里往往连能力字段都没有
+      （DeepSeek 的 ``/models`` 只回 id/object/owned_by），而通用 profile 对没
+      见过的名字给的是默认值。
+
+    取交集在两个方向上都安全：错判成"不支持"只是降级到 T2、多花点重试成本，
+    而错判成"支持"是对用户**谎称有保证**。这与 ``resolve_tier`` 里那句"未知模型
+    一律当作不支持"是同一条原则。
+    """
+    if not catalog_says:
+        return False
+    try:
+        profile = make_model(model_id, provider).profile
+    except Exception:  # pragma: no cover - 模型名不被 provider 接受，那是另一条错误路径
+        return False
+    return bool(profile.get("supports_json_schema_output", False))
+
+
 def make_model(model_id: str, provider: Provider) -> OpenAIChatModel:
     """构造 model。
 

@@ -11,7 +11,7 @@ import asyncio
 import json
 from collections.abc import Iterator
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
@@ -455,6 +455,67 @@ class TestCallSource:
         )
         rows = self._runs(client)
         assert rows and len(rows[0][1]) <= 200, f"UA 没截断：{len(rows[0][1])}"
+
+
+# =============================================================================
+# 上游报错要说人话
+# =============================================================================
+
+
+class TestUpstreamMessage:
+    """**上游说了原因，调用方得看得到。**
+
+    此前只回一句"上游返回 502"。而实测拿到的那几句每一句都决定下一步做什么：
+
+    * "Thinking mode does not support this tool_choice" —— 配置问题，每次都发生，
+      重试一万次也没用；
+    * "This model is not available in your region." —— 换模型；
+    * "temporarily rate-limited upstream. Please retry shortly" —— 这个才该重试。
+
+    看不到它们的人只会把三种都当成网络抖动。
+    """
+
+    def test_the_upstream_reason_reaches_the_caller(self):
+        from xingcha.services.run import _upstream_says
+
+        class E:
+            body: ClassVar[dict] = {"message": "Thinking mode does not support this tool_choice"}
+
+        assert _upstream_says(E()) == "Thinking mode does not support this tool_choice"
+
+    def test_a_useless_outer_message_digs_into_metadata(self):
+        """OpenRouter 限流时外层是 "Provider returned error"，真话在 metadata.raw。
+
+        只取外层的话，调用方看到一句正确但毫无信息量的话——而"要不要重试"恰恰
+        取决于被丢掉的那一句。
+        """
+        from xingcha.services.run import _upstream_says
+
+        class E:
+            body: ClassVar[dict] = {
+                "message": "Provider returned error",
+                "code": 429,
+                "metadata": {"raw": "temporarily rate-limited upstream. Please retry shortly."},
+            }
+
+        got = _upstream_says(E())
+        assert "rate-limited" in got
+
+    def test_an_unknown_shape_says_nothing_rather_than_guessing(self):
+        from xingcha.services.run import _upstream_says
+
+        class E:
+            body = "just a string"
+
+        assert _upstream_says(E()) is None
+
+    def test_the_message_is_redacted(self):
+        """异常文本经常带完整 URL、偶尔带 header——原样回显就是一条 key 泄漏路径。"""
+        from xingcha.errors import UpstreamError
+
+        e = UpstreamError(502, upstream_message="bad key sk-or-v1-abcdefghijklmnop")
+        assert "sk-or-v1-abcdefghijklmnop" not in e.message
+        assert "sk-or-v1-***" in e.message
 
 
 # =============================================================================

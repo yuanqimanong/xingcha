@@ -496,22 +496,47 @@ def map_errors(rt: AgentRuntime, run_timeout: float, usage: Any = None) -> Itera
         ) from e
 
 
+#: 上游那句话等于没说时，去 metadata 里找真话。
+#:
+#: OpenRouter 在被下游厂商限流时给的 ``message`` 是 "Provider returned error"，
+#: 而真正有用的一句在 ``metadata.raw``："qwen/... is temporarily rate-limited
+#: upstream. Please retry shortly."。只取外层的话，调用方看到的是一句正确但毫无
+#: 信息量的话——而"要不要重试"恰恰取决于被丢掉的那一句。
+_USELESS_UPSTREAM_MESSAGES = frozenset(
+    {"provider returned error", "internal server error", "error", "bad request"}
+)
+
+
 def _upstream_says(e: Any) -> str | None:
     """从 ``ModelAPIError`` 里挖出上游自己写的那句话。
 
     ``str(e)`` 是 ``status_code: 400, model_name: x, body: {...}`` 这种拼装串，
     整条回显给调用方既啰嗦又会把 model_name 之类的内部细节漏出去。这里只取
-    body 里的 ``message``；结构不认识就返回 None，宁可少说也不说错。
+    body 里那句话；结构不认识就返回 None，宁可少说也不说错。
     """
     body = getattr(e, "body", None)
-    if isinstance(body, dict):
-        for key in ("message", "error"):
-            value = body.get(key)
-            if isinstance(value, str) and value:
-                return value
-            if isinstance(value, dict) and isinstance(value.get("message"), str):
-                return value["message"]
-    return None
+    if not isinstance(body, dict):
+        return None
+
+    outer: str | None = None
+    for key in ("message", "error"):
+        value = body.get(key)
+        if isinstance(value, str) and value:
+            outer = value
+            break
+        if isinstance(value, dict) and isinstance(value.get("message"), str):
+            outer = value["message"]
+            break
+
+    meta = body.get("metadata")
+    if isinstance(meta, dict) and (
+        not outer or outer.strip().lower() in _USELESS_UPSTREAM_MESSAGES
+    ):
+        for key in ("raw", "remedy_hint"):
+            inner = meta.get(key)
+            if isinstance(inner, str) and inner.strip():
+                return f"{outer}：{inner}" if outer else inner
+    return outer
 
 
 #: "没传" 与 "传了 None" 要能区分——流式的正文可以是空字符串。

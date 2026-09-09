@@ -1821,7 +1821,10 @@ async def agent_save(
         # 可观测就是 Instrumentation 这个 capability——不是 AgentSpec 的顶层字段
         caps.append(builder.CAPABILITY_INSTRUMENTATION)
 
-    native_ok = state.catalog.supports_native_schema(model)
+    # 目录与 pydantic-ai 的 profile 都得点头，见 builder.native_ok。
+    native_ok = builder.native_ok(
+        model, state.provider, catalog_says=state.catalog.supports_native_schema(model)
+    )
     try:
         prompting = _prompting_from_form(raw)
         model_settings = builder.model_settings_from_form(settings_raw)
@@ -2035,7 +2038,9 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
         choice = resolve_tier(
             C.Tier(tier_raw) if tier_raw else None,
             has_schema=inlined is not None,
-            native_ok=state.catalog.supports_native_schema(model),
+            native_ok=builder.native_ok(
+                model, state.provider, catalog_says=state.catalog.supports_native_schema(model)
+            ),
         )
         settings_raw = {
             f: str(raw.get(f"ms_{f}") or "") for f, _, _ in builder.model_settings_fields()

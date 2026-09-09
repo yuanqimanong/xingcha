@@ -196,3 +196,54 @@ class TestProviderChoice:
         # 只说"内部错误"等于让人去猜一个日志里明写着的答案。
         assert "no-vendor-prefix" in e.value.message
         assert "prefixed with the upstream provider" in e.value.message
+
+
+class TestNativeOkNeedsBothSources:
+    """T1 的前提要问**两个人**，取交集。
+
+    真正的闸在 pydantic-ai 里、在本地发请求之前就会拦：
+
+        if output_mode == 'native' and not profile.get('supports_json_schema_output', False):
+            raise UserError('Native structured output is not supported by this model.')
+
+    而判档此前只问模型目录。两个来源各错一个方向（实测）：``z-ai/glm-5.3-flash``
+    在 OpenRouter 目录里标着 structured_outputs: true，profile 说 false——于是判档
+    保住 T1、保存时**不给任何降级提示**，然后每一次调用都失败。管理员以为拿到了
+    最强的形状保证，实际拿到一个必然报错的 Agent。
+    """
+
+    def _provider(self, base: str):
+        from xingcha.core import builder
+        from xingcha.core.upstream import UpstreamConfig
+
+        return builder.make_provider(UpstreamConfig(api_key="k", base_url=base), timeout=5)
+
+    def test_catalog_yes_profile_no_is_no(self):
+        from xingcha.core import builder
+
+        p = self._provider("https://openrouter.ai/api/v1")
+        assert builder.native_ok("z-ai/glm-5.3-flash", p, catalog_says=True) is False
+
+    def test_catalog_no_short_circuits(self):
+        """目录说不支持就不必再问——也不该因为通用 profile 的默认值把它翻成 yes。
+
+        厂商直连时目录里常常连能力字段都没有（DeepSeek 的 /models 只回
+        id/object/owned_by），而通用 profile 对没见过的名字给的是默认值。
+        """
+        from xingcha.core import builder
+
+        p = self._provider("https://api.deepseek.com/v1")
+        assert builder.native_ok("deepseek-v4-flash", p, catalog_says=False) is False
+
+    def test_both_yes_is_yes(self):
+        from xingcha.core import builder
+
+        p = self._provider("https://openrouter.ai/api/v1")
+        assert builder.native_ok("openai/gpt-5", p, catalog_says=True) is True
+
+    def test_an_unbuildable_model_name_is_no_not_a_crash(self):
+        """判档路径上抛异常的话，保存表单会 500——而它只是想知道该显示哪一档。"""
+        from xingcha.core import builder
+
+        p = self._provider("https://openrouter.ai/api/v1")
+        assert builder.native_ok("no-vendor-prefix", p, catalog_says=True) is False

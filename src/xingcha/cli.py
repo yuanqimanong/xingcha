@@ -553,7 +553,12 @@ def agent_apply(
                 client = make_client(cfg, timeout=15.0)
                 try:
                     if await catalog.refresh(client, cfg.api_key):
-                        native_ok = catalog.supports_native_schema(model)
+                        # 目录与 pydantic-ai 的 profile 都得点头，见 builder.native_ok。
+                        native_ok = builder.native_ok(
+                            model,
+                            builder.make_provider(cfg, timeout=15.0),
+                            catalog_says=catalog.supports_native_schema(model),
+                        )
                 finally:
                     await client.aclose()
 
