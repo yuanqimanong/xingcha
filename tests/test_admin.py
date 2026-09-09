@@ -634,7 +634,7 @@ class TestTraceMutation:
         )
         assert r.status_code == 303
         body = logged_in.get("/admin/settings").text
-        assert "已开启" in body
+        assert "上报中" in body
         assert "sk-lf-2" not in body, "secret key 绝不能回显到页面上"
 
     def test_an_endpoint_without_keys_is_enough(self, logged_in: TestClient):
@@ -648,6 +648,99 @@ class TestTraceMutation:
         assert r.status_code == 303
         state = logged_in.app.state.xc  # type: ignore[attr-defined]
         assert state.tracing is not None, "不填 key 就开不起来，而页面说可以"
+
+    def _read(self, logged_in: TestClient, *keys):
+        import asyncio
+
+        from xingcha.services import setting as setting_svc
+
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+
+        async def read():
+            async with state.sessionmaker() as s:
+                return [await setting_svc.get(s, state.keyring, k) for k in keys]
+
+        return asyncio.run(read())
+
+    def _toggle(self, client: TestClient):
+        client.get("/admin/settings")
+        return client.post(
+            "/admin/settings/trace/toggle",
+            data={"csrf_token": csrf_of(client)},
+            follow_redirects=False,
+        )
+
+    def test_toggle_stops_reporting_without_losing_the_credentials(self, logged_in: TestClient):
+        """**停用不该丢配置。**
+
+        原先只有一个状态：地址非空即开启，清空即关闭——而清空会把两把 key 一起
+        删掉。于是"先停一下上报"的代价是下次要把 Langfuse 凭据重新找出来贴一遍，
+        人自然就不停了。不好停的开关等于一个默认开着的开关。
+        """
+        from xingcha import contract as C
+
+        self.test_valid_config_turns_tracing_on(logged_in)
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+
+        assert self._toggle(logged_in).status_code == 303
+        assert state.tracing is None, "停用了却还在上报"
+
+        endpoint, pk, sk = self._read(
+            logged_in,
+            C.SETTING_KEY_TRACE_ENDPOINT,
+            C.SETTING_KEY_TRACE_PUBLIC_KEY,
+            C.SETTING_KEY_TRACE_SECRET_KEY,
+        )
+        assert endpoint and pk and sk, "停用把配置也删了"
+
+        body = logged_in.get("/admin/settings").text
+        assert "已停用" in body, "页面看不出是自己关的还是没配过"
+
+        assert self._toggle(logged_in).status_code == 303
+        assert state.tracing is not None, "开不回来"
+
+    def test_toggle_survives_a_restart(self, logged_in: TestClient):
+        """开关存在库里，不是进程内的一个 flag。
+
+        只存内存的话，重启之后上报会**自己恢复**——而人以为自己关掉了。
+        """
+        from xingcha import contract as C
+
+        self.test_valid_config_turns_tracing_on(logged_in)
+        self._toggle(logged_in)
+        assert self._read(logged_in, C.SETTING_KEY_TRACE_ENABLED) == ["0"]
+
+    def test_toggle_needs_no_endpoint_to_fail_gracefully(self, logged_in: TestClient):
+        r = self._toggle(logged_in)
+        assert r.status_code == 200
+        assert "还没有配置上报地址" in r.text
+
+    def test_clear_wipes_everything_but_needs_the_password(self, logged_in: TestClient):
+        from xingcha import contract as C
+
+        self.test_valid_config_turns_tracing_on(logged_in)
+        logged_in.get("/admin/settings")
+        r = logged_in.post(
+            "/admin/settings/trace/clear",
+            data={"csrf_token": csrf_of(logged_in), "password": "wrong-one"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 200
+        assert self._read(logged_in, C.SETTING_KEY_TRACE_ENDPOINT) != [None]
+
+        logged_in.get("/admin/settings")
+        r = logged_in.post(
+            "/admin/settings/trace/clear",
+            data={"csrf_token": csrf_of(logged_in), "password": PASSWORD},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert self._read(
+            logged_in,
+            C.SETTING_KEY_TRACE_ENDPOINT,
+            C.SETTING_KEY_TRACE_PUBLIC_KEY,
+            C.SETTING_KEY_TRACE_SECRET_KEY,
+        ) == [None, None, None]
 
     def test_clearing_the_endpoint_also_wipes_the_credentials(self, logged_in: TestClient):
         """关掉 trace 时凭据一起清掉。

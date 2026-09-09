@@ -1372,6 +1372,9 @@ textarea {
 .nowrap {
   white-space: nowrap;
 }
+.mt2 {
+  margin-top: var(--s2);
+}
 .mt4 {
   margin-top: var(--s4);
 }
@@ -1408,3 +1411,125 @@ textarea {
   }
 }
 .danger-text { color: var(--danger); font-weight: 600; }
+
+/* --- Agent 表单：三个次要分区并排 --- */
+/*
+ * 模型参数 / 能力 / 可观测 大多数时候都不用改。各占一整行只会把「保存」推得更远，
+ * 而它们展开后的高度差很大，所以是 auto-fit 而不是固定三列——放不下就自己换行。
+ */
+.tri {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--s4);
+  align-items: start;
+}
+
+/* --- 少样本示例的一组 --- */
+.example {
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  padding: var(--s3);
+  margin-bottom: var(--s3);
+  background: var(--surface-2);
+}
+.example .form-row {
+  margin-bottom: var(--s2);
+}
+.example label {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* --- 试运行：统计条 --- */
+.test-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3) var(--s5);
+  padding: var(--s3) var(--s4);
+  margin-bottom: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  background: var(--surface-2);
+}
+.test-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.test-stats .k {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.test-stats .v {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* --- 试运行：消息链 --- */
+/*
+ * 请求靠左、响应缩进并换个底色。左右分栏（聊天气泡那种）在这里是错的：一条消息
+ * 可能是几十行 JSON，气泡宽度只有一半会让它挤成一根面条。
+ */
+.chain {
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  overflow: hidden;
+}
+.chain-row {
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+}
+.chain-row:last-child {
+  border-bottom: 0;
+}
+.chain-row.resp {
+  background: var(--surface-2);
+}
+.chain-row.instructions {
+  background: var(--surface-2);
+  border-left: 3px solid var(--rule-2);
+}
+.chain-label {
+  display: flex;
+  gap: var(--s2);
+  align-items: baseline;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: var(--s2);
+}
+.chain-label .dim {
+  font-weight: 400;
+  font-family: var(--mono);
+}
+.chain-text {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 一条几百行的响应不该把整页撑到几屏高——链路是拿来扫的，细节点开再看。 */
+  max-height: 22rem;
+  overflow: auto;
+}
+
+/* --- 页内分节标题 --- */
+/*
+ * 一页里有两个独立主题时用（设置页的「后台密码」与「调用追踪」）。不复用
+ * .page-head：那是 <h1> 的位置，一页只该有一个 h1。
+ */
+.section-head {
+  margin: var(--s6) 0 var(--s4);
+}
+.section-head h2 {
+  font-size: 1.0625rem;
+  margin: 0;
+}
+.section-head p {
+  color: var(--ink-3);
+  margin: var(--s2) 0 0;
+  max-width: 62ch;
+  font-size: 0.875rem;
+}

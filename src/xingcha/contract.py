@@ -890,6 +890,17 @@ SETTING_KEY_TRACE_ENDPOINT: Final = "trace.endpoint"
 SETTING_KEY_TRACE_PUBLIC_KEY: Final = "trace.public_key"
 SETTING_KEY_TRACE_SECRET_KEY: Final = "trace.secret_key"
 
+#: 上报的**开关**，与"地址配没配"分开。
+#:
+#: 原先只有一个状态：地址非空即开启，清空即关闭——而清空会把两把 key 一起删掉
+#: （留着一份用不上的 secret key 只是多一处泄漏面）。于是"先停一下上报"的代价是
+#: 下次要把 Langfuse 凭据重新找出来贴一遍，人自然就不停了，而"不好停"的开关等于
+#: 一个默认开着的开关。
+#:
+#: 拆成两项之后：地址与凭据是**配置**，这一项是**状态**。停用不丢配置。
+#: 判定是 ``endpoint and enabled``——没配地址时这一项无意义。
+SETTING_KEY_TRACE_ENABLED: Final = "trace.enabled"
+
 #: 官方 OpenRouter 地址。中转时由管理员在设置里改写。
 #:
 #: 注意：``OPENROUTER_BASE_URL`` 这个环境变量**不被 pydantic-ai 读取**（源码里只有

@@ -125,7 +125,9 @@
   //   3. 浏览器"后退"回到页面时会用缓存的 DOM（bfcache），按钮还是禁用的 ——
   //      所以 pageshow 里要恢复，否则用户后退回来发现表单点不了。
   const lock = (form) => {
-    for (const el of form.querySelectorAll('button[type=submit], input[type=submit]')) {
+    // [data-lock] 让非 submit 的按钮也进锁。「试运行」是 type=button（它不提交
+    //   表单），但它会真的调一次上游、真的花钱——双击就是花两份。
+    for (const el of form.querySelectorAll('button[type=submit], input[type=submit], [data-lock]')) {
       if (el.disabled) continue;
       el.disabled = true;
       el.dataset.lockedByUs = '1';
@@ -159,6 +161,26 @@
     if (form) lock(form);
   });
   document.addEventListener('htmx:afterRequest', unlockAll);
+
+  // ---------------------------------------------------------------- 少样本示例
+  //
+  // 组数不定，所以用 <template> 克隆而不是先渲染 N 个空槽再隐藏：隐藏的 textarea
+  // **仍然会被提交**，于是后端收到一串空示例，还得反过来猜哪些是用户真填的。
+  // <template> 里的内容不在表单里，克隆出来才算数。
+  document.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-add-example]');
+    if (add) {
+      const list = document.querySelector(add.dataset.addExample);
+      const tpl = document.getElementById('example-tpl');
+      if (!list || !tpl) return;
+      list.appendChild(tpl.content.cloneNode(true));
+      const last = list.lastElementChild;
+      if (last) last.querySelector('textarea')?.focus();
+      return;
+    }
+    const drop = e.target.closest('[data-remove-example]');
+    if (drop) drop.closest('.example')?.remove();
+  });
   // bfcache：后退回来时 DOM 是缓存的，按钮还禁着
   window.addEventListener('pageshow', unlockAll);
 

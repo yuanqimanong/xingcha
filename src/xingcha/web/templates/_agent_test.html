@@ -1,0 +1,50 @@
+{% if not ok %}
+<div class="alert danger">
+  <div>
+    <div class="alert-title">没有跑通{% if elapsed %} · {{ elapsed }}s{% endif %}</div>
+    <div style="white-space:pre-wrap">{{ message }}</div>
+  </div>
+</div>
+{% endif %}
+
+{% if ok %}
+<div class="test-stats">
+  <div><span class="k">耗时</span><span class="v mono">{{ elapsed }}s</span></div>
+  <div><span class="k">上游调用</span><span class="v mono">{{ requests }} 次</span></div>
+  <div><span class="k">token</span><span class="v mono">{{ input_tokens }} → {{ output_tokens }}</span></div>
+  <div>
+    <span class="k">费用</span>
+    <span class="v mono">{{ cost }}{% if cost != '—' %} <span class="dim small">{{ cost_source }}</span>{% endif %}</span>
+  </div>
+  <div>
+    <span class="k">档位</span>
+    <span class="v mono">{{ tier }}</span>
+    {% if tier_note %}<span class="dim small">{{ tier_note }}</span>{% endif %}
+  </div>
+  {% if violations %}
+  <div><span class="k">校验退回</span><span class="v mono danger-text">{{ violations }} 次 · 重试 {{ retries }}</span></div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="chain">
+  {% for r in rows %}
+  <div class="chain-row {{ r.role }}">
+    <div class="chain-label">
+      {{ r.label }}
+      {% if r.meta %}<span class="dim">{{ r.meta }}</span>{% endif %}
+    </div>
+    <pre class="chain-text">{{ r.text }}</pre>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if ok %}
+<div class="hint mt4">
+  上面是<strong>上游实际收发的内容</strong>（不是照表单重建的），所以看得见系统指令
+  拼好之后长什么样、模板套在哪一层、校验退回时模型收到的错误详情是什么。
+  这一次<strong>没有落库</strong>，也不占任何配额。
+</div>
+{% endif %}

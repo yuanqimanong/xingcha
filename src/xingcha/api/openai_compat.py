@@ -297,6 +297,9 @@ async def _run_agent(
         concurrency=state.concurrency,
     )
 
+    # 模板与少样本要等运行时到手才知道，所以在这里套，而不是在 to_conversation 里。
+    conv = run_svc.apply_prompting(conv, rt.prompting)
+
     tracker = RunTracker(request, kind="agent", model=requested_model)
     if reservation is not None:
         tracker.attach_reservation(reservation)

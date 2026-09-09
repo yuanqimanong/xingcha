@@ -42,6 +42,7 @@ KNOWN_KEYS: frozenset[str] = frozenset(
         C.SETTING_KEY_TRACE_ENDPOINT,
         C.SETTING_KEY_TRACE_PUBLIC_KEY,
         C.SETTING_KEY_TRACE_SECRET_KEY,
+        C.SETTING_KEY_TRACE_ENABLED,
     }
 )
 

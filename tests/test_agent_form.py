@@ -314,3 +314,130 @@ class TestSaveWithNewFields:
         assert 'value="很热"' in r.text, "填错的值没有回填"
         one_line = r.text.replace("\n", " ")
         assert re.search(r'name="cap_Thinking"[^>]*checked', one_line), "勾选的能力没有保留"
+
+
+# =============================================================================
+# 用户提示词模板与少样本
+# =============================================================================
+
+
+class TestPrompting:
+    """系统提示词之外的两件事。
+
+    ``AgentSpec`` 只有 ``instructions``，所以这两项存在 ``metadata`` 的星槎命名
+    空间下——那是官方 schema 里唯一允许放自定义内容的地方（顶层是
+    ``additionalProperties: false``）。
+    """
+
+    def test_template_without_the_placeholder_is_refused(self):
+        """**必须拦下。**
+
+        模板非空却没有占位符，等于调用方发来的内容被整个丢掉：每次调用都拿同一段
+        固定文本去问模型。表现是"Agent 好像不看我的输入"，而表单上一切正常。
+        """
+        from xingcha.errors import AgentSpecInvalid
+
+        with pytest.raises(AgentSpecInvalid) as e:
+            builder.validate_prompting("请抽取合同信息。", [])
+        assert builder.PROMPT_PLACEHOLDER in str(e.value)
+
+    def test_half_filled_example_is_refused(self):
+        from xingcha.errors import AgentSpecInvalid
+
+        with pytest.raises(AgentSpecInvalid):
+            builder.validate_prompting("", [builder.Example("问", "")])
+
+    def test_empty_prompting_writes_no_metadata_key(self):
+        """空的不写键——每个 spec 里多一坨空结构，导出的 agent.yaml 也跟着脏。"""
+        spec = builder.spec_from_form(
+            name="x",
+            description=None,
+            instructions="i",
+            model="m",
+            prompting=builder.Prompting(),
+        )
+        assert "metadata" not in spec
+
+    def test_survives_validate_spec_round_trip(self):
+        """必须过**真实存库路径**。
+
+        ``AgentSpec`` 的官方 schema 是 ``additionalProperties: false``，顶层加字段
+        会被直接打回；而 ``extra='ignore'`` 又让形状错的东西被静默吞掉。两条都得
+        在这里证伪。
+        """
+        prompting = builder.Prompting(
+            user_template="请抽取：\n\n{{input}}",
+            examples=(builder.Example("甲方是谁", '{"甲方": "某某"}'),),
+        )
+        spec = builder.validate_spec(
+            builder.spec_from_form(
+                name="x",
+                description=None,
+                instructions="i",
+                model="openai/gpt-5",
+                prompting=prompting,
+            )
+        )
+        back = builder.prompting_from_spec(spec)
+        assert back.user_template == prompting.user_template
+        assert back.examples == prompting.examples
+
+    def test_reading_a_malformed_spec_degrades_to_empty(self):
+        """读取要宽容：库里可能存着更早版本写的 spec。
+
+        一个老 Agent 不该因为 metadata 里少个键就整个跑不起来。
+        """
+        assert builder.prompting_from_spec({}).is_empty
+        assert builder.prompting_from_spec({"metadata": {"xingcha": "不是字典"}}).is_empty
+        assert builder.prompting_from_spec(
+            {"metadata": {"xingcha": {"examples": [{"user": "只有问"}]}}}
+        ).is_empty
+
+    def test_form_saves_and_reloads_them(self, logged_in: TestClient, settings: Settings):
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/save",
+            data={
+                "slug": "framed",
+                "name": "带模板",
+                "instructions": "做事。",
+                "model": "openai/gpt-5",
+                "tier": "",
+                "retries": "2",
+                "user_template": "请抽取：\n\n{{input}}",
+                "ex_user": ["甲方是谁", "乙方是谁"],
+                "ex_assistant": ["某某", "另一个"],
+                "csrf_token": csrf_of(logged_in),
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303, r.text[:400]
+        got = builder.prompting_from_spec(_spec_of(settings, "framed"))
+        assert got.user_template == "请抽取：\n\n{{input}}"
+        assert [e.user for e in got.examples] == ["甲方是谁", "乙方是谁"]
+
+        # 编辑页要回填，否则"只想改一句提示词"会把模板和示例静默清掉
+        body = logged_in.get("/admin/agents/framed").text
+        assert "请抽取：" in body and "甲方是谁" in body
+
+    def test_a_bad_template_keeps_what_was_typed(self, logged_in: TestClient):
+        logged_in.get("/admin/agents/new")
+        r = logged_in.post(
+            "/admin/agents/save",
+            data={
+                "slug": "framed",
+                "name": "带模板",
+                "instructions": "做事。",
+                "model": "openai/gpt-5",
+                "tier": "",
+                "retries": "2",
+                "user_template": "没有占位符",
+                "ex_user": "问",
+                "ex_assistant": "答",
+                "csrf_token": csrf_of(logged_in),
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 200
+        assert "没有占位符" in r.text, "填错的模板没有回填"
+        assert "问" in r.text and "答" in r.text, "示例没有保留"

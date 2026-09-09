@@ -568,6 +568,13 @@ def agent_apply(
                     schema_text=schema_text,
                     requested_tier=C.Tier(tier) if tier else None,
                     capabilities=spec.get("capabilities"),
+                    # model_settings 与 prompting 也要带回来。
+                    #
+                    # 导出物的 README 写着"改完还能用 xingcha agent apply 导回来"，
+                    # 而漏掉一项的表现是：导回来的 Agent 少了 temperature、或者少了
+                    # 用户模板——表单上看着一切正常，只有输出变了。
+                    model_settings=spec.get("model_settings") or None,
+                    prompting=builder.prompting_from_spec(spec),
                     retries=int(spec.get("retries") or 2)
                     if isinstance(spec.get("retries"), int | str)
                     else 2,

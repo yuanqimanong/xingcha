@@ -177,6 +177,7 @@ async def save(
     model_settings: dict[str, Any] | None = None,
     retries: int,
     native_ok: bool,
+    prompting: builder.Prompting | None = None,
     changelog: str = "",
     user_id: int = 1,
 ) -> SaveResult:
@@ -208,6 +209,7 @@ async def save(
         capabilities=capabilities,
         model_settings=model_settings,
         retries=retries,
+        prompting=prompting,
     )
     # schema 也写进 spec：导出物靠它工作（from_file 没有 output_type 注入点），
     # 而运行时走的是 builder 显式传的 output_type，两者不冲突。

@@ -159,6 +159,10 @@ async def load_tracing(state: AppState) -> None:
     没配 endpoint 就是关闭——这是默认状态。打开意味着提示词与模型输出会离开这台
     机器，而这个项目存在的理由恰恰是不想让请求经过别人手里，所以它必须是一次显式
     的决定，不能是升级的副作用。
+
+    地址与开关是**两件事**：``trace.enabled`` 为假时不装配，但地址与凭据留在库里。
+    没有这一项的话，"先停一下"就得清空地址、连带删掉两把 key，下次再开要把
+    Langfuse 凭据重新找出来——而不好停的开关等于一个默认开着的开关。
     """
     assert state.keyring is not None
     async with state.sessionmaker() as session:
@@ -166,8 +170,11 @@ async def load_tracing(state: AppState) -> None:
         endpoint = await get(session, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
         public_key = await get(session, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
         secret_key = await get(session, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
+        enabled = await get(session, state.keyring, C.SETTING_KEY_TRACE_ENABLED)
 
-    if not endpoint:
+    # 缺这一项按**开**算：老库里配过地址的实例升级上来，不该因为多了一个开关
+    # 就静默停掉上报。显式写过 "0" 才算关。
+    if not endpoint or enabled == "0":
         builder.enable_instrumentation(None)
         return
 

@@ -296,6 +296,115 @@ def make_model(model_id: str, provider: OpenRouterProvider) -> OpenAIChatModel:
 # =============================================================================
 
 
+# =============================================================================
+# 提示词组装（用户模板 + 少样本）
+# =============================================================================
+
+#: 用户提示词模板里代表"调用方发来的那段话"的占位符。
+PROMPT_PLACEHOLDER: Final = "{{input}}"
+
+#: 星槎自己的东西放进 ``AgentSpec.metadata`` 的这个命名空间下。
+#:
+#: 为什么放 metadata：``AgentSpec`` 的官方 schema 是 ``additionalProperties: false``，
+#: 加顶层字段会被校验直接打回；而 ``metadata`` 是官方留的自由字典。放在带命名空间
+#: 的键下，将来上游或用户往 metadata 里写别的也不会撞上。
+#:
+#: 代价要说清楚：上游**不解释**这里的任何东西，模板与示例是星槎在运行时应用的。
+#: 所以导出物里不能只把 metadata 带走了事——见 exporter，它把两者烤进 run.py。
+SPEC_NS: Final = "xingcha"
+
+
+@dataclass(frozen=True, slots=True)
+class Example:
+    """一组少样本示例：给模型看一次"这样问、该这样答"。"""
+
+    user: str
+    assistant: str
+
+
+@dataclass(frozen=True, slots=True)
+class Prompting:
+    """系统提示词之外的两件事。
+
+    系统提示词（``instructions``）是"你是谁、按什么规则做事"，这两件是"这一轮怎么
+    问、答成什么样"——通道不同，所以不能塞进同一个框：
+
+    * ``user_template`` 包住调用方发来的内容。没有它，"请从下面的合同里抽取信息："
+      这句框架就得每个调用方自己记，而 Agent 的卖点恰恰是"提示词固定在服务端"。
+    * ``examples`` 是成对的 user/assistant，以**真正的历史轮**送进去。这是
+      "assistant 提示词"唯一有用的形态：结构化输出下，示例能明显压低 schema 违规，
+      而每次违规就是一次重试、一次真金白银。
+    """
+
+    user_template: str = ""
+    examples: tuple[Example, ...] = ()
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.user_template and not self.examples
+
+
+def prompting_from_spec(spec: dict[str, Any]) -> Prompting:
+    """spec → :class:`Prompting`。字段缺失或形状不对一律退回空，不抛。
+
+    读取路径必须宽容：库里可能存着更早版本写的 spec，而一个老 Agent 不该因为
+    metadata 里少个键就整个跑不起来。写入路径（:func:`validate_prompting`）才严格。
+    """
+    raw = (spec.get("metadata") or {}).get(SPEC_NS) or {}
+    if not isinstance(raw, dict):
+        return Prompting()
+    template = raw.get("user_template")
+    pairs = raw.get("examples")
+    examples = []
+    if isinstance(pairs, list):
+        for item in pairs:
+            if isinstance(item, dict) and item.get("user") and item.get("assistant"):
+                examples.append(Example(str(item["user"]), str(item["assistant"])))
+    return Prompting(
+        user_template=template if isinstance(template, str) else "",
+        examples=tuple(examples),
+    )
+
+
+def validate_prompting(user_template: str, examples: list[Example]) -> Prompting:
+    """保存前校验。
+
+    模板非空却不含占位符是**必须拦下**的：那样调用方发来的内容会被整个丢掉，
+    每次调用都拿同一段固定文本去问模型。表现是"Agent 好像不看我的输入"，
+    而表单上一切正常——静默失败里最难查的一类。
+    """
+    template = user_template.strip()
+    if template and PROMPT_PLACEHOLDER not in template:
+        raise AgentSpecInvalid(
+            f"用户提示词模板里必须有 {PROMPT_PLACEHOLDER}，用来放调用方发来的内容。"
+            "没有它，调用方发什么都不会进入这次调用。"
+        )
+    kept = [e for e in examples if e.user.strip() and e.assistant.strip()]
+    for e in examples:
+        if bool(e.user.strip()) != bool(e.assistant.strip()):
+            raise AgentSpecInvalid("少样本示例要成对：问和答都得填，只填一半的那组请删掉。")
+    return Prompting(
+        user_template=template,
+        examples=tuple(Example(e.user.strip(), e.assistant.strip()) for e in kept),
+    )
+
+
+def prompting_to_spec(spec: dict[str, Any], prompting: Prompting) -> None:
+    """把 :class:`Prompting` 写回 spec 的 metadata。空则**不写键**。
+
+    空也写一个 ``{"xingcha": {}}`` 的话，每个 Agent 的 spec 里都多一坨没内容的
+    结构，导出的 agent.yaml 也跟着脏。
+    """
+    if prompting.is_empty:
+        return
+    body: dict[str, Any] = {}
+    if prompting.user_template:
+        body["user_template"] = prompting.user_template
+    if prompting.examples:
+        body["examples"] = [{"user": e.user, "assistant": e.assistant} for e in prompting.examples]
+    spec.setdefault("metadata", {})[SPEC_NS] = body
+
+
 @dataclass
 class AgentRuntime:
     """一个可执行的 Agent 及其运行期附属物。
@@ -316,6 +425,9 @@ class AgentRuntime:
     #: 只有 T1+ 有这个。它存在的全部意义是让推理那一步**不受格式约束干扰**——
     #: 文献显示格式约束会削弱推理，而两阶段把这两件事分开。
     reason_agent: Agent | None = None
+
+    #: 用户提示词模板与少样本。上游不认识它们，是星槎在组装消息时应用的。
+    prompting: Prompting = Prompting()
 
     @property
     def is_structured(self) -> bool:
@@ -413,6 +525,7 @@ def build(
             max_cost_usd=options.max_cost_usd,
         ),
         model_id=_strip_prefix(model_id),
+        prompting=prompting_from_spec(spec),
     )
 
 
@@ -425,6 +538,7 @@ def spec_from_form(
     capabilities: list[str] | None = None,
     model_settings: dict[str, Any] | None = None,
     retries: int | None = None,
+    prompting: Prompting | None = None,
 ) -> dict[str, Any]:
     """表单字段 → AgentSpec dict。
 
@@ -444,6 +558,8 @@ def spec_from_form(
         # 必须是裸 int 或 {'output': n}。2.35.3 新增的 {'tools': n} **不影响**
         # output 校验重试——写成那样会让重试预算看起来设了、实际没设。
         spec["retries"] = retries
+    if prompting is not None:
+        prompting_to_spec(spec, prompting)
     return spec
 
 
@@ -505,10 +621,13 @@ def form_view(spec: dict[str, Any]) -> dict[str, Any]:
     """
     settings = spec.get("model_settings") or {}
     names = capability_names(spec.get("capabilities") or [])
+    prompting = prompting_from_spec(spec)
     return {
         "settings": {k: settings.get(k, "") for k, _, _ in model_settings_fields()},
         "capabilities": names,
         "instrumented": CAPABILITY_INSTRUMENTATION in names,
+        "user_template": prompting.user_template,
+        "examples": list(prompting.examples),
     }
 
 

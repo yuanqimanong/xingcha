@@ -12,10 +12,12 @@ import hashlib
 import json
 import logging
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import cache
+from itertools import zip_longest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -748,6 +750,7 @@ async def _settings_ctx(
         trace_endpoint = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
         trace_pk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
         trace_sk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
+        trace_enabled_raw = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENABLED)
         has_db_password = await ws.has_password(s)
 
     from ..db import migrate
@@ -764,6 +767,13 @@ async def _settings_ctx(
         "trace_endpoint": (trace_form.endpoint if trace_form else None) or trace_endpoint or "",
         "trace_public_key": (trace_form.public_key if trace_form else None) or trace_pk or "",
         "trace_has_secret": bool(trace_sk),
+        # 三态，不是两态：**配了但停用**要和**没配**区分开，否则页面上"未开启"
+        # 既可能是没填过、也可能是自己关的，而这两种情况下一步动作完全不同。
+        "trace_configured": bool(trace_endpoint),
+        "trace_enabled": trace_enabled_raw != "0",
+        "trace_saved_endpoint": trace_endpoint or "",
+        "trace_public_masked": setting_svc.mask(trace_pk) if trace_pk else "",
+        "trace_service_name": state.settings.trace_service_name,
         "trace_on": state.tracing is not None,
         "trace_include_content": state.settings.trace_include_content,
         "password_error": password_error,
@@ -1077,12 +1087,16 @@ async def update_trace(
                     request, trace_error=f"上报地址被拒绝：{e}", trace_form=form
                 )
             await setting_svc.set_(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT, checked.url)
+            # 保存一个地址就是"我要上报到这里"。存完还停着的话，这个动作在页面上
+            # 看不出任何效果，人会以为没保存成功而再点一遍。
+            await setting_svc.set_(s, state.keyring, C.SETTING_KEY_TRACE_ENABLED, "1")
         else:
             # 清空 endpoint 就是关掉 trace。**凭据一起清掉**——留着一份用不上的
             # secret key 只是多一处泄漏面。
             await setting_svc.unset(s, C.SETTING_KEY_TRACE_ENDPOINT)
             await setting_svc.unset(s, C.SETTING_KEY_TRACE_PUBLIC_KEY)
             await setting_svc.unset(s, C.SETTING_KEY_TRACE_SECRET_KEY)
+            await setting_svc.unset(s, C.SETTING_KEY_TRACE_ENABLED)
 
         if cleaned and public_key.strip():
             await setting_svc.set_(
@@ -1094,16 +1108,79 @@ async def update_trace(
             )
         await s.commit()
 
+    await _reload_tracing(state)
+    return security_headers(RedirectResponse("/admin/settings", status_code=303))
+
+
+async def _reload_tracing(state: Any) -> None:
+    """按库里的最新配置重装追踪管道。
+
+    旧管道要**先关掉**再换新的，否则上一个 BatchSpanProcessor 的后台线程会一直
+    留着。运行时缓存也要清：Agent 的埋点绑在构造时的 model 上。
+    """
     from ..app import load_tracing
 
-    # 旧管道要先关掉再换新的，否则上一个 BatchSpanProcessor 的后台线程会一直留着。
     if state.tracing is not None:
         state.tracing.shutdown()
         state.tracing = None
     await load_tracing(state)
-    # Agent 的埋点绑在构造时的 model 上，运行时缓存里那些还挂着旧 provider
     state.runtimes.clear()
 
+
+@router.post("/settings/trace/toggle")
+async def toggle_trace(request: Request, csrf_token: str = Form(default="")) -> Response:
+    """开/关上报。地址与凭据原样留着。
+
+    **这一个不要密码，改地址那个要。** 差别不在于哪个更危险听起来更像，而在于
+    攻击面：改地址是"把对话副本送到我指定的地方"，开关只能把它送到**管理员自己
+    早就选定并存下来的**那个地址。真正的门是选目的地那一步，那里守着密码；这里
+    有 CSRF 就够了——而给一个每天要用的开关加密码，结果是没人去关它。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+
+    async with state.sessionmaker() as s:
+        endpoint = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
+        if not endpoint:
+            return await _render_settings(request, trace_error="还没有配置上报地址。")
+        now = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENABLED)
+        await setting_svc.set_(
+            s, state.keyring, C.SETTING_KEY_TRACE_ENABLED, "0" if now != "0" else "1"
+        )
+        await s.commit()
+
+    await _reload_tracing(state)
+    return security_headers(RedirectResponse("/admin/settings", status_code=303))
+
+
+@router.post("/settings/trace/clear")
+async def clear_trace(
+    request: Request, password: str = Form(...), csrf_token: str = Form(default="")
+) -> Response:
+    """删掉地址与两把 key。
+
+    与"关闭"分开：关闭是可逆的，这个不是。要密码——它删的是加密存着的凭据，
+    而这个后台里凡是能销毁东西的动作都过同一道门。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+
+    async with state.sessionmaker() as s:
+        admin = await ws.get_admin(s)
+        if admin is None or not ws.verify_admin_password(
+            admin.password_hash, password, state.settings.admin_password
+        ):
+            return await _render_settings(request, trace_error="当前密码不正确，未做任何修改。")
+        for key in (
+            C.SETTING_KEY_TRACE_ENDPOINT,
+            C.SETTING_KEY_TRACE_PUBLIC_KEY,
+            C.SETTING_KEY_TRACE_SECRET_KEY,
+            C.SETTING_KEY_TRACE_ENABLED,
+        ):
+            await setting_svc.unset(s, key)
+        await s.commit()
+
+    await _reload_tracing(state)
     return security_headers(RedirectResponse("/admin/settings", status_code=303))
 
 
@@ -1175,6 +1252,26 @@ def _tier_options() -> list[Any]:
     from ..core.guarantee import AVAILABLE_TIERS, TIER_INFO
 
     return [SimpleNamespace(value=t.value, **TIER_INFO[t]) for t in AVAILABLE_TIERS]
+
+
+def _prompting_from_form(raw: Any) -> Any:
+    """表单 → :class:`builder.Prompting`。校验在 builder 里，这里只负责取值。
+
+    示例是不定组数的，所以按 ``getlist`` 收而不是逐个声明 Form 参数——组数由前端
+    决定，后端写死几组就等于给"再加一组"设了一个看不见的上限。
+    """
+    from ..core import builder
+
+    users = raw.getlist("ex_user")
+    assistants = raw.getlist("ex_assistant")
+    # 两个列表按位置配对。长度不等只可能是前端出了 bug，短的那边补空串，
+    # 让 validate_prompting 报"要成对"，而不是在这里 IndexError。
+    pairs = [
+        builder.Example(u, a)
+        for u, a in zip_longest(users, assistants, fillvalue="")
+        if (u or a).strip()
+    ]
+    return builder.validate_prompting(str(raw.get("user_template") or ""), pairs)
 
 
 def _lint_ctx(schema_text: str, tier: str) -> dict[str, Any]:
@@ -1272,7 +1369,12 @@ async def _form_shell(request: Request) -> dict[str, Any]:
 
 
 def _settings_view(spec: dict[str, Any]) -> dict[str, Any]:
-    """模型参数/能力/可观测 三块的回填值。"""
+    """提示词组装/模型参数/能力/可观测 几块的回填值。
+
+    **这里逐项挑键，所以 form_view 新增字段时必须同步。** 漏掉一项不会报错——
+    模板里读到的是 Jinja 的 Undefined，渲染成空串，于是编辑页那一栏看起来"从来
+    没填过"，一保存就把用户设过的东西清掉。刚在 user_template 上踩过一次。
+    """
     from ..core import builder
 
     view = builder.form_view(spec)
@@ -1284,6 +1386,8 @@ def _settings_view(spec: dict[str, Any]) -> dict[str, Any]:
         "settings_count": len(filled),
         "capabilities": view["capabilities"],
         "instrumented": view["instrumented"],
+        "user_template": view["user_template"],
+        "examples": view["examples"],
     }
 
 
@@ -1417,6 +1521,7 @@ async def agent_save(
 
     native_ok = state.catalog.supports_native_schema(model)
     try:
+        prompting = _prompting_from_form(raw)
         model_settings = builder.model_settings_from_form(settings_raw)
         async with state.sessionmaker() as s:
             result = await agent_svc.save(
@@ -1432,6 +1537,7 @@ async def agent_save(
                 model_settings=model_settings or None,
                 retries=max(0, min(5, retries)),
                 native_ok=native_ok,
+                prompting=prompting,
             )
             await s.commit()
     except XingchaError as e:
@@ -1453,6 +1559,15 @@ async def agent_save(
             settings_count=len(filled),
             capabilities=set(caps),
             instrumented=builder.CAPABILITY_INSTRUMENTATION in caps,
+            user_template=str(raw.get("user_template") or ""),
+            # 回填用户填的原文，而不是 validate_prompting 清洗过的版本：报错时把人
+            # 填的东西改掉，会让他对着一个自己没写过的表单找错。
+            examples=[
+                SimpleNamespace(user=u, assistant=a)
+                for u, a in zip_longest(
+                    raw.getlist("ex_user"), raw.getlist("ex_assistant"), fillvalue=""
+                )
+            ],
         )
         resp = _render(
             request,
@@ -1514,6 +1629,186 @@ async def agent_lint(
     """
     await guard_mutation(request, csrf_token)
     return security_headers(_render(request, "_lint.html", _lint_ctx(output_schema, tier)))
+
+
+def _chain_rows(messages: list[Any]) -> list[Any]:
+    """``all_messages()`` → 面板上的一行一条。
+
+    渲染的是**上游实际收发的东西**，不是照表单重建的"应该发什么"。两者分叉的
+    那一刻正好是最需要看这个面板的时候，所以重建版没有价值。
+    """
+    rows: list[Any] = []
+    for msg in messages:
+        is_req = getattr(msg, "kind", "") == "request"
+        # 指令挂在 request 上而不是单独一条消息：单拎出来，才看得见系统提示词
+        # 与调用方追加的那段拼在一起之后长什么样。
+        instructions = getattr(msg, "instructions", None)
+        if is_req and instructions:
+            rows.append(
+                SimpleNamespace(role="instructions", label="系统指令", text=instructions, meta="")
+            )
+        for part in getattr(msg, "parts", []):
+            kind = getattr(part, "part_kind", "") or type(part).__name__
+            text = getattr(part, "content", None)
+            if not isinstance(text, str):
+                text = json.dumps(text, ensure_ascii=False, default=str) if text else ""
+            label = {
+                "user-prompt": "用户",
+                "text": "模型",
+                "thinking": "思考",
+                "tool-call": "工具调用",
+                "tool-return": "工具返回",
+                "retry-prompt": "校验退回",
+                "system-prompt": "系统",
+            }.get(kind, kind)
+            meta = ""
+            if not is_req:
+                bits = (getattr(msg, "model_name", ""), getattr(msg, "finish_reason", ""))
+                meta = " · ".join(str(b) for b in bits if b)
+            rows.append(
+                SimpleNamespace(
+                    role="req" if is_req else "resp",
+                    label=label,
+                    text=text,
+                    meta=meta,
+                )
+            )
+    return rows
+
+
+@router.post("/agents/test")
+async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Response:
+    """按**当前表单**跑一次，不落库。
+
+    testing 的对象是表单里此刻的内容，而不是已保存的版本——不然"改一句提示词看看
+    效果"就得先保存，于是每试一次就多一个版本，而版本是不可删的。
+
+    代价必须说在明处：这会真的调一次上游、真的花钱，而且**不走配额**（配额记的是
+    调用方的用量，管理员在后台试跑不该记到某个业务的账上）。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..core import builder
+    from ..core.builder import BuildOptions
+    from ..core.schema_guard import SchemaRejected, validate_schema
+    from ..errors import XingchaError
+    from ..services import run as run_svc
+
+    raw = await request.form()
+    probe = str(raw.get("test_input") or "").strip()
+
+    def failed(message: str) -> Response:
+        return security_headers(
+            _render(request, "_agent_test.html", {"ok": False, "message": message})
+        )
+
+    if not probe:
+        return failed("先填一段测试输入——它就是调用方会发来的那条 user 消息。")
+    if state.provider is None:
+        return failed("还没有配置上游 key。到「上游」页配好之后再试。")
+
+    try:
+        prompting = _prompting_from_form(raw)
+        inlined = (
+            validate_schema(str(raw.get("output_schema") or ""))
+            if str(raw.get("output_schema") or "").strip()
+            else None
+        )
+        tier_raw = str(raw.get("tier") or "")
+        model = str(raw.get("model") or "").strip()
+        if not model:
+            return failed("先选一个模型。")
+
+        from ..core.guarantee import resolve_tier
+
+        choice = resolve_tier(
+            C.Tier(tier_raw) if tier_raw else None,
+            has_schema=inlined is not None,
+            native_ok=state.catalog.supports_native_schema(model),
+        )
+        settings_raw = {
+            f: str(raw.get(f"ms_{f}") or "") for f, _, _ in builder.model_settings_fields()
+        }
+        caps = [n for n, _, _ in builder.form_capabilities() if raw.get(f"cap_{n}")]
+        spec = builder.spec_from_form(
+            name=str(raw.get("name") or "试运行"),
+            description=None,
+            instructions=str(raw.get("instructions") or ""),
+            model=model,
+            capabilities=caps or None,
+            model_settings=builder.model_settings_from_form(settings_raw) or None,
+            retries=max(0, min(5, int(str(raw.get("retries") or 2) or 2))),
+            prompting=prompting,
+        )
+        if inlined is not None:
+            spec["output_schema"] = inlined
+        spec = builder.validate_spec(spec)
+        rt = builder.build(
+            spec_json=spec,
+            tier=choice.tier,
+            out_schema=inlined,
+            provider=state.provider,
+            options=BuildOptions(),
+            concurrency=state.concurrency,
+        )
+    except (SchemaRejected, XingchaError, ValueError) as e:
+        return failed(str(getattr(e, "message", e)))
+
+    conv = run_svc.apply_prompting(
+        run_svc.to_conversation([{"role": "user", "content": probe}]), rt.prompting
+    )
+
+    started = time.monotonic()
+    try:
+        outcome = await run_svc.execute(rt, conv=conv, run_timeout=state.settings.run_timeout)
+    except XingchaError as e:
+        # 失败也把链路渲染出来：**看得见模型到底收到了什么**，才知道是提示词的问题
+        # 还是 schema 的问题。只显示一句"失败了"等于什么都没说。
+        return security_headers(
+            _render(
+                request,
+                "_agent_test.html",
+                {
+                    "ok": False,
+                    "message": e.message,
+                    "rows": _chain_rows(getattr(e, "messages", []) or []),
+                    "elapsed": f"{time.monotonic() - started:.1f}",
+                },
+            )
+        )
+
+    from .runlog_mw import price
+
+    cost, source = price(
+        state.catalog,
+        outcome.model_id,
+        {
+            "input_tokens": outcome.input_tokens,
+            "output_tokens": outcome.output_tokens,
+            "cache_read_tokens": outcome.cache_read_tokens,
+        },
+    )
+    return security_headers(
+        _render(
+            request,
+            "_agent_test.html",
+            {
+                "ok": True,
+                "rows": _chain_rows(outcome.messages),
+                "output": outcome.content,
+                "tier": choice.tier.value,
+                "tier_note": choice.reason,
+                "elapsed": f"{time.monotonic() - started:.1f}",
+                "input_tokens": outcome.input_tokens,
+                "output_tokens": outcome.output_tokens,
+                "requests": outcome.requests,
+                "retries": outcome.schema_retries,
+                "violations": outcome.schema_violations,
+                "cost": _fmt_cost(str(cost)) if cost is not None else "—",
+                "cost_source": source,
+            },
+        )
+    )
 
 
 @router.get("/agents/{slug}/export")

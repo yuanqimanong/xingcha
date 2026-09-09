@@ -136,8 +136,17 @@ class TestClosedSet:
         """
         from xingcha.contract import Tier
         from xingcha.core import exporter
+        from xingcha.core.builder import Prompting
 
-        readme = exporter._readme(slug="x", name="x", version=1, tier=Tier.T2, structured=True)
+        readme = exporter._readme(
+            slug="x",
+            name="x",
+            version=1,
+            tier=Tier.T2,
+            structured=True,
+            has_runner=True,
+            prompting=Prompting(),
+        )
         advertised = set()
         for text in (run(cli, "agent", "list").output, readme):
             for group, subs in CLOSED_SET.items():

@@ -115,6 +115,13 @@ class RunOutcome:
     cost_usd: Decimal | None = None
     cost_source: str = C.CostSource.UNKNOWN.value
     extra: dict[str, Any] = field(default_factory=dict)
+    #: 这次运行的**完整消息链**（``result.all_messages()``），含指令、每一次请求
+    #: 与响应、以及校验重试那几轮。后台的「试运行」把它渲染出来。
+    #:
+    #: 取自上游而不是自己重建：重建出来的"应该发了什么"和真正发出去的东西会分叉，
+    #: 而分叉的那一刻恰好是最需要看这个面板的时候。
+    messages: list[Any] = field(default_factory=list)
+
     #: 本次运行里所有上游响应的 id。用于向 CostSink 取回真实费用。
     #:
     #: 一次运行可能有多次上游调用（schema 重试、工具往返、两阶段），所以是列表——
@@ -274,6 +281,60 @@ def to_conversation(messages: list[dict[str, Any]]) -> Conversation:
         prompt=prompt,
         history=history,
         extra_instructions="\n\n".join(system_parts) or None,
+    )
+
+
+def apply_prompting(conv: Conversation, prompting: builder.Prompting) -> Conversation:
+    """把 Agent 自己的用户模板与少样本示例套进这次调用。
+
+    分成两步（``to_conversation`` 只做 OpenAI → 内部形状，这里才做 Agent 相关的
+    加工）不是洁癖：前者的报错是"你的 messages 不对"，必须在配额占名额**之前**
+    发生；后者需要先取到运行时才知道模板是什么。合成一步就得二选一。
+
+    **模板套在每一条 user 消息上，包括历史里的。**
+
+    只套当前这一条的话，历史里那几轮就和模型当时实际看到的不一样了——上一轮它
+    收到的是 ``请抽取以下合同：<A>``，这一轮回放给它的却是光秃秃的 ``<A>``。
+    模型会觉得自己上次是在回答另一个问题。
+
+    示例排在调用方历史**之前**：它们是"开场前的演示"，不是对话的一部分。
+    """
+    if prompting.is_empty:
+        return conv
+
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    def framed(text: str) -> str:
+        t = prompting.user_template
+        return t.replace(builder.PROMPT_PLACEHOLDER, text) if t else text
+
+    history: list[Any] = [
+        m
+        for e in prompting.examples
+        for m in (
+            ModelRequest(parts=[UserPromptPart(content=framed(e.user))]),
+            ModelResponse(parts=[TextPart(content=e.assistant)]),
+        )
+    ]
+    for msg in conv.history:
+        if isinstance(msg, ModelRequest):
+            history.append(
+                ModelRequest(
+                    parts=[
+                        UserPromptPart(content=framed(part.content))
+                        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+                        else part
+                        for part in msg.parts
+                    ]
+                )
+            )
+        else:
+            history.append(msg)
+
+    return Conversation(
+        prompt=framed(conv.prompt) if conv.prompt is not None else None,
+        history=history,
+        extra_instructions=conv.extra_instructions,
     )
 
 
@@ -484,7 +545,16 @@ def outcome_from(
         schema_retries=rt.counters.retries,
         extra=_extra_usage(usage),
         response_ids=list(dict.fromkeys(response_ids)),
+        messages=_all_messages(stage_one) + _all_messages(result),
     )
+
+
+def _all_messages(result: Any) -> list[Any]:
+    """完整消息链。拿不到就空——它只喂给后台面板，不该让一次调用因此失败。"""
+    try:
+        return list(result.all_messages()) if result is not None else []
+    except Exception:  # pragma: no cover - 上游换 API 时退化成"面板空着"
+        return []
 
 
 def _extra_usage(usage: Any) -> dict[str, Any]:

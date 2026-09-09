@@ -731,7 +731,7 @@ class TestSettings:
         login(page, site)
         page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
         body = page.inner_text("body")
-        assert "未开启" in body
+        assert "未配置" in body
         assert "会被发送到" in body, "没有提示打开之后提示词与模型输出会外发"
 
     def test_trace_secret_is_never_echoed(self, site: LiveSite, page):
@@ -752,7 +752,7 @@ class TestSettings:
         page.click("#trace-pw-dialog button[type=submit]")
 
         page.wait_for_load_state("networkidle")
-        assert "已开启" in page.inner_text("body")
+        assert "上报中" in page.inner_text("body")
         assert "sk-lf-e2e-secret" not in page.content(), "trace 的 secret key 被回显了"
 
 

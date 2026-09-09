@@ -72,93 +72,200 @@
   </div>
 </div>
 
-<div class="card mb5">
-  <div class="card-head">
+<div class="section-head">
+  <div>
     <h2>调用追踪</h2>
-    {% if trace_on %}<span class="badge ok">已开启</span>{% else %}<span class="badge">未开启</span>{% endif %}
-  </div>
-  <div class="card-body">
-    <p class="muted small mb4">
-      把每次调用的完整消息、重试与耗时按 OTLP 协议上报到一个追踪后端，用来看
+    <p>把每次调用的完整消息、重试与耗时按 OTLP 协议上报到一个追踪后端，用来看
       <strong>模型实际收到了什么、又返回了什么</strong>。
-      <a href="/admin/logs">调用记录</a>页只有次数、费用与错误，没有消息内容。
-    </p>
-    <div class="notice mb4">
-      <strong>这里只填地址，开关在每个 Agent 上。</strong>
-      填好之后到 Agent 编辑页的「可观测」分区逐个勾选——哪些 Agent 的对话内容可以
-      离开这台机器，通常不是一个全局答案。
-    </div>
-    {% if trace_include_content %}
-    <div class="notice warn mb4">
-      <strong>提示词与模型输出会被发送到下面这个地址。</strong>
-      不想带内容就设 <code>XINGCHA_TRACE_INCLUDE_CONTENT=0</code> 并重启，
-      那样只上报耗时与 token 数。
-    </div>
-    {% endif %}
-    {% if trace_error %}
-    <div class="alert danger mb4"><div>{{ trace_error }}</div></div>
-    {% endif %}
-    <form method="post" action="/admin/settings/trace">
-      <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <div class="field">
-        <label for="trace_endpoint">OTLP traces 地址</label>
-        <input id="trace_endpoint" name="endpoint" type="text" class="mono" value="{{ trace_endpoint }}"
-               placeholder="http://192.168.1.10:3000/api/public/otel/v1/traces">
-        <div class="hint">
-          要填 <strong>OTLP/HTTP 的 traces 入口</strong>，不是后端的网页地址。
-          <strong>留空即关闭</strong>，两把 key 也会一起清掉。
-        </div>
-        <div class="hint mt2">
-          <table class="mini">
-            <tr><td>自建 Langfuse</td><td class="mono">http://&lt;主机:端口&gt;/api/public/otel/v1/traces</td></tr>
-            <tr><td>同一 docker 网络</td><td class="mono">http://langfuse-web:3000/api/public/otel/v1/traces</td></tr>
-            <tr><td>Langfuse 托管版</td><td class="mono">https://cloud.langfuse.com/api/public/otel/v1/traces</td></tr>
-            <tr><td>OTel Collector / Jaeger</td><td class="mono">http://&lt;主机&gt;:4318/v1/traces</td></tr>
-          </table>
-          自建的地址可以是内网 IP 或容器名（私有网段是放行的），但云元数据地址会被拒。
-        </div>
-      </div>
-      <div class="field">
-        <label for="trace_public_key">Langfuse public key</label>
-        <input id="trace_public_key" name="public_key" type="text" class="mono" autocomplete="off"
-               value="{{ trace_public_key }}" placeholder="pk-lf-...">
-        <div class="hint">
-          <strong>只有 Langfuse 需要这两把 key</strong>（它用 Basic 认证）。
-          填 OTel Collector / Jaeger 这类不校验身份的后端就留空。
-        </div>
-      </div>
-      <div class="field">
-        <label for="trace_secret_key">Langfuse secret key</label>
-        <input id="trace_secret_key" name="secret_key" type="password" class="mono" autocomplete="off"
-               placeholder="{% if trace_has_secret %}已保存，留空表示不修改{% else %}sk-lf-...{% endif %}">
-        <div class="hint">加密存在本机数据库里，页面上不回显。Basic 头由星槎自己拼，不用手算 base64。</div>
-      </div>
-      <button class="btn primary" type="button" data-open-dialog="#trace-pw-dialog">保存</button>
+      <a href="/admin/logs">调用记录</a>页只有次数、费用与错误，没有消息内容。</p>
+  </div>
+</div>
 
-      {# 密码放弹窗里，与上游页一致：表单版面上只留"要配什么"，身份确认是提交那一刻
-         的事。<dialog> 在 <form> **内部**，里面的 input 仍然是这个表单的字段，
-         提交时一起发出去——不需要任何 JS 搬运值。 #}
-      <dialog id="trace-pw-dialog" class="modal">
-        <div class="card">
-          <div class="card-head"><h2>确认身份</h2></div>
-          <div class="card-body">
-            <p class="muted small mb4">
-              这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本。
-            </p>
-            <div class="field">
-              <label for="trace_password">当前密码</label>
-              <input id="trace_password" name="password" type="password"
-                     autocomplete="current-password" required>
-              <div class="hint">不正确就<strong>什么都不改</strong>。</div>
-            </div>
-            <div class="row mt4">
-              <button class="btn primary" type="submit">确认保存</button>
-              <a class="btn" href="#" data-close-dialog>取消</a>
+{% if trace_error %}
+<div class="alert danger"><div>{{ trace_error }}</div></div>
+{% endif %}
+
+<div class="split">
+
+  {# ------------------------------------------------------------ 当前配置 #}
+  <div class="card">
+    <div class="card-head">
+      <h2>当前上报目标</h2>
+      {% if not trace_configured %}<span class="badge">未配置</span>
+      {% elif trace_on %}<span class="badge ok">上报中</span>
+      {% else %}<span class="badge warn">已停用</span>{% endif %}
+    </div>
+    <div class="card-body">
+      {% if not trace_configured %}
+      <div class="empty">
+        <div class="empty-title">还没有配置上报地址</div>
+        <div class="small">右边填一个 OTLP traces 入口。不配就是不上报——这是默认状态。</div>
+      </div>
+      {% else %}
+      <table class="mini">
+        <tr>
+          <td>地址</td>
+          <td class="mono" style="word-break:break-all">{{ trace_saved_endpoint }}</td>
+        </tr>
+        <tr>
+          <td>Public key</td>
+          <td class="mono">{{ trace_public_masked or '—（后端不校验身份）' }}</td>
+        </tr>
+        <tr>
+          <td>Secret key</td>
+          <td class="mono">{% if trace_has_secret %}已保存（加密，不回显）{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>服务名</td>
+          <td class="mono">{{ trace_service_name }}</td>
+        </tr>
+        <tr>
+          <td>消息内容</td>
+          <td>
+            {% if trace_include_content %}
+            <span class="danger-text">随行上报</span>
+            <span class="dim small">提示词与模型输出会离开这台机器</span>
+            {% else %}
+            不随行 <span class="dim small">只有耗时与 token</span>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+
+      <div class="row mt4">
+        <form method="post" action="/admin/settings/trace/toggle">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          {% if trace_on %}
+          <button class="btn" type="submit">停用上报</button>
+          {% else %}
+          <button class="btn primary" type="submit">开启上报</button>
+          {% endif %}
+        </form>
+        <span class="hint">
+          {% if trace_on %}停用后配置留着，随时能开回来。{% else %}地址与凭据都还在，点一下就恢复。{% endif %}
+        </span>
+      </div>
+
+      <div class="hint mt4">
+        <strong>这是总闸，具体上报哪些 Agent 还要各自勾选。</strong>
+        到 Agent 编辑页的「可观测」分区逐个开——哪些 Agent 的对话内容可以离开这台
+        机器，通常不是一个全局答案。
+      </div>
+
+      <form method="post" action="/admin/settings/trace/clear" class="mt4">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button class="btn danger sm" type="button" data-open-dialog="#trace-clear-dialog">
+          清除配置
+        </button>
+        <span class="hint">连两把 key 一起删掉。只是想暂停的话用上面的停用。</span>
+        <dialog id="trace-clear-dialog" class="modal">
+          <div class="card">
+            <div class="card-head"><h2>清除上报配置</h2></div>
+            <div class="card-body">
+              <p class="muted small mb4">
+                地址与两把 key 会被删除，<strong>不可撤销</strong>。
+                只是想暂时不上报的话，关掉窗口用「停用上报」。
+              </p>
+              <div class="field">
+                <label for="clear_password">当前密码</label>
+                <input id="clear_password" name="password" type="password"
+                       autocomplete="current-password" required>
+              </div>
+              <div class="row mt4">
+                <button class="btn danger" type="submit">确认清除</button>
+                <a class="btn" href="#" data-close-dialog>取消</a>
+              </div>
             </div>
           </div>
+        </dialog>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ------------------------------------------------------------ 配置表单 #}
+  <div class="card">
+    <div class="card-head">
+      <h2>{{ '换一个上报目标' if trace_configured else '配置上报目标' }}</h2>
+    </div>
+    <div class="card-body">
+      {% if trace_include_content %}
+      <div class="notice warn mb4">
+        <strong>提示词与模型输出会被发送到这个地址。</strong>
+        不想带内容就设 <code>XINGCHA_TRACE_INCLUDE_CONTENT=0</code> 并重启。
+      </div>
+      {% endif %}
+      <form method="post" action="/admin/settings/trace">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="field">
+          <label for="trace_endpoint">OTLP traces 地址</label>
+          <input id="trace_endpoint" name="endpoint" type="text" class="mono" value="{{ trace_endpoint }}"
+                 placeholder="http://192.168.1.10:3000/api/public/otel/v1/traces">
+          <div class="hint">
+            要填 <strong>OTLP/HTTP 的 traces 入口</strong>，不是后端的网页地址。
+            保存一个地址就等于开启上报。
+          </div>
         </div>
-      </dialog>
-    </form>
+        <div class="form-row">
+          <div class="field">
+            <label for="trace_public_key">Langfuse public key</label>
+            <input id="trace_public_key" name="public_key" type="text" class="mono" autocomplete="off"
+                   value="{{ trace_public_key }}" placeholder="pk-lf-...">
+          </div>
+          <div class="field">
+            <label for="trace_secret_key">Langfuse secret key</label>
+            <input id="trace_secret_key" name="secret_key" type="password" class="mono" autocomplete="off"
+                   placeholder="{% if trace_has_secret %}留空=不修改{% else %}sk-lf-...{% endif %}">
+          </div>
+        </div>
+        <div class="hint">
+          <strong>只有 Langfuse 需要这两把 key</strong>（它用 Basic 认证）；
+          OTel Collector / Jaeger 这类不校验身份的后端留空。
+          secret key 加密存在本机数据库里，页面上不回显。
+        </div>
+        <div class="row mt4">
+          <button class="btn primary" type="button" data-open-dialog="#trace-pw-dialog">保存</button>
+          <span class="hint">留空地址并保存 = 清除配置。</span>
+        </div>
+
+        {# 密码放弹窗里，与上游页一致：表单版面上只留"要配什么"，身份确认是提交那一刻
+           的事。<dialog> 在 <form> **内部**，里面的 input 仍然是这个表单的字段，
+           提交时一起发出去——不需要任何 JS 搬运值。 #}
+        <dialog id="trace-pw-dialog" class="modal">
+          <div class="card">
+            <div class="card-head"><h2>确认身份</h2></div>
+            <div class="card-body">
+              <p class="muted small mb4">
+                这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本。
+              </p>
+              <div class="field">
+                <label for="trace_password">当前密码</label>
+                <input id="trace_password" name="password" type="password"
+                       autocomplete="current-password" required>
+                <div class="hint">不正确就<strong>什么都不改</strong>。</div>
+              </div>
+              <div class="row mt4">
+                <button class="btn primary" type="submit">确认保存</button>
+                <a class="btn" href="#" data-close-dialog>取消</a>
+              </div>
+            </div>
+          </div>
+        </dialog>
+      </form>
+
+      <details class="mt4">
+        <summary class="small muted">地址长什么样</summary>
+        <table class="mini mt2">
+          <tr><td>自建 Langfuse</td><td class="mono">http://&lt;主机:端口&gt;/api/public/otel/v1/traces</td></tr>
+          <tr><td>同一 docker 网络</td><td class="mono">http://langfuse-web:3000/api/public/otel/v1/traces</td></tr>
+          <tr><td>Langfuse 托管版</td><td class="mono">https://cloud.langfuse.com/api/public/otel/v1/traces</td></tr>
+          <tr><td>OTel Collector / Jaeger</td><td class="mono">http://&lt;主机&gt;:4318/v1/traces</td></tr>
+        </table>
+        <div class="hint mt2">
+          自建的地址可以是内网 IP 或容器名（私有网段是放行的），但云元数据地址会被拒。
+        </div>
+      </details>
+    </div>
   </div>
 </div>
 
