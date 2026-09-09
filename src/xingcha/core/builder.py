@@ -322,58 +322,48 @@ FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str], ...]] = (
 #:         def supported_native_tools(cls): return frozenset({WebSearchTool})
 #:
 #: 星槎对所有模型都用 ``OpenAIChatModel``（见 make_model 的注释：``OpenRouterModel``
-#: 对缺 ``provider`` 字段的中转响应会硬失败，而走中转正是这个项目的用途）。所以
-#: 网页抓取、图像生成、原生 MCP **跟模型无关，一律做不到**——它们只存在于
-#: ``OpenAIResponsesModel``（OpenAI 的 Responses API）那条通道上。
+#: 对缺 ``provider`` 字段的中转响应会硬失败，而走中转正是这个项目的用途）。
 #:
-#: 这不是"支持的模型很少"，是**零**。两者的区别很要紧：前者让人去换模型试，后者
-#: 让人知道该等哪条路通。
-CHAT_CHANNEL_NATIVE_TOOLS: Final = ("WebSearch",)
-
-#: ``(能力名, 标签, 说明, 勾上时带的参数)``。
+#: 直接打这道闸测过，三个模型（含 gpt-5）结论一致：``WebFetchTool`` /
+#: ``ImageGenerationTool`` / ``MCPServerTool`` 一律 ``not supported by this model``。
+#: **不是"支持的模型少"，是与模型无关地为零**——它们只存在于 ``OpenAIResponsesModel``
+#: （OpenAI 的 Responses API）那条通道上。
 #:
-#: 第四项是这一版新加的：勾选框此前只能表达"开/不开"，而 ``local=`` 这类参数恰恰
-#: 是让一个能力从"永远报错"变成"能用"的东西。spec 里带参数的形状是
-#: ``{"名字": {参数}}``，:func:`validate_spec` 会规范化成
-#: ``{"name": ..., "arguments": {...}}``，而 ``from_spec`` **收这一种**（不收
-#: 只有 name 一个键的那种，见 runnable_capabilities）。
+#: 所以这个列表只放**真的能用**的：
+#:
+#: * ``Thinking`` —— 纯本地，不碰这道闸。
+#: * ``WebSearch`` —— 唯一能交给上游做的，且还要 provider 侧
+#:   ``openai_chat_supports_web_search``（OpenRouter 一类放行，厂商直连不放行）。
+#:
+#: 拿掉的三个与理由：
+#:
+#: * ``WebFetch`` —— 原生做不到；本地回退（``local=True``）能跑，但那是**星槎自己
+#:   出网去抓**，覆盖范围取决于这台机器能到哪，而不是取决于配置。用户的判断是
+#:   "模型没有抓取能力，本地也就别抓"——一个时灵时不灵的能力比没有更糟。
+#: * ``ImageGeneration`` —— 原生做不到，本地回退要传一个 Python 函数，网页表单
+#:   表达不了。
+#: * ``ToolSearch`` —— 不碰这道闸，但它做的是"工具很多时先检索再调用"，而星槎
+#:   还没有注册工具的入口。不报错、也不做任何事。
+#:
+#: 看过但没放进来的：``ReinjectSystemPrompt`` 重注的是 ``system_prompt``，而
+#: ``AgentSpec`` 没有这个字段（星槎用 ``instructions``），对本项目是空转；
+#: ``XSearch`` 同 WebFetch 那道闸；``PrefixTools`` / ``SetToolMetadata`` /
+#: ``IncludeToolReturnSchemas`` / ``NativeTool`` 都只在有工具时才有意义。
 FORM_CAPABILITIES: Final[tuple[tuple[str, str, str, dict[str, Any] | None], ...]] = (
     (
         "Thinking",
-        "思考",
-        "让模型先想再答。任何上游都收，但只有推理型模型真的会想，且会多花 token。"
+        "深度思考",
+        "让模型先想再答。**纯本地开关**，任何上游都收——但只有推理型模型真的会想，"
+        "其余模型收下这个参数也不会改变行为，而且思考过程本身要花 token。"
         "实测在 DeepSeek 直连与 OpenRouter 上都可用。",
         None,
     ),
     (
         "WebSearch",
         "联网搜索",
-        "**由上游去搜**，不占这台机器的网络。这条通道上唯一能交给上游做的能力。"
-        "要两个条件：上游得是 OpenRouter 这一类（厂商直连一律被拒），模型自己也要支持。"
-        "拿不准用下面的「试运行」跑一次，一次就知道。",
-        None,
-    ),
-    (
-        "WebFetch",
-        "网页抓取",
-        "**由星槎自己的进程去抓**，不是上游——网页抓取在这条 API 通道上跟模型无关地"
-        "做不到，只能本地做。于是能抓到的范围就是**这台机器能到的范围**："
-        "国内站点可以，被墙的站点不行。私有网段与云元数据地址一律拒（上游自带守卫）。",
-        {"local": True},
-    ),
-    (
-        "ToolSearch",
-        "工具搜索",
-        "工具很多时让模型先检索再调用。**现在开了等于没开**：星槎还没有注册工具的"
-        "入口（唯一的路是 MCP，未接），没有工具可检索。不报错，但也不做任何事。",
-        None,
-    ),
-    (
-        "ImageGeneration",
-        "图像生成",
-        "**这条通道上做不到。** 勾了必然报错——原生要 OpenAI 的 Responses API"
-        "（星槎有意没走，中转会挂），本地回退要传一个 Python 函数，网页表单表达不了。"
-        "留在这里是为了别让已经勾过的 Agent 静默丢设置。",
+        "**由上游去搜**，不占这台机器的网络——这是这条 API 通道上唯一能交给上游做的"
+        "能力。两个条件：上游要是 OpenRouter 这一类（厂商直连一律被拒），模型自己也"
+        "要支持。拿不准用下面的「试运行」跑一次，一次就知道。",
         None,
     ),
 )
@@ -408,11 +398,24 @@ def capabilities_from_form(raw: Any) -> list[Any]:
     参数不是可选的花活：网页抓取只有带上 ``local=True`` 才可能工作，不带就是一个
     勾了必然报错的开关。
     """
+    #: 扫 ``cap_*`` 前缀，而不是只遍历 FORM_CAPABILITIES。
+    #:
+    #: 差别在于**从表单里拿掉一个能力时会不会静默丢数据**：只遍历当前提供的清单，
+    #: 那么一个早先勾过 ImageGeneration 的 Agent，下次保存就把它悄悄清掉了——而
+    #: 用户什么都没动。扫前缀 + 对着官方全集校验，页面就可以把这类"已不再提供但
+    #: 你确实设过"的能力渲染出来让人自己决定去留。
+    offered = {name: args for name, _, _, args in form_capabilities()}
+    known = set(declarable_capabilities())
     out: list[Any] = []
-    for name, _, _, args in form_capabilities():
-        if raw.get(f"cap_{name}"):
-            out.append({name: dict(args)} if args else name)
-    return out
+    for key in raw:
+        if not key.startswith("cap_") or not raw.get(key):
+            continue
+        name = key[len("cap_") :]
+        if name not in known:
+            continue
+        args = offered.get(name)
+        out.append({name: dict(args)} if args else name)
+    return sorted(out, key=lambda c: next(iter(c)) if isinstance(c, dict) else c)
 
 
 def form_capabilities() -> tuple[tuple[str, str, str, dict[str, Any] | None], ...]:

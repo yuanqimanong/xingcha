@@ -268,9 +268,10 @@
       </summary>
       <div class="card-body">
         <p class="muted small mb4">
-          由 pydantic-ai 的官方能力清单驱动（不是星槎自己发明的开关）。
-          <strong>五个勾看起来等价，实际可用性差很远</strong>，而不支持是在<em>调用那一刻</em>
-          才报的、不在保存那一刻——所以勾完请用下面的「试运行」跑一次再上线。
+          这里只列<strong>这条 API 通道上真的能用的</strong>。官方清单里另外那些
+          （网页抓取、图像生成、原生 MCP）不是"支持的模型少"，而是与模型无关地做不到——
+          <code>OpenAIChatModel</code> 原生只认联网搜索一个工具，其余只存在于 OpenAI 的
+          Responses API 上，而星槎有意没走那条（中转会挂）。
         </p>
         <div class="check-list">
           {% for name, label, hint, _args in capabilities %}
@@ -284,13 +285,27 @@
           </label>
           {% endfor %}
         </div>
+        {% if form.legacy_capabilities %}
+        <div class="notice warn mt4">
+          <strong>这个 Agent 上还留着已经不再提供的能力。</strong>
+          它们在当前通道上不会生效（多半还会让调用直接报错）。
+          <div class="check-list mt2">
+            {% for name in form.legacy_capabilities %}
+            <label class="check">
+              <input type="checkbox" name="cap_{{ name }}" value="1" checked>
+              <span><strong>{{ name }}</strong>
+                <span class="hint">取消勾选并保存即可移除。留着不动也不会被悄悄清掉。</span></span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
         <div class="hint mt4">
-          <strong>MCP</strong> 也在官方清单里，但它需要服务器地址与鉴权，得先有一个配置页——
-          还没做。要用工具的话现在走导出 bundle 手改 <code>agent.yaml</code> 那条路。
+          <strong>网页抓取</strong>去掉了：原生做不到，唯一的路是由星槎自己的进程出网去抓，
+          而那样能不能抓到取决于这台机器能到哪——一个时灵时不灵的能力比没有更糟。
           <br>
-          上游另有 <code>local=</code> 回退（搜索/抓取改由星槎自己的进程做，从而不依赖模型
-          支持）。<strong>没有开放</strong>：那等于给服务端开一个由模型决定目标地址的出网
-          原语，也就是 SSRF——要开得先过 urlguard，那是一次单独的决定。
+          <strong>MCP</strong> 需要服务器地址与鉴权，得先有一个配置页——还没做。要用工具的话
+          现在走导出 bundle 手改 <code>agent.yaml</code> 那条路。
         </div>
       </div>
     </details>

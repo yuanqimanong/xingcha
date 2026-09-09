@@ -336,42 +336,51 @@ class TestSaveWithNewFields:
         assert self._create(logged_in).status_code == 303
         assert "model_settings" not in _spec_of(settings, "params")
 
-    def test_web_fetch_carries_its_local_fallback(
+    def test_only_capabilities_that_work_are_offered(self):
+        """**表单里不放做不到的东西。**
+
+        直接打 ``OpenAIChatModel.prepare_request`` 那道闸测过（三个模型含 gpt-5，
+        结论一致）：``WebFetchTool`` / ``ImageGenerationTool`` / ``MCPServerTool``
+        一律 not supported——与模型无关，它们只在 ``OpenAIResponsesModel`` 那条通道上。
+
+        断言的是"提供的每一个都不需要一个这条通道给不了的原生工具"，而不是硬编码
+        一份名单——上游哪天把某个工具挪进 chat 通道，这条测试不该拦着。
+        """
+        from pydantic_ai.capabilities import CAPABILITY_TYPES
+        from pydantic_ai.capabilities.native_or_local import NativeOrLocalTool
+        from pydantic_ai.models.openai import OpenAIChatModel
+
+        allowed = {t.__name__ for t in OpenAIChatModel.supported_native_tools()}
+        for name, _, _, _ in builder.form_capabilities():
+            if issubclass(CAPABILITY_TYPES[name], NativeOrLocalTool):
+                assert f"{name}Tool" in allowed, (
+                    f"{name} 需要一个 chat 通道给不了的原生工具，不该出现在表单里"
+                )
+
+    def test_a_capability_no_longer_offered_is_not_silently_dropped(
         self, logged_in: TestClient, settings: Settings
     ):
-        """**网页抓取不带 local 就是一个必然报错的开关。**
+        """**从表单拿掉一个能力，不能顺手把别人已经设过的清掉。**
 
-        实测 pydantic-ai 2.35.3：``OpenAIChatModel.supported_native_tools()`` 只有
-        ``{WebSearchTool}``——而星槎对所有模型都用这个类（``OpenRouterModel`` 对缺
-        provider 字段的中转响应会硬失败，而走中转正是这个项目的用途）。所以网页抓取
-        跟模型无关地拿不到原生支持，只能由星槎自己的进程做，而那需要 ``local=True``。
+        只遍历当前提供的清单去收表单，那么一个早先勾过 ImageGeneration 的 Agent，
+        下次保存就把它悄悄清没了——而用户什么都没动，页面上也看不出来。
         """
         logged_in.get("/admin/agents/new")
-        assert self._create(logged_in, cap_WebFetch="1").status_code == 303
-        caps = _spec_of(settings, "params")["capabilities"]
-        assert caps == [{"name": "WebFetch", "arguments": {"local": True}}], caps
+        assert self._create(logged_in, cap_ImageGeneration="1").status_code == 303
+        # 裸字符串——runnable_capabilities 把 {"name": X} 降回 from_spec 收得下的形状
+        assert _spec_of(settings, "params")["capabilities"] == ["ImageGeneration"]
 
-    def test_a_capability_with_args_is_still_readable_back(self):
-        """带参数的形状也要能反填，否则编辑一次就把参数清掉。"""
-        assert builder.capability_names(
-            [{"name": "WebFetch", "arguments": {"local": True}}]
-        ) == {"WebFetch"}
+        # 编辑页要把它渲染出来（勾着），否则下一次保存就丢了
+        body = logged_in.get("/admin/agents/params").text
+        assert "ImageGeneration" in body
+        one_line = body.replace("\n", " ")
+        assert re.search(r'name="cap_ImageGeneration"[^>]*checked', one_line)
 
-    def test_the_arg_shape_is_one_from_spec_accepts(self):
-        """带参数那一种同样要过"存得下 + 跑得起来"这一关。"""
-        from pydantic_ai import Agent
-        from pydantic_ai.models.test import TestModel
-
-        spec = builder.validate_spec(
-            builder.spec_from_form(
-                name="x",
-                description=None,
-                instructions="i",
-                model="openai/gpt-5",
-                capabilities=[{"WebFetch": {"local": True}}],
-            )
-        )
-        Agent.from_spec(spec, model=TestModel(), custom_capability_types=())
+    def test_an_unknown_capability_name_is_ignored(self):
+        """表单键是外部输入。对着官方全集校验，别把任意字符串塞进 spec。"""
+        assert builder.capabilities_from_form({"cap_NotARealThing": "1", "cap_Thinking": "1"}) == [
+            "Thinking"
+        ]
 
     def test_capabilities_land_in_the_spec(self, logged_in: TestClient, settings: Settings):
         logged_in.get("/admin/agents/new")

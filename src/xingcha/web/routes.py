@@ -1746,6 +1746,11 @@ def _settings_view(spec: dict[str, Any]) -> dict[str, Any]:
         "user_template": view["user_template"],
         "examples": view["examples"],
         "output_channel": view["output_channel"],
+        # 已保存、但表单不再提供的能力。渲染出来让人自己决定去留——不渲染的话，
+        # 下一次保存会把它静默清掉，而用户什么都没动。
+        "legacy_capabilities": sorted(
+            view["capabilities"] - {n for n, _, _, _ in builder.form_capabilities()}
+        ),
     }
 
 
@@ -1927,8 +1932,13 @@ async def agent_save(
             settings=settings_raw,
             has_settings=bool(filled),
             settings_count=len(filled),
-            capabilities=set(caps),
-            instrumented=builder.CAPABILITY_INSTRUMENTATION in caps,
+            capabilities=builder.capability_names(caps),
+            legacy_capabilities=sorted(
+                builder.capability_names(caps)
+                - {n for n, _, _, _ in builder.form_capabilities()}
+                - {builder.CAPABILITY_INSTRUMENTATION}
+            ),
+            instrumented=builder.CAPABILITY_INSTRUMENTATION in builder.capability_names(caps),
             user_template=str(raw.get("user_template") or ""),
             output_channel=str(raw.get("output_channel") or "tool"),
             # 回填用户填的原文，而不是 validate_prompting 清洗过的版本：报错时把人
