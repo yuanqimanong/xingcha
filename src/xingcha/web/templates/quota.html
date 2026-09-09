@@ -71,36 +71,38 @@
 </div>
 
 <div class="card mb5">
-  <div class="card-head"><h2>三层主体是什么关系</h2></div>
-  <div class="card-body flush">
-    <div class="table-wrap">
-      <table class="mini">
-        <thead><tr><th>层</th><th>限的是</th><th>用它来</th></tr></thead>
-        <tbody>
-          <tr>
-            <td><strong>账号</strong></td>
-            <td>这台星槎的全部用量</td>
-            <td>总闸。星槎是单管理员的，没有多用户体系，所以这一层实际就是「全站合计」。</td>
-          </tr>
-          <tr>
-            <td><strong>密钥</strong></td>
-            <td>某一把 <code>sk-xc-</code> 的用量</td>
-            <td>按调用方分账：一个业务一把 key，哪个业务跑飞只停哪个。</td>
-          </tr>
-          <tr>
-            <td><strong>Agent</strong></td>
-            <td>某个 Agent 的用量，不分是谁调的</td>
-            <td>给贵的 Agent 单独封顶——结构化 Agent 最坏会调 <strong>1+重试次数</strong> 次模型。</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="card-body">
-      <div class="hint">
-        三层<strong>同时</strong>检查，不是三选一。一次经过 Agent 的调用会同时记进
-        「账号」「那把密钥」「那个 Agent」三个计数器，任意一条超了就拒。
-        所以常见的配法是：账号设一个大的兜底，再给具体密钥或 Agent 设小的。
+  <div class="card-head">
+    <h2>三层主体是什么关系</h2>
+    <span class="small muted">三层同时检查，不是三选一</span>
+  </div>
+  <div class="card-body">
+    {# 三个并列的定义，不是一张表。
+       用 table.mini 排过一版：那是个键值表（width:auto、没有表头样式、首列灰），
+       塞三列带 <thead> 的内容进去，列宽会各自缩到内容宽度、表头和正文长得一样，
+       读起来像一段被切碎的话。并列的定义就该并列摆。 #}
+    <div class="tiers">
+      <div class="tier-def">
+        <div class="tier-name">账号</div>
+        <div class="tier-what">这台星槎的全部用量</div>
+        <p>总闸。星槎是单管理员的，<strong>没有多用户体系</strong>，所以这一层实际就是
+          「全站合计」——包括直通裸模型的调用。</p>
       </div>
+      <div class="tier-def">
+        <div class="tier-name">密钥</div>
+        <div class="tier-what">某一把 <code>sk-xc-</code> 的用量</div>
+        <p>按调用方分账。一个业务一把 key，哪个业务跑飞就只停哪个，别的照常。</p>
+      </div>
+      <div class="tier-def">
+        <div class="tier-name">Agent</div>
+        <div class="tier-what">某个 Agent 的用量，不分是谁调的</div>
+        <p>给贵的 Agent 单独封顶——结构化 Agent 最坏会调
+          <strong>1+重试次数</strong> 次模型，一次跑飞就是几倍的钱。</p>
+      </div>
+    </div>
+    <div class="hint mt4">
+      一次经过 Agent 的调用会<strong>同时</strong>记进「账号」「那把密钥」「那个 Agent」
+      三个计数器，任意一条超了就拒。所以常见配法是：账号设一个大的兜底，再给具体的
+      密钥或 Agent 设小的。
     </div>
   </div>
 </div>

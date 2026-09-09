@@ -25,6 +25,8 @@ SECRET_KEYS: frozenset[str] = frozenset(
         # **必须在这里。** 这一项是个 JSON 数组，里面装着每家供应商的 api_key ——
         # 漏了它就是把一串明文 key 写进 SQLite，而页面上一切正常。
         C.SETTING_KEY_UPSTREAM_PROVIDERS,
+        # 同理：这个 JSON 数组里装着每个上报目标的 secret key。
+        C.SETTING_KEY_TRACE_TARGETS,
     }
 )
 
@@ -43,6 +45,9 @@ KNOWN_KEYS: frozenset[str] = frozenset(
         C.SETTING_KEY_TRACE_PUBLIC_KEY,
         C.SETTING_KEY_TRACE_SECRET_KEY,
         C.SETTING_KEY_TRACE_ENABLED,
+        # 上报目标列表。**是密文**：里面每条的 secret key 都在这个 JSON 里。
+        C.SETTING_KEY_TRACE_TARGETS,
+        C.SETTING_KEY_TRACE_ACTIVE,
     }
 )
 

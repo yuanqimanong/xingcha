@@ -87,106 +87,96 @@
 
 <div class="split">
 
-  {# ------------------------------------------------------------ 当前配置 #}
+  {# ---------------------------------------------------------- 已保存的配置 #}
   <div class="card">
     <div class="card-head">
-      <h2>当前上报目标</h2>
-      {% if not trace_configured %}<span class="badge">未配置</span>
-      {% elif trace_on %}<span class="badge ok">上报中</span>
-      {% else %}<span class="badge warn">已停用</span>{% endif %}
+      <h2>Langfuse 配置</h2>
+      {% if trace_on %}<span class="badge ok">上报中</span>{% endif %}
     </div>
     <div class="card-body">
-      {% if not trace_configured %}
+      {% if not trace_targets %}
       <div class="empty">
         <div class="empty-title">还没有配置上报地址</div>
-        <div class="small">右边填一个 OTLP traces 入口。不配就是不上报——这是默认状态。</div>
+        <div class="small">右边加一个 OTLP traces 入口。不配就是不上报——这是默认状态。</div>
       </div>
       {% else %}
-      <table class="mini">
-        <tr>
-          <td>地址</td>
-          <td class="mono" style="word-break:break-all">{{ trace_saved_endpoint }}</td>
-        </tr>
-        <tr>
-          <td>Public key</td>
-          <td class="mono">{{ trace_public_masked or '—（后端不校验身份）' }}</td>
-        </tr>
-        <tr>
-          <td>Secret key</td>
-          <td class="mono">{% if trace_has_secret %}已保存（加密，不回显）{% else %}—{% endif %}</td>
-        </tr>
-        <tr>
-          <td>服务名</td>
-          <td class="mono">{{ trace_service_name }}</td>
-        </tr>
-        <tr>
-          <td>消息内容</td>
-          <td>
-            {% if trace_include_content %}
-            <span class="danger-text">随行上报</span>
-            <span class="dim small">提示词与模型输出会离开这台机器</span>
-            {% else %}
-            不随行 <span class="dim small">只有耗时与 token</span>
-            {% endif %}
-          </td>
-        </tr>
-      </table>
-
-      <div class="row mt4">
-        <form method="post" action="/admin/settings/trace/toggle">
-          <input type="hidden" name="csrf_token" value="{{ csrf }}">
-          {% if trace_on %}
-          <button class="btn" type="submit">停用上报</button>
-          {% else %}
-          <button class="btn primary" type="submit">开启上报</button>
-          {% endif %}
-        </form>
-        <span class="hint">
-          {% if trace_on %}停用后配置留着，随时能开回来。{% else %}地址与凭据都还在，点一下就恢复。{% endif %}
-        </span>
+      <div class="hint mb4">
+        <strong>同一时刻只有一条在上报。</strong>点另一条的「启用」就切过去，
+        原来那条自动变停用——追踪管道只有一条，装配的是一个 exporter，
+        给"两个都开"编一套界面而底下只发一份，是在页面上说谎。
       </div>
+
+      {% for t in trace_targets %}
+      <div class="target {% if t.active %}on{% endif %}">
+        <div class="target-head">
+          <span class="target-name">{{ t.name }}</span>
+          {% if t.active %}<span class="badge ok">启用</span>
+          {% else %}<span class="badge">停用</span>{% endif %}
+        </div>
+        <table class="mini">
+          <tr><td>地址</td><td class="mono">{{ t.endpoint }}</td></tr>
+          <tr><td>Public key</td><td class="mono">{{ t.public_key or '—（后端不校验身份）' }}</td></tr>
+          <tr><td>Secret key</td><td class="mono">{% if t.has_secret %}已保存（加密，不回显）{% else %}—{% endif %}</td></tr>
+        </table>
+        <div class="row mt2">
+          {% if t.active %}
+          <form method="post" action="/admin/settings/trace/activate">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="name" value="">
+            <button class="btn sm" type="submit">停用</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/settings/trace/activate">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="name" value="{{ t.name }}">
+            <button class="btn sm primary" type="submit">启用</button>
+          </form>
+          {% endif %}
+          <span class="grow"></span>
+          <form method="post" action="/admin/settings/trace/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="name" value="{{ t.name }}">
+            <button class="btn danger sm" type="button"
+                    data-open-dialog="#del-{{ loop.index }}">删除</button>
+            <dialog id="del-{{ loop.index }}" class="modal">
+              <div class="card">
+                <div class="card-head"><h2>删除「{{ t.name }}」</h2></div>
+                <div class="card-body">
+                  <p class="muted small mb4">
+                    地址与两把 key 一起删掉，<strong>不可撤销</strong>。
+                    只是暂时不想上报的话，关掉窗口用「停用」。
+                  </p>
+                  <div class="field">
+                    <label for="delpw-{{ loop.index }}">当前密码</label>
+                    <input id="delpw-{{ loop.index }}" name="password" type="password"
+                           autocomplete="current-password" required>
+                  </div>
+                  <div class="row mt4">
+                    <button class="btn danger" type="submit">确认删除</button>
+                    <a class="btn" href="#" data-close-dialog>取消</a>
+                  </div>
+                </div>
+              </div>
+            </dialog>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
 
       <div class="hint mt4">
         <strong>这是总闸，具体上报哪些 Agent 还要各自勾选。</strong>
         到 Agent 编辑页的「可观测」分区逐个开——哪些 Agent 的对话内容可以离开这台
         机器，通常不是一个全局答案。
       </div>
-
-      <form method="post" action="/admin/settings/trace/clear" class="mt4">
-        <input type="hidden" name="csrf_token" value="{{ csrf }}">
-        <button class="btn danger sm" type="button" data-open-dialog="#trace-clear-dialog">
-          清除配置
-        </button>
-        <span class="hint">连两把 key 一起删掉。只是想暂停的话用上面的停用。</span>
-        <dialog id="trace-clear-dialog" class="modal">
-          <div class="card">
-            <div class="card-head"><h2>清除上报配置</h2></div>
-            <div class="card-body">
-              <p class="muted small mb4">
-                地址与两把 key 会被删除，<strong>不可撤销</strong>。
-                只是想暂时不上报的话，关掉窗口用「停用上报」。
-              </p>
-              <div class="field">
-                <label for="clear_password">当前密码</label>
-                <input id="clear_password" name="password" type="password"
-                       autocomplete="current-password" required>
-              </div>
-              <div class="row mt4">
-                <button class="btn danger" type="submit">确认清除</button>
-                <a class="btn" href="#" data-close-dialog>取消</a>
-              </div>
-            </div>
-          </div>
-        </dialog>
-      </form>
       {% endif %}
     </div>
   </div>
 
-  {# ------------------------------------------------------------ 配置表单 #}
+  {# ---------------------------------------------------------------- 新增 #}
   <div class="card">
     <div class="card-head">
-      <h2>{{ '换一个上报目标' if trace_configured else '配置上报目标' }}</h2>
+      <h2>配置上报目标</h2>
+      <span class="small muted">同名即覆盖</span>
     </div>
     <div class="card-body">
       {% if trace_include_content %}
@@ -197,35 +187,42 @@
       {% endif %}
       <form method="post" action="/admin/settings/trace">
         <input type="hidden" name="csrf_token" value="{{ csrf }}">
-        <div class="field">
-          <label for="trace_endpoint">OTLP traces 地址</label>
-          <input id="trace_endpoint" name="endpoint" type="text" class="mono" value="{{ trace_endpoint }}"
-                 placeholder="http://192.168.1.10:3000/api/public/otel/v1/traces">
-          <div class="hint">
-            要填 <strong>OTLP/HTTP 的 traces 入口</strong>，不是后端的网页地址。
-            保存一个地址就等于开启上报。
+        <div class="form-row">
+          <div class="field" style="flex:0 1 160px">
+            <label for="trace_name">名称</label>
+            <input id="trace_name" name="name" type="text" maxlength="40" required
+                   value="{{ trace_form.name if trace_form else '' }}" placeholder="自建 / 云上">
+          </div>
+          <div class="field" style="flex:1 1 260px">
+            <label for="trace_endpoint">OTLP traces 地址</label>
+            <input id="trace_endpoint" name="endpoint" type="text" class="mono" required
+                   value="{{ trace_form.endpoint if trace_form else '' }}"
+                   placeholder="http://192.168.1.10:3000/api/public/otel/v1/traces">
           </div>
         </div>
-        <div class="form-row">
+        <div class="hint">
+          要填 <strong>OTLP/HTTP 的 traces 入口</strong>，不是后端的网页地址。
+          第一条保存后自动启用；之后加的不会自动切走正在用的那条。
+        </div>
+        <div class="form-row mt4">
           <div class="field">
             <label for="trace_public_key">Langfuse public key</label>
             <input id="trace_public_key" name="public_key" type="text" class="mono" autocomplete="off"
-                   value="{{ trace_public_key }}" placeholder="pk-lf-...">
+                   value="{{ trace_form.public_key if trace_form else '' }}" placeholder="pk-lf-...">
           </div>
           <div class="field">
             <label for="trace_secret_key">Langfuse secret key</label>
-            <input id="trace_secret_key" name="secret_key" type="password" class="mono" autocomplete="off"
-                   placeholder="{% if trace_has_secret %}留空=不修改{% else %}sk-lf-...{% endif %}">
+            <input id="trace_secret_key" name="secret_key" type="password" class="mono"
+                   autocomplete="off" placeholder="sk-lf-...">
           </div>
         </div>
         <div class="hint">
           <strong>只有 Langfuse 需要这两把 key</strong>（它用 Basic 认证）；
-          OTel Collector / Jaeger 这类不校验身份的后端留空。
-          secret key 加密存在本机数据库里，页面上不回显。
+          OTel Collector / Jaeger 这类不校验身份的后端留空。secret key 加密存在本机
+          数据库里，页面上不回显；<strong>覆盖同名条目时留空 = 沿用原来那把</strong>。
         </div>
         <div class="row mt4">
           <button class="btn primary" type="button" data-open-dialog="#trace-pw-dialog">保存</button>
-          <span class="hint">留空地址并保存 = 清除配置。</span>
         </div>
 
         {# 密码放弹窗里，与上游页一致：表单版面上只留"要配什么"，身份确认是提交那一刻

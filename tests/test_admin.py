@@ -556,7 +556,7 @@ class TestTraceMutation:
         client.get("/admin/settings")
         return client.post(
             "/admin/settings/trace",
-            data={"csrf_token": csrf_of(client), **data},
+            data={"csrf_token": csrf_of(client), "name": "默认", **data},
             follow_redirects=False,
         )
 
@@ -649,129 +649,143 @@ class TestTraceMutation:
         state = logged_in.app.state.xc  # type: ignore[attr-defined]
         assert state.tracing is not None, "不填 key 就开不起来，而页面说可以"
 
-    def _read(self, logged_in: TestClient, *keys):
+    def _targets(self, logged_in: TestClient):
         import asyncio
 
-        from xingcha.services import setting as setting_svc
+        from xingcha.services import trace_targets
 
         state = logged_in.app.state.xc  # type: ignore[attr-defined]
 
         async def read():
             async with state.sessionmaker() as s:
-                return [await setting_svc.get(s, state.keyring, k) for k in keys]
+                return (
+                    await trace_targets.list_all(s, state.keyring),
+                    await trace_targets.active_name(s, state.keyring),
+                )
 
         return asyncio.run(read())
 
-    def _toggle(self, client: TestClient):
+    def _activate(self, client: TestClient, name: str):
         client.get("/admin/settings")
         return client.post(
-            "/admin/settings/trace/toggle",
-            data={"csrf_token": csrf_of(client)},
+            "/admin/settings/trace/activate",
+            data={"csrf_token": csrf_of(client), "name": name},
             follow_redirects=False,
         )
 
-    def test_toggle_stops_reporting_without_losing_the_credentials(self, logged_in: TestClient):
+    def test_stopping_keeps_the_credentials(self, logged_in: TestClient):
         """**停用不该丢配置。**
 
         原先只有一个状态：地址非空即开启，清空即关闭——而清空会把两把 key 一起
         删掉。于是"先停一下上报"的代价是下次要把 Langfuse 凭据重新找出来贴一遍，
         人自然就不停了。不好停的开关等于一个默认开着的开关。
         """
-        from xingcha import contract as C
-
         self.test_valid_config_turns_tracing_on(logged_in)
         state = logged_in.app.state.xc  # type: ignore[attr-defined]
 
-        assert self._toggle(logged_in).status_code == 303
+        assert self._activate(logged_in, "").status_code == 303
         assert state.tracing is None, "停用了却还在上报"
 
-        endpoint, pk, sk = self._read(
-            logged_in,
-            C.SETTING_KEY_TRACE_ENDPOINT,
-            C.SETTING_KEY_TRACE_PUBLIC_KEY,
-            C.SETTING_KEY_TRACE_SECRET_KEY,
-        )
-        assert endpoint and pk and sk, "停用把配置也删了"
+        targets, active = self._targets(logged_in)
+        assert active is None
+        assert [(t.endpoint, t.public_key, bool(t.secret_key)) for t in targets] == [
+            ("http://10.0.0.5:3000/api/public/otel/v1/traces", "pk-lf-1", True)
+        ], "停用把配置也删了"
 
         body = logged_in.get("/admin/settings").text
-        assert "已停用" in body, "页面看不出是自己关的还是没配过"
+        assert "停用" in body, "页面看不出是自己关的还是没配过"
 
-        assert self._toggle(logged_in).status_code == 303
+        assert self._activate(logged_in, "默认").status_code == 303
         assert state.tracing is not None, "开不回来"
 
-    def test_toggle_survives_a_restart(self, logged_in: TestClient):
+    def test_the_switch_lives_in_the_database(self, logged_in: TestClient):
         """开关存在库里，不是进程内的一个 flag。
 
         只存内存的话，重启之后上报会**自己恢复**——而人以为自己关掉了。
         """
-        from xingcha import contract as C
-
         self.test_valid_config_turns_tracing_on(logged_in)
-        self._toggle(logged_in)
-        assert self._read(logged_in, C.SETTING_KEY_TRACE_ENABLED) == ["0"]
+        self._activate(logged_in, "")
+        assert self._targets(logged_in)[1] is None
 
-    def test_toggle_needs_no_endpoint_to_fail_gracefully(self, logged_in: TestClient):
-        r = self._toggle(logged_in)
+    def test_activating_an_unknown_name_says_so(self, logged_in: TestClient):
+        r = self._activate(logged_in, "不存在的")
         assert r.status_code == 200
-        assert "还没有配置上报地址" in r.text
+        assert "没有名为" in r.text
 
-    def test_clear_wipes_everything_but_needs_the_password(self, logged_in: TestClient):
-        from xingcha import contract as C
+    def test_a_second_target_does_not_steal_the_active_one(self, logged_in: TestClient):
+        """加第二条**不**自动切走正在用的那条。
 
+        自动切的话，"我只是先把云上那份存起来备用"会静默改变所有 Agent 的上报去向。
+        """
         self.test_valid_config_turns_tracing_on(logged_in)
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            name="云上",
+            endpoint="https://cloud.langfuse.com/api/public/otel/v1/traces",
+        )
+        assert r.status_code == 303
+        targets, active = self._targets(logged_in)
+        assert {t.name for t in targets} == {"默认", "云上"}
+        assert active == "默认", "加一条就把生效的切走了"
+
+    def test_only_one_reports_at_a_time(self, logged_in: TestClient):
+        """切换是**互斥**的：管道只有一条，装配的是一个 exporter。"""
+        self.test_a_second_target_does_not_steal_the_active_one(logged_in)
+        assert self._activate(logged_in, "云上").status_code == 303
+        assert self._targets(logged_in)[1] == "云上"
+
+    def test_overwriting_by_name_keeps_the_secret_when_left_blank(self, logged_in: TestClient):
+        """secret key 页面上从不回显，所以留空必须是"沿用"，不能是"清空"。
+
+        当成清空的话，"只想改一下地址"会把凭据静默抹掉，而表单上看不出任何异常。
+        """
+        self.test_valid_config_turns_tracing_on(logged_in)
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            endpoint="http://10.0.0.6:3000/api/public/otel/v1/traces",
+            public_key="pk-lf-1",
+        )
+        assert r.status_code == 303
+        targets, _ = self._targets(logged_in)
+        assert targets[0].endpoint.endswith("10.0.0.6:3000/api/public/otel/v1/traces")
+        assert targets[0].secret_key == "sk-lf-2", "改地址把 secret key 抹掉了"
+
+    def test_delete_wipes_the_keys_but_needs_the_password(self, logged_in: TestClient):
+        self.test_valid_config_turns_tracing_on(logged_in)
+
         logged_in.get("/admin/settings")
         r = logged_in.post(
-            "/admin/settings/trace/clear",
-            data={"csrf_token": csrf_of(logged_in), "password": "wrong-one"},
+            "/admin/settings/trace/delete",
+            data={"csrf_token": csrf_of(logged_in), "name": "默认", "password": "wrong-one"},
             follow_redirects=False,
         )
         assert r.status_code == 200
-        assert self._read(logged_in, C.SETTING_KEY_TRACE_ENDPOINT) != [None]
+        assert self._targets(logged_in)[0], "密码错却把配置删了"
 
         logged_in.get("/admin/settings")
         r = logged_in.post(
-            "/admin/settings/trace/clear",
-            data={"csrf_token": csrf_of(logged_in), "password": PASSWORD},
+            "/admin/settings/trace/delete",
+            data={"csrf_token": csrf_of(logged_in), "name": "默认", "password": PASSWORD},
             follow_redirects=False,
         )
         assert r.status_code == 303
-        assert self._read(
-            logged_in,
-            C.SETTING_KEY_TRACE_ENDPOINT,
-            C.SETTING_KEY_TRACE_PUBLIC_KEY,
-            C.SETTING_KEY_TRACE_SECRET_KEY,
-        ) == [None, None, None]
+        assert self._targets(logged_in) == ([], None)
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+        assert state.tracing is None, "删掉生效那条却还在上报"
 
-    def test_clearing_the_endpoint_also_wipes_the_credentials(self, logged_in: TestClient):
-        """关掉 trace 时凭据一起清掉。
+    def test_an_empty_endpoint_is_refused_not_treated_as_delete(self, logged_in: TestClient):
+        """留空地址曾经等于"关掉并删凭据"。
 
-        留着一份用不上的 secret key 只是多一处泄漏面——而"我以为已经关了"恰恰是
-        这种残留最容易发生的场景。
+        一个表单同时是"保存"和"销毁"，取决于某个字段空不空——那是一步之遥的
+        误操作。销毁现在有自己的按钮和自己的密码门。
         """
         self.test_valid_config_turns_tracing_on(logged_in)
         r = self._post(logged_in, password=PASSWORD, endpoint="")
-        assert r.status_code == 303
-
-        state = logged_in.app.state.xc  # type: ignore[attr-defined]
-        assert state.tracing is None
-
-        import asyncio
-
-        from xingcha import contract as C
-        from xingcha.services import setting as setting_svc
-
-        async def read():
-            async with state.sessionmaker() as s:
-                return [
-                    await setting_svc.get(s, state.keyring, k)
-                    for k in (
-                        C.SETTING_KEY_TRACE_ENDPOINT,
-                        C.SETTING_KEY_TRACE_PUBLIC_KEY,
-                        C.SETTING_KEY_TRACE_SECRET_KEY,
-                    )
-                ]
-
-        assert asyncio.run(read()) == [None, None, None]
+        assert r.status_code == 200
+        assert "不能为空" in r.text
+        assert self._targets(logged_in)[0], "留空地址把配置删了"
 
 
 class TestPasswordFormErrors:

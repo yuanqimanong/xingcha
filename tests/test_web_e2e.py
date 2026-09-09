@@ -731,7 +731,7 @@ class TestSettings:
         login(page, site)
         page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
         body = page.inner_text("body")
-        assert "未配置" in body
+        assert "还没有配置上报地址" in body
         assert "会被发送到" in body, "没有提示打开之后提示词与模型输出会外发"
 
     def test_trace_secret_is_never_echoed(self, site: LiveSite, page):
@@ -742,6 +742,7 @@ class TestSettings:
         """
         login(page, site)
         page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
+        page.fill("#trace_name", "自建")
         page.fill("#trace_endpoint", "http://10.0.0.9:3000/api/public/otel/v1/traces")
         page.fill("#trace_public_key", "pk-lf-e2e")
         page.fill("#trace_secret_key", "sk-lf-e2e-secret")
@@ -754,6 +755,12 @@ class TestSettings:
         page.wait_for_load_state("networkidle")
         assert "上报中" in page.inner_text("body")
         assert "sk-lf-e2e-secret" not in page.content(), "trace 的 secret key 被回显了"
+
+        # 表单是新增用的，存完必须回到全空——否则它同时是"新增"和"编辑"，
+        # 而页面上分不出你正在改哪一条，想加第二条得先手动清空。
+        assert page.input_value("#trace_name") == ""
+        assert page.input_value("#trace_endpoint") == ""
+        assert page.input_value("#trace_public_key") == ""
 
 
 # =============================================================================

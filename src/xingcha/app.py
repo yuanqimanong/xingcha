@@ -160,29 +160,34 @@ async def load_tracing(state: AppState) -> None:
     机器，而这个项目存在的理由恰恰是不想让请求经过别人手里，所以它必须是一次显式
     的决定，不能是升级的副作用。
 
-    地址与开关是**两件事**：``trace.enabled`` 为假时不装配，但地址与凭据留在库里。
-    没有这一项的话，"先停一下"就得清空地址、连带删掉两把 key，下次再开要把
-    Langfuse 凭据重新找出来——而不好停的开关等于一个默认开着的开关。
+    配置是**一张列表**，生效的是 ``trace.active`` 指名的那一条；没有指名（或指向
+    一个已删掉的名字）就是全部停用。停用不丢配置——没有这一层的话，"先停一下"
+    就得清空地址、连带删掉两把 key，下次再开要把 Langfuse 凭据重新找出来，而不
+    好停的开关等于一个默认开着的开关。
+
+    同一时刻只有一个生效不是产品取舍：管道只有一条，装配的是一个 exporter。
     """
     assert state.keyring is not None
-    async with state.sessionmaker() as session:
-        get = setting_svc.get
-        endpoint = await get(session, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
-        public_key = await get(session, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
-        secret_key = await get(session, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
-        enabled = await get(session, state.keyring, C.SETTING_KEY_TRACE_ENABLED)
+    from .services import trace_targets
 
-    # 缺这一项按**开**算：老库里配过地址的实例升级上来，不该因为多了一个开关
-    # 就静默停掉上报。显式写过 "0" 才算关。
-    if not endpoint or enabled == "0":
+    async with state.sessionmaker() as session:
+        # 旧的单份配置搬成列表里的一条。一次性，做完删旧键——两处各有一份真相时，
+        # "我明明改了地址，发出去的还是旧的"最难查。
+        if await trace_targets.import_legacy_once(session, state.keyring):
+            await session.commit()
+        target = await trace_targets.active(session, state.keyring)
+
+    if target is None:
         builder.enable_instrumentation(None)
         return
 
     headers = (
-        tracing_mod.langfuse_headers(public_key, secret_key) if public_key and secret_key else None
+        tracing_mod.langfuse_headers(target.public_key, target.secret_key)
+        if target.public_key and target.secret_key
+        else None
     )
     state.tracing = tracing_mod.setup(
-        endpoint=endpoint,
+        endpoint=target.endpoint,
         headers=headers,
         service_name=state.settings.trace_service_name,
         include_content=state.settings.trace_include_content,

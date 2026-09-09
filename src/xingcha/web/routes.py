@@ -35,6 +35,7 @@ from ..core.urlguard import UnsafeUpstreamURL, check_upstream_url
 from ..db.models import Run, RunUsage
 from ..services import auth as auth_svc
 from ..services import setting as setting_svc
+from ..services import trace_targets
 from ..services import websession as ws
 
 log = logging.getLogger(__name__)
@@ -747,10 +748,8 @@ async def _settings_ctx(
     async with state.sessionmaker() as s:
         raw_key = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
         base_url = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_BASE_URL)
-        trace_endpoint = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
-        trace_pk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY)
-        trace_sk = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY)
-        trace_enabled_raw = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENABLED)
+        targets = await trace_targets.list_all(s, state.keyring)
+        active = await trace_targets.active_name(s, state.keyring)
         has_db_password = await ws.has_password(s)
 
     from ..db import migrate
@@ -762,17 +761,22 @@ async def _settings_ctx(
         "catalog_stale": state.catalog.is_stale,
         "data_dir": str(state.settings.data_dir.resolve()),
         "db_revision": migrate.current_revision(state.settings.db_path) or "—",
-        # 回显优先用刚提交的值：失败重渲染时用户不该看到自己刚填的东西被抹掉。
-        # **secret key 例外**——它从不回显，回显就是把它写进 HTML。
-        "trace_endpoint": (trace_form.endpoint if trace_form else None) or trace_endpoint or "",
-        "trace_public_key": (trace_form.public_key if trace_form else None) or trace_pk or "",
-        "trace_has_secret": bool(trace_sk),
-        # 三态，不是两态：**配了但停用**要和**没配**区分开，否则页面上"未开启"
-        # 既可能是没填过、也可能是自己关的，而这两种情况下一步动作完全不同。
-        "trace_configured": bool(trace_endpoint),
-        "trace_enabled": trace_enabled_raw != "0",
-        "trace_saved_endpoint": trace_endpoint or "",
-        "trace_public_masked": setting_svc.mask(trace_pk) if trace_pk else "",
+        # 表单是**新增用的**，所以默认全空，只在提交失败时回填这一次填的内容。
+        #
+        # 曾经把已保存的地址与 public key 灌回表单，于是它同时是"新增"和"编辑"，
+        # 而页面上分不出你正在改哪一条——想加第二条得先手动清空。列表在左边，
+        # 表单就该只管加。
+        "trace_form": trace_form,
+        "trace_targets": [
+            SimpleNamespace(
+                name=t.name,
+                endpoint=t.endpoint,
+                public_key=t.public_key,
+                has_secret=bool(t.secret_key),
+                active=t.name.lower() == (active or "").lower(),
+            )
+            for t in targets
+        ],
         "trace_service_name": state.settings.trace_service_name,
         "trace_on": state.tracing is not None,
         "trace_include_content": state.settings.trace_include_content,
@@ -1039,73 +1043,72 @@ async def change_password(
 
 
 @router.post("/settings/trace")
-async def update_trace(
+async def save_trace_target(
     request: Request,
     password: str = Form(...),
+    name: str = Form(default=""),
     endpoint: str = Form(default=""),
     public_key: str = Form(default=""),
     secret_key: str = Form(default=""),
     csrf_token: str = Form(default=""),
 ) -> Response:
-    """改 trace 配置。
+    """新增或按名字覆盖一个上报目标。
 
-    要密码，理由和上游 key 一样：**打开 trace 意味着提示词与模型输出会被送到一个
+    要密码，理由和上游 key 一样：**上报打开意味着提示词与模型输出会被送到一个
     外部地址**。这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本——
     后果与偷走 key 是同一个量级。
 
-    校验**全部在写库之前**：密码不对或地址被拒时，一个字节都不改，并且就地回显
-    这一页（保留已填的地址与 public key），而不是跳到独立的错误页——那样用户要把
-    地址与两把 key 全部重填一遍，而"密码错"正是这个表单最常见的失败。
+    校验**全部在写库之前**：密码不对或地址被拒时一个字节都不改，并且就地回显这一页
+    （保留已填内容），而不是跳到独立的错误页——那样地址与两把 key 要全部重填一遍，
+    而"密码错"正是这个表单最常见的失败。
 
     endpoint 过 SSRF 守卫：它是一个"服务端会主动去打"的地址，和上游地址同类。
     """
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
     # 回显用：secret key 不在其中——回显它就是把它写进 HTML。
-    form = SimpleNamespace(endpoint=endpoint.strip(), public_key=public_key.strip())
+    form = SimpleNamespace(
+        name=name.strip(), endpoint=endpoint.strip(), public_key=public_key.strip()
+    )
+
+    if not form.name:
+        return await _render_settings(request, trace_error="给这个目标起个名字。", trace_form=form)
+    if not form.endpoint:
+        return await _render_settings(request, trace_error="上报地址不能为空。", trace_form=form)
 
     async with state.sessionmaker() as s:
         admin = await ws.get_admin(s)
-        # 同上：环境变量托管时库里没有哈希，verify_password 会对任何输入返回 False。
+        # 环境变量托管时库里没有哈希，verify_password 会对任何输入返回 False。
         if admin is None or not ws.verify_admin_password(
             admin.password_hash, password, state.settings.admin_password
         ):
             return await _render_settings(
                 request, trace_error="当前密码不正确，未做任何修改。", trace_form=form
             )
-
-        cleaned = endpoint.strip()
-        if cleaned:
-            try:
-                # allow_private：自建 Langfuse 基本就在内网（同一个 docker network
-                # 或者 10.x）。一律拒私有网段会把最主流的自建部署挡死，而挡死之后
-                # 人们会去用托管服务——那正好是更差的隐私结果。
-                # 链路本地（云元数据端点）仍然拒。
-                checked = check_upstream_url(cleaned, allow_private=True)
-            except UnsafeUpstreamURL as e:
-                return await _render_settings(
-                    request, trace_error=f"上报地址被拒绝：{e}", trace_form=form
-                )
-            await setting_svc.set_(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT, checked.url)
-            # 保存一个地址就是"我要上报到这里"。存完还停着的话，这个动作在页面上
-            # 看不出任何效果，人会以为没保存成功而再点一遍。
-            await setting_svc.set_(s, state.keyring, C.SETTING_KEY_TRACE_ENABLED, "1")
-        else:
-            # 清空 endpoint 就是关掉 trace。**凭据一起清掉**——留着一份用不上的
-            # secret key 只是多一处泄漏面。
-            await setting_svc.unset(s, C.SETTING_KEY_TRACE_ENDPOINT)
-            await setting_svc.unset(s, C.SETTING_KEY_TRACE_PUBLIC_KEY)
-            await setting_svc.unset(s, C.SETTING_KEY_TRACE_SECRET_KEY)
-            await setting_svc.unset(s, C.SETTING_KEY_TRACE_ENABLED)
-
-        if cleaned and public_key.strip():
-            await setting_svc.set_(
-                s, state.keyring, C.SETTING_KEY_TRACE_PUBLIC_KEY, public_key.strip()
+        try:
+            # allow_private：自建 Langfuse 基本就在内网（同一个 docker network
+            # 或者 10.x）。一律拒私有网段会把最主流的自建部署挡死，而挡死之后
+            # 人们会去用托管服务——那正好是更差的隐私结果。
+            # 链路本地（云元数据端点）仍然拒。
+            checked = check_upstream_url(form.endpoint, allow_private=True)
+        except UnsafeUpstreamURL as e:
+            return await _render_settings(
+                request, trace_error=f"上报地址被拒绝：{e}", trace_form=form
             )
-        if cleaned and secret_key.strip():
-            await setting_svc.set_(
-                s, state.keyring, C.SETTING_KEY_TRACE_SECRET_KEY, secret_key.strip()
-            )
+
+        first = not await trace_targets.list_all(s, state.keyring)
+        await trace_targets.upsert(
+            s,
+            state.keyring,
+            name=form.name,
+            endpoint=checked.url,
+            public_key=form.public_key,
+            secret_key=secret_key,
+        )
+        # 第一条自动启用：存完还停着的话，这个动作在页面上看不出任何效果。
+        # 之后再加的**不**自动启用——那会把正在用的那条静默切走。
+        if first:
+            await trace_targets.set_active(s, state.keyring, form.name)
         await s.commit()
 
     await _reload_tracing(state)
@@ -1127,39 +1130,41 @@ async def _reload_tracing(state: Any) -> None:
     state.runtimes.clear()
 
 
-@router.post("/settings/trace/toggle")
-async def toggle_trace(request: Request, csrf_token: str = Form(default="")) -> Response:
-    """开/关上报。地址与凭据原样留着。
+@router.post("/settings/trace/activate")
+async def activate_trace(
+    request: Request, name: str = Form(default=""), csrf_token: str = Form(default="")
+) -> Response:
+    """启用某一条，或（``name`` 为空时）全部停用。
 
-    **这一个不要密码，改地址那个要。** 差别不在于哪个更危险听起来更像，而在于
-    攻击面：改地址是"把对话副本送到我指定的地方"，开关只能把它送到**管理员自己
-    早就选定并存下来的**那个地址。真正的门是选目的地那一步，那里守着密码；这里
-    有 CSRF 就够了——而给一个每天要用的开关加密码，结果是没人去关它。
+    **这一个不要密码，改地址那个要。** 差别不在于哪个听起来更危险，而在于攻击面：
+    改地址是"把对话副本送到我指定的地方"，启用只能送到**管理员自己早就选定并存下
+    来的**那个地址。真正的门是选目的地那一步，那里守着密码；这里有 CSRF 就够了
+    ——而给一个每天要用的开关加密码，结果是没人去关它。
     """
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
 
     async with state.sessionmaker() as s:
-        endpoint = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT)
-        if not endpoint:
-            return await _render_settings(request, trace_error="还没有配置上报地址。")
-        now = await setting_svc.get(s, state.keyring, C.SETTING_KEY_TRACE_ENABLED)
-        await setting_svc.set_(
-            s, state.keyring, C.SETTING_KEY_TRACE_ENABLED, "0" if now != "0" else "1"
-        )
+        target = name.strip()
+        if target and await trace_targets.get(s, state.keyring, target) is None:
+            return await _render_settings(request, trace_error=f"没有名为「{target}」的目标。")
+        await trace_targets.set_active(s, state.keyring, target or None)
         await s.commit()
 
     await _reload_tracing(state)
     return security_headers(RedirectResponse("/admin/settings", status_code=303))
 
 
-@router.post("/settings/trace/clear")
-async def clear_trace(
-    request: Request, password: str = Form(...), csrf_token: str = Form(default="")
+@router.post("/settings/trace/delete")
+async def delete_trace_target(
+    request: Request,
+    name: str = Form(...),
+    password: str = Form(...),
+    csrf_token: str = Form(default=""),
 ) -> Response:
-    """删掉地址与两把 key。
+    """删掉一条，连同它的两把 key。
 
-    与"关闭"分开：关闭是可逆的，这个不是。要密码——它删的是加密存着的凭据，
+    与"停用"分开：停用可逆，这个不可逆。要密码——它销毁的是加密存着的凭据，
     而这个后台里凡是能销毁东西的动作都过同一道门。
     """
     await guard_mutation(request, csrf_token)
@@ -1171,13 +1176,7 @@ async def clear_trace(
             admin.password_hash, password, state.settings.admin_password
         ):
             return await _render_settings(request, trace_error="当前密码不正确，未做任何修改。")
-        for key in (
-            C.SETTING_KEY_TRACE_ENDPOINT,
-            C.SETTING_KEY_TRACE_PUBLIC_KEY,
-            C.SETTING_KEY_TRACE_SECRET_KEY,
-            C.SETTING_KEY_TRACE_ENABLED,
-        ):
-            await setting_svc.unset(s, key)
+        await trace_targets.remove(s, state.keyring, name)
         await s.commit()
 
     await _reload_tracing(state)

@@ -901,6 +901,17 @@ SETTING_KEY_TRACE_SECRET_KEY: Final = "trace.secret_key"
 #: 判定是 ``endpoint and enabled``——没配地址时这一项无意义。
 SETTING_KEY_TRACE_ENABLED: Final = "trace.enabled"
 
+#: 上报目标**列表**（加密的 JSON 数组）与当前生效的那一个的名字。
+#:
+#: 上面那四个键是它们的前身：只存得下一份配置，改地址就是覆盖，而实际用法是
+#: "本机自建那个"和"云上那个"来回切——覆盖一次就把另一份的两把 key 弄丢了。
+#: 迁移见 :func:`services.trace_targets.import_legacy_once`，一次性，做完删旧键。
+#:
+#: ``trace.active`` 是**一个名字**，空 = 全部停用。同一时刻只有一个生效不是产品
+#: 取舍：追踪管道只有一条，装配的是一个 exporter。
+SETTING_KEY_TRACE_TARGETS: Final = "trace.targets"
+SETTING_KEY_TRACE_ACTIVE: Final = "trace.active"
+
 #: 官方 OpenRouter 地址。中转时由管理员在设置里改写。
 #:
 #: 注意：``OPENROUTER_BASE_URL`` 这个环境变量**不被 pydantic-ai 读取**（源码里只有
