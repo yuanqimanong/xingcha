@@ -570,3 +570,79 @@ class TestGroups:
             assert c.execute(
                 "SELECT is_active FROM agent WHERE slug = ?", ("pausable",)
             ).fetchone()[0]
+
+
+# =============================================================================
+# 试运行
+# =============================================================================
+
+
+class TestTryRun:
+    """按**表单里此刻的内容**跑一次，不落库。
+
+    测试的对象是没保存的东西——不然"改一句提示词看看效果"就得先保存，而每试一次
+    就多一个不可删的版本。
+    """
+
+    def _run(self, client: TestClient, **extra):
+        client.get("/admin/agents/new")
+        return client.post(
+            "/admin/agents/test",
+            data={
+                "csrf_token": csrf_of(client),
+                "name": "试",
+                "model": "openai/gpt-5",
+                "instructions": "做事。",
+                "tier": "",
+                "retries": "2",
+                "test_input": "你好",
+                **extra,
+            },
+        )
+
+    def test_it_renders_the_real_chain(self, logged_in: TestClient):
+        """渲染的是 ``all_messages()``——上游实际收发的东西。
+
+        照表单重建的"应该发什么"没有价值：两者分叉的那一刻正好是最需要看这个
+        面板的时候。
+        """
+        r = self._run(logged_in)
+        assert r.status_code == 200, r.text[:300]
+        assert "chain-row" in r.text, r.text[:400]
+        assert "系统指令" in r.text
+
+    def test_it_does_not_save_anything(self, logged_in: TestClient, settings: Settings):
+        import sqlite3
+
+        self._run(logged_in, slug="never-saved")
+        with sqlite3.connect(settings.db_path) as c:
+            assert not c.execute("SELECT 1 FROM agent").fetchall(), "试运行把 Agent 存进去了"
+
+    def test_an_empty_input_says_what_to_do(self, logged_in: TestClient):
+        r = self._run(logged_in, test_input="")
+        assert "先填一段测试输入" in r.text
+
+    def test_a_bad_template_is_reported_not_crashed(self, logged_in: TestClient):
+        r = self._run(logged_in, user_template="没有占位符")
+        assert r.status_code == 200
+        assert builder.PROMPT_PLACEHOLDER in r.text
+
+    def test_the_template_and_examples_reach_the_model(
+        self, logged_in: TestClient, upstream: FakeUpstream
+    ):
+        """判据是**上游收到了什么**，不是星槎内部结构长什么样。"""
+        upstream.reset()
+        r = self._run(
+            logged_in,
+            user_template="请判断情绪：{{input}}",
+            ex_user="糟透了",
+            ex_assistant="负面",
+        )
+        assert r.status_code == 200, r.text[:300]
+        sent = json.loads(upstream.last().body)["messages"]
+        convo = [(m["role"], m["content"]) for m in sent if m["role"] != "system"]
+        assert convo == [
+            ("user", "请判断情绪：糟透了"),
+            ("assistant", "负面"),
+            ("user", "请判断情绪：你好"),
+        ], sent

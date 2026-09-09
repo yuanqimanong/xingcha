@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from pydantic_ai import Agent, AgentSpec, UsageLimits
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from .. import contract as C
@@ -31,6 +32,9 @@ from .guarantee import GuaranteeCounters, attach_validator, limits_for, output_s
 from .upstream import UpstreamConfig, attribution_headers
 
 log = logging.getLogger(__name__)
+
+#: 两种 provider 的公共类型。用哪一种由 base_url 决定，见 :func:`make_provider`。
+Provider = OpenRouterProvider | OpenAIProvider
 
 
 # =============================================================================
@@ -118,10 +122,38 @@ def capability_params_schema() -> dict[str, Any]:
 # =============================================================================
 
 
+def is_openrouter(base_url: str) -> bool:
+    """这个上游是不是 OpenRouter 本体。
+
+    按**主机名**判断，不看路径：中转会把路径改成各种样子，但域名不会假装是
+    openrouter.ai。判错的代价是不对称的——见 :func:`make_provider`。
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
 def make_provider(
     cfg: UpstreamConfig, *, timeout: float, cost_sink: CostSink | None = None
-) -> OpenRouterProvider:
+) -> Provider:
     """构造 provider。
+
+    **不是 OpenRouter 就不能用 ``OpenRouterProvider``。**
+
+    它的 ``model_profile()`` 在模型名里没有 ``/`` 时**直接抛 UserError**
+    （"model names must be prefixed with the upstream provider"）。而厂商直连
+    与大多数中转的模型 id 恰恰是裸的（``deepseek-v4-flash``）——于是：
+
+    * ``GET /v1/models`` 正常（那只是一次 HTTP 拉取），
+    * 直通正常（原样转发），
+    * **只有 Agent 挂**，而且是一个 500 "服务内部错误"。
+
+    也就是说，产品的核心卖点在任何非 OpenRouter 上游上都不可用，而三条路径里
+    唯一坏掉的那条报的是一句看不出原因的话。实测踩到。
+
+    反过来判错是安全的：``OpenAIProvider`` 只是少了几条按厂商前缀挑 profile 的
+    提示，不会硬失败。所以这里按域名严格识别 OpenRouter，其余一律走通用的那个。
 
     走自建 ``AsyncOpenAI`` 而不是让 provider 自己建，因为 ``OpenRouterProvider``
     **不接受 base_url**（实测：签名里没有，也没有任何别名），而大陆中转恰恰必须改它。
@@ -159,7 +191,9 @@ def make_provider(
         http_client=http,
         default_headers=attribution_headers(cfg) or None,
     )
-    return OpenRouterProvider(openai_client=client)
+    if is_openrouter(cfg.base_url):
+        return OpenRouterProvider(openai_client=client)
+    return OpenAIProvider(openai_client=client)
 
 
 def enable_instrumentation(tracing: Any) -> None:
@@ -273,7 +307,7 @@ def _strip_prefix(model: str) -> str:
     return model.split(":", 1)[1] if model.startswith("openrouter:") else model
 
 
-def make_model(model_id: str, provider: OpenRouterProvider) -> OpenAIChatModel:
+def make_model(model_id: str, provider: Provider) -> OpenAIChatModel:
     """构造 model。
 
     **用 ``OpenAIChatModel`` 而不是 ``OpenRouterModel``。**
@@ -339,9 +373,13 @@ class Prompting:
     user_template: str = ""
     examples: tuple[Example, ...] = ()
 
+    #: T2 把 schema 递给模型的通道，见 :data:`guarantee.OUTPUT_CHANNELS`。
+    #: 和上面两项一样存在 metadata 里——它也不是 AgentSpec 的字段。
+    output_channel: str = "tool"
+
     @property
     def is_empty(self) -> bool:
-        return not self.user_template and not self.examples
+        return not self.user_template and not self.examples and self.output_channel == "tool"
 
 
 def prompting_from_spec(spec: dict[str, Any]) -> Prompting:
@@ -360,13 +398,17 @@ def prompting_from_spec(spec: dict[str, Any]) -> Prompting:
         for item in pairs:
             if isinstance(item, dict) and item.get("user") and item.get("assistant"):
                 examples.append(Example(str(item["user"]), str(item["assistant"])))
+    channel = raw.get("output_channel")
     return Prompting(
         user_template=template if isinstance(template, str) else "",
         examples=tuple(examples),
+        output_channel=channel if channel in ("tool", "prompt") else "tool",
     )
 
 
-def validate_prompting(user_template: str, examples: list[Example]) -> Prompting:
+def validate_prompting(
+    user_template: str, examples: list[Example], output_channel: str = "tool"
+) -> Prompting:
     """保存前校验。
 
     模板非空却不含占位符是**必须拦下**的：那样调用方发来的内容会被整个丢掉，
@@ -386,6 +428,7 @@ def validate_prompting(user_template: str, examples: list[Example]) -> Prompting
     return Prompting(
         user_template=template,
         examples=tuple(Example(e.user.strip(), e.assistant.strip()) for e in kept),
+        output_channel=output_channel if output_channel in ("tool", "prompt") else "tool",
     )
 
 
@@ -402,6 +445,8 @@ def prompting_to_spec(spec: dict[str, Any], prompting: Prompting) -> None:
         body["user_template"] = prompting.user_template
     if prompting.examples:
         body["examples"] = [{"user": e.user, "assistant": e.assistant} for e in prompting.examples]
+    if prompting.output_channel != "tool":
+        body["output_channel"] = prompting.output_channel
     spec.setdefault("metadata", {})[SPEC_NS] = body
 
 
@@ -468,8 +513,18 @@ def build(
         # 错误会推迟到 from_spec 抛 UserError。在这里显式拦下，报错更靠近原因。
         raise AgentSpecInvalid("Agent 定义里没有 model")
 
+    # **make_model 要在 try 里。**
+    #
+    # 它会抛 UserError（模型名不被 provider 接受之类），而放在 try 外面的话那个
+    # 异常一路冒到最外层，变成一句"服务内部错误，请把 run_id 给管理员"——而这恰恰
+    # 是最需要说清原因的一类失败：它每次都发生，不是偶发。
+    try:
+        model = make_model(model_id, provider)
+    except (UserError, ValueError) as e:
+        raise AgentBuildFailed(f"构造 model {model_id!r} 失败：{type(e).__name__}: {e}") from e
+
     kwargs: dict[str, Any] = {
-        "model": make_model(model_id, provider),
+        "model": model,
         "custom_capability_types": custom_capability_types(),
         "retries": options.max_retries,
     }
@@ -481,7 +536,12 @@ def build(
         # 只把 schema 留在 spec 里 → from_spec 设成不校验的 StructuredDict；
         # 既 pop 掉又不传 → 退化成 str，校验器收到原始 JSON 字符串，
         # 于是连完全合法的输出都会被打到重试耗尽。两种都实测过。
-        kwargs["output_type"] = output_spec(tier, schema, max_retries=options.max_retries)
+        kwargs["output_type"] = output_spec(
+            tier,
+            schema,
+            max_retries=options.max_retries,
+            channel=prompting_from_spec(spec).output_channel,
+        )
 
     try:
         agent = Agent.from_spec(spec, **kwargs)
@@ -628,6 +688,7 @@ def form_view(spec: dict[str, Any]) -> dict[str, Any]:
         "instrumented": CAPABILITY_INSTRUMENTATION in names,
         "user_template": prompting.user_template,
         "examples": list(prompting.examples),
+        "output_channel": prompting.output_channel,
     }
 
 

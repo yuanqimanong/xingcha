@@ -1440,31 +1440,6 @@ textarea {
   color: var(--ink-3);
 }
 
-/* --- 试运行：统计条 --- */
-.test-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s3) var(--s5);
-  padding: var(--s3) var(--s4);
-  margin-bottom: var(--s4);
-  border: 1px solid var(--rule);
-  border-radius: var(--r2);
-  background: var(--surface-2);
-}
-.test-stats > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.test-stats .k {
-  font-size: 11px;
-  color: var(--ink-3);
-}
-.test-stats .v {
-  font-size: 13px;
-  color: var(--ink);
-}
-
 /* --- 试运行：消息链 --- */
 /*
  * 请求靠左、响应缩进并换个底色。左右分栏（聊天气泡那种）在这里是错的：一条消息

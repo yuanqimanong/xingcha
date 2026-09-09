@@ -1493,7 +1493,9 @@ def _prompting_from_form(raw: Any) -> Any:
         for u, a in zip_longest(users, assistants, fillvalue="")
         if (u or a).strip()
     ]
-    return builder.validate_prompting(str(raw.get("user_template") or ""), pairs)
+    return builder.validate_prompting(
+        str(raw.get("user_template") or ""), pairs, str(raw.get("output_channel") or "tool")
+    )
 
 
 def _lint_ctx(schema_text: str, tier: str) -> dict[str, Any]:
@@ -1641,6 +1643,7 @@ async def _form_shell(request: Request) -> dict[str, Any]:
     编辑页没有"，一种很晚才会被发现的不一致。
     """
     from ..core import builder
+    from ..core import guarantee as guarantee_mod
     from ..services import agent as agent_svc
 
     state = request.app.state.xc
@@ -1653,6 +1656,7 @@ async def _form_shell(request: Request) -> dict[str, Any]:
         "native_count": native,
         "tiers": _tier_options(),
         "model_settings": builder.model_settings_fields(),
+        "output_channels": guarantee_mod.OUTPUT_CHANNELS,
         "capabilities": builder.form_capabilities(),
         "groups": groups,
         # 可观测那一栏要知道地址配了没：没配就不该给一个勾了没用的开关
@@ -1681,6 +1685,7 @@ def _settings_view(spec: dict[str, Any]) -> dict[str, Any]:
         "instrumented": view["instrumented"],
         "user_template": view["user_template"],
         "examples": view["examples"],
+        "output_channel": view["output_channel"],
     }
 
 
@@ -1859,6 +1864,7 @@ async def agent_save(
             capabilities=set(caps),
             instrumented=builder.CAPABILITY_INSTRUMENTATION in caps,
             user_template=str(raw.get("user_template") or ""),
+            output_channel=str(raw.get("output_channel") or "tool"),
             # 回填用户填的原文，而不是 validate_prompting 清洗过的版本：报错时把人
             # 填的东西改掉，会让他对着一个自己没写过的表单找错。
             examples=[
@@ -1937,15 +1943,21 @@ def _chain_rows(messages: list[Any]) -> list[Any]:
     那一刻正好是最需要看这个面板的时候，所以重建版没有价值。
     """
     rows: list[Any] = []
+
+    # 系统指令**排在最前**，而且只出现一次。
+    #
+    # 它挂在 ModelRequest 上，而上游只挂在**最后一个**上——照原位渲染的话，它会
+    # 夹在少样本示例中间，读起来像是"演示完两轮之后才告诉模型它是谁"。而实际上
+    # 它对整轮都生效。单拎出来还有一个好处：看得见 Agent 自己的指令与调用方追加
+    # 的那段拼在一起之后长什么样。
+    for msg in messages:
+        text = getattr(msg, "instructions", None)
+        if text:
+            rows.append(SimpleNamespace(role="instructions", label="系统指令", text=text, meta=""))
+            break
+
     for msg in messages:
         is_req = getattr(msg, "kind", "") == "request"
-        # 指令挂在 request 上而不是单独一条消息：单拎出来，才看得见系统提示词
-        # 与调用方追加的那段拼在一起之后长什么样。
-        instructions = getattr(msg, "instructions", None)
-        if is_req and instructions:
-            rows.append(
-                SimpleNamespace(role="instructions", label="系统指令", text=instructions, meta="")
-            )
         for part in getattr(msg, "parts", []):
             kind = getattr(part, "part_kind", "") or type(part).__name__
             text = getattr(part, "content", None)
@@ -2076,7 +2088,7 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             )
         )
 
-    from .runlog_mw import price
+    from ..api.runlog_mw import price
 
     cost, source = price(
         state.catalog,

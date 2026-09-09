@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from pydantic_ai import Agent
@@ -299,3 +299,80 @@ def test_from_spec_accepts_output_type():
     # 显式传的必须**覆盖** spec 里的 output_schema
     assert agent.output_type is not str
     assert type(agent.output_type).__name__ == "ToolOutput"
+
+
+# =============================================================================
+# T2 的两条通道
+# =============================================================================
+
+
+class TestOutputChannel:
+    """**通道不改变 T2 的保证。**
+
+    T2 的定义是"校验后重试"，不是"走 tools"。通道只决定 schema 怎么送到模型那边。
+
+    这个选项存在的理由是实测出来的：DeepSeek 的思考模式不接受 ``tool_choice``
+    （上游原话 "Thinking mode does not support this tool_choice"），于是 T2 在它上面
+    **每次**都 400。在此之前唯一能出结构化输出的档是 T3——而 T3 恰好是那个不做任何
+    校验的档。上游一旦没有 tools，整个保证阶梯就塌成"没有保证"。
+    """
+
+    SCHEMA: ClassVar[dict] = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+
+    def test_tool_is_the_default(self):
+        from pydantic_ai.output import ToolOutput
+
+        from xingcha.core.guarantee import output_spec
+
+        assert isinstance(output_spec(Tier.T2, self.SCHEMA, max_retries=2), ToolOutput)
+
+    def test_prompt_channel_switches_the_carrier(self):
+        from pydantic_ai.output import PromptedOutput
+
+        from xingcha.core.guarantee import output_spec
+
+        got = output_spec(Tier.T2, self.SCHEMA, max_retries=2, channel="prompt")
+        assert isinstance(got, PromptedOutput)
+
+    def test_an_unknown_channel_falls_back_to_tool(self):
+        """不认识的值走默认，不抛。
+
+        这个值来自库里的 spec，而库里可能存着更早版本或手改过的内容——一个老
+        Agent 不该因为 metadata 里多了个没见过的字符串就整个跑不起来。
+        """
+        from pydantic_ai.output import ToolOutput
+
+        from xingcha.core.guarantee import output_spec
+
+        assert isinstance(
+            output_spec(Tier.T2, self.SCHEMA, max_retries=2, channel="乱写的"), ToolOutput
+        )
+
+    def test_the_channel_survives_a_spec_round_trip(self):
+        from xingcha.core import builder
+
+        spec = builder.validate_spec(
+            builder.spec_from_form(
+                name="x",
+                description=None,
+                instructions="i",
+                model="openai/gpt-5",
+                prompting=builder.Prompting(output_channel="prompt"),
+            )
+        )
+        assert builder.prompting_from_spec(spec).output_channel == "prompt"
+
+    def test_the_validator_is_attached_either_way(self):
+        """**这一条才是"保证不变"的字面证明。**"""
+        from pydantic_ai import Agent
+
+        from xingcha.core.guarantee import attach_validator
+
+        for channel in ("tool", "prompt"):
+            agent = Agent("test")
+            counters = attach_validator(agent, Tier.T2, self.SCHEMA)
+            assert counters is not None, channel

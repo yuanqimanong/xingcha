@@ -203,11 +203,30 @@ class AgentBuildFailed(XingchaError):
 
 
 class UpstreamError(XingchaError):
+    """上游拒了这次请求。
+
+    ``upstream_message`` 是上游自己说的原因，会**原样带给调用方**（脱敏之后）。
+
+    不带的话，调用方只看到一句"上游返回 502"，而真正的原因只在服务端日志里——
+    实测踩过：DeepSeek 回的是 "Thinking mode does not support this tool_choice"，
+    那是一个**每次都会发生**的配置问题，而不是偶发故障。看不到那句话的人只会
+    以为网络抖了一下，然后一直重试下去。
+
+    脱敏是必须的：异常文本经常带完整 URL、偶尔带 header，直接回显就是一条 key
+    泄漏路径。
+    """
+
     error_type = ErrorType.UPSTREAM_ERROR
 
-    def __init__(self, upstream_status: int, log_detail: str | None = None) -> None:
+    def __init__(
+        self,
+        upstream_status: int,
+        log_detail: str | None = None,
+        upstream_message: str | None = None,
+    ) -> None:
+        detail = redact(upstream_message.strip())[:300] if upstream_message else ""
         super().__init__(
-            f"上游返回 {upstream_status}。",
+            f"上游返回 {upstream_status}。{detail}" if detail else f"上游返回 {upstream_status}。",
             upstream_status=upstream_status,
             log_detail=log_detail,
         )

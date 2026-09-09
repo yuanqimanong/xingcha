@@ -80,7 +80,25 @@ class GuaranteeCounters:
     last_error: str = ""
 
 
-def output_spec(tier: Tier, schema: dict[str, Any], *, max_retries: int) -> Any:
+#: T2 把 schema 递给模型的两条通道。**档位的保证不受它影响。**
+#:
+#: T2 的定义是"校验后重试"，不是"走 tools"。通道只决定 schema 怎么送过去，校验器
+#: 与重试预算两边完全一样。分开成一个选项，是因为有的上游根本没有 tools 这条路：
+#:
+#: DeepSeek 的思考模式**不接受 tool_choice**（上游原话："Thinking mode does not
+#: support this tool_choice"），于是 T2 在它上面每次都 400。在此之前唯一能出结构化
+#: 输出的档是 T3——而 T3 恰好是那个不做任何校验的档。也就是说，一旦上游没有 tools，
+#: 保证阶梯就整个塌成"没有保证"。换条通道就能把 T2 救回来，代价只是 schema 以提示
+#: 词形式送达（模型对它的遵守度略低，但这正是校验+重试要兜的东西）。
+OUTPUT_CHANNELS: dict[str, str] = {
+    "tool": "工具通道（默认）",
+    "prompt": "提示词通道",
+}
+
+
+def output_spec(
+    tier: Tier, schema: dict[str, Any], *, max_retries: int, channel: str = "tool"
+) -> Any:
     """把档位翻译成 pydantic-ai 的 ``output_type``。
 
     这个返回值必须传进 ``Agent.from_spec(..., output_type=...)``。
@@ -90,10 +108,16 @@ def output_spec(tier: Tier, schema: dict[str, Any], *, max_retries: int) -> Any:
     ``output_schema`` 又不传 ``output_type``，它会退化成 ``str``——于是校验器收到的是
     原始 JSON **字符串**，对 object schema 必然报 "is not of type 'object'"，
     **连完全合法的模型输出都会被打到重试耗尽**。这是实测过的。
+
+    ``channel`` 只对 T2 有意义，见 :data:`OUTPUT_CHANNELS`。
     """
     sd = StructuredDict(schema)
     match tier:
         case Tier.T2:
+            if channel == "prompt":
+                # 仍然是 T2：下面 attach_validator 照挂校验器、照用重试预算。
+                # 变的只是 schema 以提示词而非工具签名送达。
+                return PromptedOutput(sd)
             # strict=False 是必需的，不是默认值的同义写法。
             #
             # 不写的话 pydantic-ai 会按 model profile 把 strict 推断成 true 并发上去

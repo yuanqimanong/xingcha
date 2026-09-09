@@ -11,6 +11,7 @@ import httpx2
 import pytest
 
 from xingcha import contract as C
+from xingcha.contract import Tier
 from xingcha.core.upstream import (
     UpstreamConfig,
     UpstreamNotConfigured,
@@ -108,3 +109,87 @@ class TestPool:
 
     async def test_default_base_url_matches_contract(self):
         assert UpstreamConfig(api_key="k").base_url == C.OPENROUTER_DEFAULT_BASE_URL
+
+
+# =============================================================================
+# provider 的选择
+# =============================================================================
+
+
+class TestProviderChoice:
+    """**不是 OpenRouter 就不能用 OpenRouterProvider。**
+
+    它的 ``model_profile()`` 在模型名里没有 ``/`` 时直接抛 UserError。而厂商直连
+    与大多数中转的模型 id 恰恰是裸的（``deepseek-v4-flash``），于是：
+
+    * ``GET /v1/models`` 正常（那只是一次 HTTP 拉取），
+    * 直通正常（原样转发），
+    * **只有 Agent 挂**，而且是一句看不出原因的 500"服务内部错误"。
+
+    也就是产品的核心卖点在任何非 OpenRouter 上游上都不可用。实测踩到过。
+    """
+
+    def test_openrouter_host_gets_the_openrouter_provider(self):
+        from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+        from xingcha.core import builder
+        from xingcha.core.upstream import UpstreamConfig
+
+        p = builder.make_provider(
+            UpstreamConfig(api_key="k", base_url="https://openrouter.ai/api/v1"), timeout=5
+        )
+        assert isinstance(p, OpenRouterProvider)
+
+    def test_anything_else_gets_the_generic_one(self):
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        from xingcha.core import builder
+        from xingcha.core.upstream import UpstreamConfig
+
+        for base in (
+            "https://api.deepseek.com/v1",
+            "http://127.0.0.1:3000/v1",
+            "https://my-relay.example.com/openrouter/v1",
+        ):
+            p = builder.make_provider(UpstreamConfig(api_key="k", base_url=base), timeout=5)
+            assert isinstance(p, OpenAIProvider), base
+
+    def test_a_bare_model_name_builds_against_a_direct_vendor(self):
+        """这一条就是当初炸的那个场景。"""
+        from xingcha.core import builder
+        from xingcha.core.upstream import UpstreamConfig
+
+        provider = builder.make_provider(
+            UpstreamConfig(api_key="k", base_url="https://api.deepseek.com/v1"), timeout=5
+        )
+        rt = builder.build(
+            spec_json={"model": "deepseek-v4-flash", "instructions": "hi"},
+            tier=Tier.T3,
+            out_schema=None,
+            provider=provider,
+            options=builder.BuildOptions(),
+        )
+        assert rt.model_id == "deepseek-v4-flash"
+
+    def test_a_model_name_the_provider_rejects_is_not_an_internal_error(self):
+        """构造失败要说清是什么失败了。
+
+        ``make_model`` 放在 try 外面时，UserError 一路冒到最外层变成"服务内部错误，
+        请把 run_id 给管理员"——而这类失败**每次都发生**，不是偶发，最需要说清原因。
+        """
+        from xingcha.core import builder
+        from xingcha.core.upstream import UpstreamConfig
+        from xingcha.errors import AgentBuildFailed
+
+        provider = builder.make_provider(
+            UpstreamConfig(api_key="k", base_url="https://openrouter.ai/api/v1"), timeout=5
+        )
+        with pytest.raises(AgentBuildFailed) as e:
+            builder.build(
+                spec_json={"model": "no-vendor-prefix", "instructions": "hi"},
+                tier=Tier.T3,
+                out_schema=None,
+                provider=provider,
+                options=builder.BuildOptions(),
+            )
+        assert "no-vendor-prefix" in str(e.value.log_detail or e.value)

@@ -480,7 +480,27 @@ def map_errors(rt: AgentRuntime, run_timeout: float, usage: Any = None) -> Itera
         text = str(e)
         if "timed out" in text.lower() or "timeout" in text.lower():
             raise tag(UpstreamTimeout(run_timeout)) from e
-        raise tag(UpstreamError(502, log_detail=f"ModelAPIError: {e}")) from e
+        raise tag(
+            UpstreamError(502, log_detail=f"ModelAPIError: {e}", upstream_message=_upstream_says(e))
+        ) from e
+
+
+def _upstream_says(e: Any) -> str | None:
+    """从 ``ModelAPIError`` 里挖出上游自己写的那句话。
+
+    ``str(e)`` 是 ``status_code: 400, model_name: x, body: {...}`` 这种拼装串，
+    整条回显给调用方既啰嗦又会把 model_name 之类的内部细节漏出去。这里只取
+    body 里的 ``message``；结构不认识就返回 None，宁可少说也不说错。
+    """
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        for key in ("message", "error"):
+            value = body.get(key)
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, dict) and isinstance(value.get("message"), str):
+                return value["message"]
+    return None
 
 
 #: "没传" 与 "传了 None" 要能区分——流式的正文可以是空字符串。

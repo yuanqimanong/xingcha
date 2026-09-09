@@ -169,6 +169,20 @@
             <label for="retries">校验重试次数</label>
             <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
           </div>
+          <div class="field" style="flex:0 1 190px">
+            <label for="output_channel">schema 送达方式</label>
+            <select id="output_channel" name="output_channel">
+              {% for value, label in output_channels.items() %}
+              <option value="{{ value }}" {% if form.output_channel == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:calc(-1 * var(--s2))">
+          <strong>只影响 T2，不改变它的保证</strong>（校验与重试两边一样）。
+          有的上游没有 tools 这条路——DeepSeek 的思考模式就<strong>不接受 tool_choice</strong>，
+          用工具通道每次都 400。换成提示词通道即可；代价是模型对提示词里的 schema
+          遵守度略低，而那正是校验+重试要兜的东西。
         </div>
         <div class="hint" style="margin-top:calc(-1 * var(--s2))">
           档位的代价摆在这里由你选，而不是替你选最强的。<strong>T2</strong> 输出不合规时
