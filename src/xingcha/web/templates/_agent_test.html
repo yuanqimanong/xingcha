@@ -57,3 +57,41 @@
   这一次<strong>没有落库</strong>，也不占任何配额。
 </div>
 {% endif %}
+
+{% if history %}
+<div class="trials">
+  <div class="obs-head">最近 {{ history | length }} 次试运行</div>
+  {% for h in history %}
+  <details class="trial">
+    <summary>
+      {% if h.ok %}<span class="badge ok">成功</span>{% else %}<span class="badge danger">失败</span>{% endif %}
+      <span class="mono dim">{{ h.when }}</span>
+      <span class="trial-input">{{ h.input }}</span>
+      <span class="dim mono">{{ h.elapsed }}s · {{ h.tokens }} · {{ h.cost }}</span>
+    </summary>
+    <div class="trial-body">
+      <table class="mini mb4">
+        <tr><td>模型</td><td class="mono">{{ h.model }}</td></tr>
+        <tr><td>档位</td><td class="mono">{{ h.tier }}{% if h.violations %} · 校验退回 {{ h.violations }} 次{% endif %}</td></tr>
+        <tr><td>{{ '输出' if h.ok else '错误' }}</td>
+            <td><pre class="chain-text">{{ h.output if h.ok else h.error }}</pre></td></tr>
+      </table>
+      {% if h.rows %}
+      <div class="chain">
+        {% for r in h.rows %}
+        <div class="chain-row {{ r.role }}">
+          <div class="chain-label">{{ r.label }}{% if r.meta %}<span class="dim">{{ r.meta }}</span>{% endif %}</div>
+          <pre class="chain-text">{{ r.text }}</pre>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+  <div class="hint">
+    只留最近 {{ history | length }} 次。<strong>这里存着提示词原文与模型输出</strong>——
+    它们落在本机数据库里，不随 <code>/v1</code> 的调用记录走（那张表从不存内容）。
+  </div>
+</div>
+{% endif %}

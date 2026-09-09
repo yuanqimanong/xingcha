@@ -1750,3 +1750,69 @@ textarea {
 .cap.unknown .cap-mark { color: var(--ink-3); }
 .cap.no .cap-label,
 .cap.unknown .cap-label { color: var(--ink-3); }
+
+/* --- 三列栅格（Agent 表单的两排） --- */
+/*
+ * auto-fit + minmax 而不是写死 `repeat(3, 1fr)`：写死的话笔记本上每格只剩三百来
+ * 像素，schema 那个 textarea 会挤成一条缝。宽屏三列，窄了自动落成两列、一列。
+ */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--s4);
+  align-items: start;
+}
+
+/* 可观测并进「试运行」卡片之后的分隔 */
+.obs-in-test {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--rule);
+}
+.obs-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: var(--s2);
+}
+
+/* 宽一点的弹窗：版本表要放得下四列 */
+.modal.wide {
+  width: min(56rem, 94vw);
+}
+
+/* --- 试运行历史 --- */
+.trials {
+  margin-top: var(--s4);
+  border-top: 1px solid var(--rule);
+  padding-top: var(--s3);
+}
+.trial {
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  margin-bottom: var(--s2);
+  background: var(--surface-2);
+}
+.trial > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+}
+.trial > summary::-webkit-details-marker {
+  display: none;
+}
+.trial-input {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+.trial-body {
+  padding: var(--s3);
+  border-top: 1px solid var(--rule);
+}

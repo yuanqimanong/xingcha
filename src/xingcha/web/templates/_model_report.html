@@ -29,3 +29,12 @@
   {% endif %}{% endfor %}
 </div>
 {% endif %}
+
+{# 顺带把能力勾选列表换掉：同一次请求，两处更新。
+   分两次请求的话中间会有一瞬间"模型已经换了、能力还是旧的"，而那一瞬正好是人
+   在点勾的时候。 #}
+{% if model %}
+<div id="cap-list" hx-swap-oob="true">
+  {% include "_capabilities.html" %}
+</div>
+{% endif %}

@@ -860,3 +860,114 @@ class TestModelReport:
         )["m"]
         assert got.context_length == 128000
         assert got.input_modalities == frozenset({"text", "image", "file"})
+
+
+# =============================================================================
+# 试运行记录
+# =============================================================================
+
+
+class TestTrialHistory:
+    """最近 3 次。**与 run 表分开存**，理由见 db/models.AgentTestRun。"""
+
+    def _record(self, settings: Settings, slug: str, n: int) -> None:
+        import asyncio
+
+        from xingcha.db.engine import make_engine, make_sessionmaker
+        from xingcha.services import agent_test as test_svc
+
+        async def go():
+            eng = make_engine(settings.db_path)
+            mk = make_sessionmaker(eng)
+            async with mk() as s:
+                for i in range(n):
+                    await test_svc.record(
+                        s, slug=slug, model="m", tier="T2", ok=True, prompt=f"第 {i} 次"
+                    )
+                await s.commit()
+            await eng.dispose()
+
+        asyncio.run(go())
+
+    def test_only_three_are_kept(self, logged_in: TestClient, settings: Settings):
+        import sqlite3
+
+        self._record(settings, "keeper", 7)
+        with sqlite3.connect(settings.db_path) as c:
+            rows = c.execute(
+                "SELECT input FROM agent_test_run WHERE slug='keeper' ORDER BY id"
+            ).fetchall()
+        assert [r[0] for r in rows] == ["第 4 次", "第 5 次", "第 6 次"], rows
+
+    def test_trimming_uses_id_not_timestamp(self, logged_in: TestClient, settings: Settings):
+        """同一秒内连跑几次时 created_at 会相同，按它排序会随机删掉刚写的那条。"""
+        import sqlite3
+
+        self._record(settings, "samesec", 5)
+        with sqlite3.connect(settings.db_path) as c:
+            n, newest = c.execute(
+                "SELECT COUNT(*), MAX(input) FROM agent_test_run WHERE slug='samesec'"
+            ).fetchone()
+        assert n == 3
+        assert newest == "第 4 次", "最新的那条被删了"
+
+    def test_each_slug_keeps_its_own(self, logged_in: TestClient, settings: Settings):
+        import sqlite3
+
+        self._record(settings, "a", 4)
+        self._record(settings, "b", 4)
+        with sqlite3.connect(settings.db_path) as c:
+            counts = dict(
+                c.execute("SELECT slug, COUNT(*) FROM agent_test_run GROUP BY slug").fetchall()
+            )
+        assert counts == {"a": 3, "b": 3}
+
+    def test_the_form_shows_them(self, logged_in: TestClient, settings: Settings):
+        self._record(settings, "", 2)
+        body = logged_in.get("/admin/agents/new").text
+        assert "最近 2 次试运行" in body
+        assert "第 1 次" in body
+
+    def test_a_broken_chain_does_not_500_the_page(self, logged_in: TestClient, settings: Settings):
+        """存下来的 JSON 坏了，面板该空着，不该让整页打不开。"""
+        import sqlite3
+
+        self._record(settings, "", 1)
+        with sqlite3.connect(settings.db_path) as c:
+            c.execute("UPDATE agent_test_run SET chain_json = '{不是 json'")
+        assert logged_in.get("/admin/agents/new").status_code == 200
+
+
+class TestCapabilitiesFollowTheModel:
+    """模型用不了的能力，表单里就别摆出来。"""
+
+    def test_unknown_is_treated_as_usable(self, logged_in: TestClient):
+        """**"不知道"不能当成"不支持"。**
+
+        厂商直连的 /models 常常只回一个 id，那时候把选项藏起来，等于因为不知道而
+        拿走一个明明能用的能力——实测 DeepSeek 直连的深度思考就是这种情况。
+        """
+        body = logged_in.get("/admin/agents/model-report", params={"model": "没见过的模型"}).text
+        assert "Thinking" in body
+
+    def test_a_capability_the_model_lacks_is_not_offered(self, logged_in: TestClient):
+        """**明确的"不"就别摆出来。**
+
+        测试里那个假上游的 openai/gpt-5 只声明了 tools / structured_outputs /
+        response_format——没有 reasoning；base_url 也不是 openrouter.ai，所以联网搜索
+        那道 provider 闸同样是不。两个都该消失，并且说清为什么。
+        """
+        body = logged_in.get("/admin/agents/model-report", params={"model": "openai/gpt-5"}).text
+        assert "cap_Thinking" not in body
+        assert "cap_WebSearch" not in body
+        assert "没有列出来——所选模型不支持" in body
+        assert "深度思考" in body and "联网搜索" in body, "至少要说清是哪几个被藏了"
+
+    def test_checked_state_survives_a_model_change(self, logged_in: TestClient):
+        """换个模型看看行不行，不该把已经勾上的清掉。"""
+        body = logged_in.get(
+            "/admin/agents/model-report",
+            params={"model": "openai/gpt-5", "cap_Thinking": "1"},
+        ).text
+        one_line = body.replace("\n", " ")
+        assert re.search(r'name="cap_Thinking"[^>]*checked', one_line), body[:400]

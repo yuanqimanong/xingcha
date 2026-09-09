@@ -14,14 +14,24 @@
       <strong>标识发布后不能改</strong>——调用方的代码里写着它。</p>
     {% endif %}
   </div>
+  {# 三个动作排在一起：停用 · 查看版本 · 保存。
+     保存那个用 form= 关联到下面的表单——按钮不在表单里，靠 HTML 的 form 属性
+     跨节点关联，比把整个页头塞进 <form> 干净（那样页头里的停用按钮会变成同一个
+     表单的第二个 submit，回到"点保存却停用了"那个坑）。 #}
   {% if not is_new %}
-  <form method="post" action="/admin/agents/{{ agent.slug }}/toggle"
-        {% if is_active %}data-confirm="停用「{{ agent.slug }}」？调用方拿它当 model 调用会开始收到 model_not_found。slug 仍然被占着，随时能开回来。"{% endif %}>
-    <input type="hidden" name="csrf_token" value="{{ csrf }}">
-    <button class="btn {% if not is_active %}primary{% endif %}" type="submit">
-      {{ '停用' if is_active else '启用' }}
+  <div class="row">
+    <form method="post" action="/admin/agents/{{ agent.slug }}/toggle"
+          {% if is_active %}data-confirm="停用「{{ agent.slug }}」？调用方拿它当 model 调用会开始收到 model_not_found。slug 仍然被占着，随时能开回来。"{% endif %}>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button class="btn {% if not is_active %}primary{% endif %}" type="submit">
+        {{ '停用' if is_active else '启用' }}
+      </button>
+    </form>
+    <button class="btn" type="button" data-open-dialog="#versions-dialog">
+      查看版本{% if versions %} <span class="dim">({{ versions | length }})</span>{% endif %}
     </button>
-  </form>
+    <button class="btn primary" type="submit" form="agent-form">保存为新版本</button>
+  </div>
   {% endif %}
 </div>
 
@@ -53,336 +63,307 @@
 <form id="agent-form" method="post" action="{{ action }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
 
-  {# ---------------------------------------------------------------- 基本 #}
-  <section class="card mb4">
-    <div class="card-head"><h2>基本信息</h2></div>
-    <div class="card-body">
-      <div class="form-row">
-        <div class="field" style="flex:1 1 180px">
-          <label for="slug">标识</label>
-          <input id="slug" name="slug" type="text" class="mono" value="{{ form.slug }}"
-                 {% if not is_new %}readonly{% endif %}
-                 required pattern="[a-z][a-z0-9]*(-[a-z0-9]+)*" minlength="2" maxlength="48"
-                 placeholder="extract">
-          <div class="hint">对外的 <code>model</code> 值。<strong>发布后不可改</strong>。</div>
-        </div>
-        <div class="field" style="flex:1 1 180px">
-          <label for="name">名称</label>
-          <input id="name" name="name" type="text" value="{{ form.name }}" required maxlength="60"
-                 placeholder="合同抽取">
-          <div class="hint">只用于后台与模型列表的展示。</div>
-        </div>
-        <div class="field" style="flex:2 1 300px">
-          <label for="model">模型</label>
-          <input id="model" name="model" type="text" class="mono" value="{{ form.model }}" required
-                 list="model-list" placeholder="openai/gpt-5">
-          <datalist id="model-list">
-            {% for m in models %}<option value="{{ m.id }}">{{ m.name or m.id }}</option>{% endfor %}
-          </datalist>
-          <div class="hint">
-            {% if models %}
-              目录里 {{ models|length }} 个，其中 {{ native_count }} 个支持原生结构化输出。
-            {% else %}
-              模型目录还没拉到——先到<a href="/admin/upstreams">上游</a>页配好 key。
-            {% endif %}
-          </div>
-          {# 选完模型就报它能干什么，不用等到第一次真调用。
-             绑 change 而不是 keyup：这个输入框带 datalist，边打字边请求会为每一个
-             中间态发一次，而中间态没有一个是真模型名。 #}
-          <div id="model-report"
-               hx-get="/admin/agents/model-report" hx-trigger="change from:#model, load"
-               hx-include="#model" hx-target="#model-report" hx-swap="innerHTML"></div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="field" style="flex:3 1 320px">
-          <label for="description">说明</label>
-          <input id="description" name="description" type="text" value="{{ form.description }}"
-                 maxlength="200" placeholder="一句话说明它做什么，会出现在 /v1/models 里">
-        </div>
-        <div class="field" style="flex:1 1 180px">
-          <label for="group">分组</label>
-          <input id="group" name="group" type="text" value="{{ form.group }}" maxlength="40"
-                 list="group-list" placeholder="留空 = 默认分组">
-          <datalist id="group-list">
-            {% for g in groups %}<option value="{{ g }}"></option>{% endfor %}
-          </datalist>
-          <div class="hint">只用于后台归类，<strong>不进 slug、不进 /v1/models</strong>。</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  {# 提示词与输出约定并排。
-     这两块是互相看着填的：schema 里有什么字段，提示词就得交代什么字段。上下堆
-     着的话，改一处要滚上滚下去核对另一处——而它们各自都是十几行的 textarea。 #}
-  <div class="split mb4">
-
-    {# -------------------------------------------------------------- 提示词 #}
+  {# 两行三列。
+     上排是「这个 Agent 是什么」（身份 / 参数 / 能力），下排是「它怎么干活」
+     （提示词 / 输出约定 / 试一次）。三列在窄屏上自动落成两列、一列——写死三列的话
+     笔记本上每格只剩三百来像素，schema 那个框会挤成一条缝。 #}
+  <div class="grid-3 mb4">
     <section class="card">
-      <div class="card-head"><h2>提示词</h2></div>
-      <div class="card-body">
-        <div class="field">
-          <label for="instructions">系统提示词</label>
-          <textarea id="instructions" name="instructions" rows="10" required
-                    placeholder="你是一个合同信息抽取助手。&#10;&#10;规则：&#10;- 只输出原文里出现的信息，不要推断&#10;- 找不到的字段留空，不要编"
-                    >{{ form.instructions }}</textarea>
-          <div class="hint">
-            每次调用都带上，<strong>调用方无法改写</strong>——请求里的 <code>system</code>
-            消息只会被<em>追加</em>在它之后。这是设计：提示词是你的资产。
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="user_template">用户提示词模板 <span class="dim small">可选</span></label>
-          <textarea id="user_template" name="user_template" rows="4"
-                    placeholder="请从下面的合同里抽取信息：&#10;&#10;{{ '{{input}}' }}"
-                    >{{ form.user_template }}</textarea>
-          <div class="hint">
-            包住调用方发来的内容。必须含 <code>{{ '{{input}}' }}</code>，那是内容落进去的位置。
-            留空则原样送出。<strong>历史里的每一轮用户消息也会套上它</strong>——不然回放给
-            模型的历史，和它当时真正看到的不是一回事。
-          </div>
-        </div>
-
-        <div class="field">
-          <label>少样本示例 <span class="dim small">可选</span></label>
-          <div id="examples">
-            {% for ex in form.examples %}
-            <div class="example">
-              <div class="form-row">
-                <div class="field">
-                  <label>用户会这样问</label>
-                  <textarea name="ex_user" rows="2">{{ ex.user }}</textarea>
-                </div>
-                <div class="field">
-                  <label>就该这样答</label>
-                  <textarea name="ex_assistant" rows="2">{{ ex.assistant }}</textarea>
-                </div>
-              </div>
-              <button type="button" class="btn ghost sm" data-remove-example>删掉这组</button>
+        <div class="card-head"><h2>基本信息</h2></div>
+        <div class="card-body">
+          <div class="form-row">
+            <div class="field" style="flex:1 1 180px">
+              <label for="slug">标识</label>
+              <input id="slug" name="slug" type="text" class="mono" value="{{ form.slug }}"
+                     {% if not is_new %}readonly{% endif %}
+                     required pattern="[a-z][a-z0-9]*(-[a-z0-9]+)*" minlength="2" maxlength="48"
+                     placeholder="extract">
+              <div class="hint">对外的 <code>model</code> 值。<strong>发布后不可改</strong>。</div>
             </div>
-            {% endfor %}
+            <div class="field" style="flex:1 1 180px">
+              <label for="name">名称</label>
+              <input id="name" name="name" type="text" value="{{ form.name }}" required maxlength="60"
+                     placeholder="合同抽取">
+              <div class="hint">只用于后台与模型列表的展示。</div>
+            </div>
+            <div class="field" style="flex:2 1 300px">
+              <label for="model">模型</label>
+              <input id="model" name="model" type="text" class="mono" value="{{ form.model }}" required
+                     list="model-list" placeholder="openai/gpt-5">
+              <datalist id="model-list">
+                {% for m in models %}<option value="{{ m.id }}">{{ m.name or m.id }}</option>{% endfor %}
+              </datalist>
+              <div class="hint">
+                {% if models %}
+                  目录里 {{ models|length }} 个，其中 {{ native_count }} 个支持原生结构化输出。
+                {% else %}
+                  模型目录还没拉到——先到<a href="/admin/upstreams">上游</a>页配好 key。
+                {% endif %}
+              </div>
+              {# 选完模型就报它能干什么，不用等到第一次真调用。
+                 绑 change 而不是 keyup：这个输入框带 datalist，边打字边请求会为每一个
+                 中间态发一次，而中间态没有一个是真模型名。 #}
+              <div id="model-report"
+                   hx-get="/admin/agents/model-report" hx-trigger="change from:#model, load"
+                   hx-include="#model" hx-target="#model-report" hx-swap="innerHTML"></div>
+            </div>
           </div>
-          <button type="button" class="btn sm mt2" data-add-example="#examples">再加一组示例</button>
-          <div class="hint">
-            成对的问答，以<strong>真正的对话轮</strong>送进去，排在调用方的历史之前。
-            结构化输出下尤其值钱：示例能明显压低 schema 违规，而每次违规就是一次重试、
-            一次真金白银。
+          <div class="form-row">
+            <div class="field" style="flex:3 1 320px">
+              <label for="description">说明</label>
+              <input id="description" name="description" type="text" value="{{ form.description }}"
+                     maxlength="200" placeholder="一句话说明它做什么，会出现在 /v1/models 里">
+            </div>
+            <div class="field" style="flex:1 1 180px">
+              <label for="group">分组</label>
+              <input id="group" name="group" type="text" value="{{ form.group }}" maxlength="40"
+                     list="group-list" placeholder="留空 = 默认分组">
+              <datalist id="group-list">
+                {% for g in groups %}<option value="{{ g }}"></option>{% endfor %}
+              </datalist>
+              <div class="hint">只用于后台归类，<strong>不进 slug、不进 /v1/models</strong>。</div>
+            </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    {# ---------------------------------------------------------- 输出保证 #}
     <section class="card">
-      <div class="card-head">
-        <h2>输出保证</h2>
-        <button type="button" class="btn sm" hx-post="/admin/agents/lint" hx-include="#output_schema,#tier"
-                hx-target="#lint-result" hx-swap="innerHTML" hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
-          检查字段命名 <span class="htmx-indicator">…</span>
-        </button>
-      </div>
-      <div class="card-body">
-        <div class="form-row">
-          <div class="field">
-            <label for="tier">保证档位</label>
-            <select id="tier" name="tier">
-              <option value="">纯文本（不定义 schema）</option>
-              {% for t in tiers %}
-              <option value="{{ t.value }}" {% if form.tier == t.value %}selected{% endif %}>
-                {{ t.value }} · {{ t.name }} —— 形状保证{{ t.shape }}，{{ t.content }}
-              </option>
+          <div class="card-head">
+            <h2>模型参数</h2>
+            <span class="dim small">
+              {% if form.has_settings %}已设 {{ form.settings_count }} 项{% else %}用上游默认{% endif %}
+            </span>
+          </div>
+          <div class="card-body">
+            <p class="muted small mb4">
+              <strong>留空就是不设这一项。</strong>留空与填 <code>0</code> 是两件不同的事——
+              前者用上游默认，后者是一条明确的指令。
+            </p>
+            <div class="grid-params">
+              {% for field, label, hint in model_settings %}
+              <div class="field">
+                <label for="ms_{{ field }}">{{ label }}</label>
+                <input id="ms_{{ field }}" name="ms_{{ field }}" type="text" class="mono"
+                       inputmode="decimal" value="{{ form.settings.get(field, '') }}" placeholder="默认">
+                <div class="hint">{{ hint }}</div>
+              </div>
               {% endfor %}
-            </select>
+            </div>
           </div>
-          <div class="field" style="flex:0 1 150px">
-            <label for="retries">校验重试次数</label>
-            <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
+        </section>
+
+    <section class="card">
+          <div class="card-head">
+            <h2>能力</h2>
+            <span class="dim small">
+              {% if form.capabilities %}已开 {{ form.capabilities | length }} 项{% else %}未开启{% endif %}
+            </span>
           </div>
-          <div class="field" style="flex:0 1 190px">
-            <label for="output_channel">schema 送达方式</label>
-            <select id="output_channel" name="output_channel">
-              {% for value, label in output_channels.items() %}
-              <option value="{{ value }}" {% if form.output_channel == value %}selected{% endif %}>{{ label }}</option>
-              {% endfor %}
-            </select>
+          <div class="card-body">
+            <p class="muted small mb4">
+              这里只列<strong>这条 API 通道上真的能用的</strong>。官方清单里另外那些
+              （网页抓取、图像生成、原生 MCP）不是"支持的模型少"，而是与模型无关地做不到——
+              <code>OpenAIChatModel</code> 原生只认联网搜索一个工具，其余只存在于 OpenAI 的
+              Responses API 上，而星槎有意没走那条（中转会挂）。
+            </p>
+            {# 这一块随模型变——见 _model_report.html 末尾的 hx-swap-oob。 #}
+            <div id="cap-list">
+              {% with checked = form.capabilities, legacy_capabilities = form.legacy_capabilities %}
+              {% include "_capabilities.html" %}
+              {% endwith %}
+            </div>
+            <div class="hint mt4">
+              <strong>网页抓取</strong>去掉了：原生做不到，唯一的路是由星槎自己的进程出网去抓，
+              而那样能不能抓到取决于这台机器能到哪——一个时灵时不灵的能力比没有更糟。
+              <br>
+              <strong>MCP</strong> 需要服务器地址与鉴权，得先有一个配置页——还没做。要用工具的话
+              现在走导出 bundle 手改 <code>agent.yaml</code> 那条路。
+            </div>
           </div>
-        </div>
-        <div class="hint" style="margin-top:calc(-1 * var(--s2))">
-          <strong>只影响 T2，不改变它的保证</strong>（校验与重试两边一样）。
-          有的上游没有 tools 这条路——DeepSeek 的思考模式就<strong>不接受 tool_choice</strong>，
-          用工具通道每次都 400。换成提示词通道即可；代价是模型对提示词里的 schema
-          遵守度略低，而那正是校验+重试要兜的东西。
-        </div>
-        <div class="hint" style="margin-top:calc(-1 * var(--s2))">
-          档位的代价摆在这里由你选，而不是替你选最强的。<strong>T2</strong> 输出不合规时
-          自动重试（最坏调 <strong>1+{{ form.retries }}</strong> 次模型，token 按整轮计费）；
-          <strong>T3</strong> 只把 schema 当提示，不做任何校验。
-        </div>
-        <div class="field mt4">
-          <label for="output_schema">输出 JSON Schema</label>
-          <textarea id="output_schema" name="output_schema" rows="16" class="mono"
-                    placeholder='{&#10;  "type": "object",&#10;  "properties": {&#10;    "客户名称": {"type": "string", "description": "合同甲方的完整名称"}&#10;  },&#10;  "required": ["客户名称"]&#10;}'>{{ form.schema }}</textarea>
-          <div class="hint">
-            顶层必须是 <code>"type": "object"</code>。不支持 <code>pattern</code>（正则会在
-            服务进程里执行，一条灾难性回溯就能让服务停摆）与指向外部的 <code>$ref</code>。
-            留空即纯文本输出。
-          </div>
-        </div>
-        <div id="lint-result">{% if hints %}{% include "_lint.html" %}{% endif %}</div>
-      </div>
-    </section>
+        </section>
   </div>
 
-  {# 三个次要分区并排折叠。它们大多数时候都不用改，各占一整行只是把保存按钮
-     推得更远。 #}
-  <div class="tri mb4">
-    {# ---------------------------------------------------------- 模型参数 #}
-    <details class="card" {% if form.has_settings %}open{% endif %}>
-      <summary class="card-head">
-        <h2>模型参数</h2>
-        <span class="dim small">
-          {% if form.has_settings %}已设 {{ form.settings_count }} 项{% else %}用上游默认{% endif %}
-        </span>
-      </summary>
-      <div class="card-body">
-        <p class="muted small mb4">
-          <strong>留空就是不设这一项。</strong>留空与填 <code>0</code> 是两件不同的事——
-          前者用上游默认，后者是一条明确的指令。
-        </p>
-        <div class="grid-params">
-          {% for field, label, hint in model_settings %}
+  <div class="grid-3 mb4">
+    <section class="card">
+          <div class="card-head"><h2>提示词</h2></div>
+          <div class="card-body">
+            <div class="field">
+              <label for="instructions">系统提示词</label>
+              <textarea id="instructions" name="instructions" rows="10" required
+                        placeholder="你是一个合同信息抽取助手。&#10;&#10;规则：&#10;- 只输出原文里出现的信息，不要推断&#10;- 找不到的字段留空，不要编"
+                        >{{ form.instructions }}</textarea>
+              <div class="hint">
+                每次调用都带上，<strong>调用方无法改写</strong>——请求里的 <code>system</code>
+                消息只会被<em>追加</em>在它之后。这是设计：提示词是你的资产。
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="user_template">用户提示词模板 <span class="dim small">可选</span></label>
+              <textarea id="user_template" name="user_template" rows="4"
+                        placeholder="请从下面的合同里抽取信息：&#10;&#10;{{ '{{input}}' }}"
+                        >{{ form.user_template }}</textarea>
+              <div class="hint">
+                包住调用方发来的内容。必须含 <code>{{ '{{input}}' }}</code>，那是内容落进去的位置。
+                留空则原样送出。<strong>历史里的每一轮用户消息也会套上它</strong>——不然回放给
+                模型的历史，和它当时真正看到的不是一回事。
+              </div>
+            </div>
+
+            <div class="field">
+              <label>少样本示例 <span class="dim small">可选</span></label>
+              <div id="examples">
+                {% for ex in form.examples %}
+                <div class="example">
+                  <div class="form-row">
+                    <div class="field">
+                      <label>用户会这样问</label>
+                      <textarea name="ex_user" rows="2">{{ ex.user }}</textarea>
+                    </div>
+                    <div class="field">
+                      <label>就该这样答</label>
+                      <textarea name="ex_assistant" rows="2">{{ ex.assistant }}</textarea>
+                    </div>
+                  </div>
+                  <button type="button" class="btn ghost sm" data-remove-example>删掉这组</button>
+                </div>
+                {% endfor %}
+              </div>
+              <button type="button" class="btn sm mt2" data-add-example="#examples">再加一组示例</button>
+              <div class="hint">
+                成对的问答，以<strong>真正的对话轮</strong>送进去，排在调用方的历史之前。
+                结构化输出下尤其值钱：示例能明显压低 schema 违规，而每次违规就是一次重试、
+                一次真金白银。
+              </div>
+            </div>
+          </div>
+        </section>
+
+    <section class="card">
+          <div class="card-head">
+            <h2>输出保证</h2>
+            <button type="button" class="btn sm" hx-post="/admin/agents/lint" hx-include="#output_schema,#tier"
+                    hx-target="#lint-result" hx-swap="innerHTML" hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+              检查字段命名 <span class="htmx-indicator">…</span>
+            </button>
+          </div>
+          <div class="card-body">
+            <div class="form-row">
+              <div class="field">
+                <label for="tier">保证档位</label>
+                <select id="tier" name="tier">
+                  <option value="">纯文本（不定义 schema）</option>
+                  {% for t in tiers %}
+                  <option value="{{ t.value }}" {% if form.tier == t.value %}selected{% endif %}>
+                    {{ t.value }} · {{ t.name }} —— 形状保证{{ t.shape }}，{{ t.content }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="field" style="flex:0 1 150px">
+                <label for="retries">校验重试次数</label>
+                <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
+              </div>
+              <div class="field" style="flex:0 1 190px">
+                <label for="output_channel">schema 送达方式</label>
+                <select id="output_channel" name="output_channel">
+                  {% for value, label in output_channels.items() %}
+                  <option value="{{ value }}" {% if form.output_channel == value %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="hint" style="margin-top:calc(-1 * var(--s2))">
+              <strong>只影响 T2，不改变它的保证</strong>（校验与重试两边一样）。
+              有的上游没有 tools 这条路——DeepSeek 的思考模式就<strong>不接受 tool_choice</strong>，
+              用工具通道每次都 400。换成提示词通道即可；代价是模型对提示词里的 schema
+              遵守度略低，而那正是校验+重试要兜的东西。
+            </div>
+            <div class="hint" style="margin-top:calc(-1 * var(--s2))">
+              档位的代价摆在这里由你选，而不是替你选最强的。<strong>T2</strong> 输出不合规时
+              自动重试（最坏调 <strong>1+{{ form.retries }}</strong> 次模型，token 按整轮计费）；
+              <strong>T3</strong> 只把 schema 当提示，不做任何校验。
+            </div>
+            <div class="field mt4">
+              <label for="output_schema">输出 JSON Schema</label>
+              <textarea id="output_schema" name="output_schema" rows="16" class="mono"
+                        placeholder='{&#10;  "type": "object",&#10;  "properties": {&#10;    "客户名称": {"type": "string", "description": "合同甲方的完整名称"}&#10;  },&#10;  "required": ["客户名称"]&#10;}'>{{ form.schema }}</textarea>
+              <div class="hint">
+                顶层必须是 <code>"type": "object"</code>。不支持 <code>pattern</code>（正则会在
+                服务进程里执行，一条灾难性回溯就能让服务停摆）与指向外部的 <code>$ref</code>。
+                留空即纯文本输出。
+              </div>
+            </div>
+            <div id="lint-result">{% if hints %}{% include "_lint.html" %}{% endif %}</div>
+          </div>
+        </section>
+
+    <section class="card" id="test">
+        <div class="card-head">
+          <h2>试运行</h2>
+          <span class="small muted">按上面表单里此刻的内容跑，不保存、不落库、不占配额</span>
+        </div>
+        <div class="card-body">
           <div class="field">
-            <label for="ms_{{ field }}">{{ label }}</label>
-            <input id="ms_{{ field }}" name="ms_{{ field }}" type="text" class="mono"
-                   inputmode="decimal" value="{{ form.settings.get(field, '') }}" placeholder="默认">
-            <div class="hint">{{ hint }}</div>
+            <label for="test_input">测试输入 <span class="dim small">调用方会发来的那条 user 消息</span></label>
+            <textarea id="test_input" name="test_input" rows="4"
+                      placeholder="粘一段真实的输入进来。Ctrl/⌘ + Enter 直接跑。"></textarea>
           </div>
-          {% endfor %}
-        </div>
-      </div>
-    </details>
-
-    {# -------------------------------------------------------------- 能力 #}
-    <details class="card" {% if form.capabilities %}open{% endif %}>
-      <summary class="card-head">
-        <h2>能力</h2>
-        <span class="dim small">
-          {% if form.capabilities %}已开 {{ form.capabilities | length }} 项{% else %}未开启{% endif %}
-        </span>
-      </summary>
-      <div class="card-body">
-        <p class="muted small mb4">
-          这里只列<strong>这条 API 通道上真的能用的</strong>。官方清单里另外那些
-          （网页抓取、图像生成、原生 MCP）不是"支持的模型少"，而是与模型无关地做不到——
-          <code>OpenAIChatModel</code> 原生只认联网搜索一个工具，其余只存在于 OpenAI 的
-          Responses API 上，而星槎有意没走那条（中转会挂）。
-        </p>
-        <div class="check-list">
-          {% for name, label, hint, _args in capabilities %}
-          <label class="check">
-            <input type="checkbox" name="cap_{{ name }}" value="1"
-                   {% if name in form.capabilities %}checked{% endif %}>
-            <span>
-              <strong>{{ label }}</strong> <code class="dim">{{ name }}</code>
-              <span class="hint">{{ hint }}</span>
-            </span>
-          </label>
-          {% endfor %}
-        </div>
-        {% if form.legacy_capabilities %}
-        <div class="notice warn mt4">
-          <strong>这个 Agent 上还留着已经不再提供的能力。</strong>
-          它们在当前通道上不会生效（多半还会让调用直接报错）。
-          <div class="check-list mt2">
-            {% for name in form.legacy_capabilities %}
-            <label class="check">
-              <input type="checkbox" name="cap_{{ name }}" value="1" checked>
-              <span><strong>{{ name }}</strong>
-                <span class="hint">取消勾选并保存即可移除。留着不动也不会被悄悄清掉。</span></span>
-            </label>
-            {% endfor %}
-          </div>
-        </div>
-        {% endif %}
-        <div class="hint mt4">
-          <strong>网页抓取</strong>去掉了：原生做不到，唯一的路是由星槎自己的进程出网去抓，
-          而那样能不能抓到取决于这台机器能到哪——一个时灵时不灵的能力比没有更糟。
-          <br>
-          <strong>MCP</strong> 需要服务器地址与鉴权，得先有一个配置页——还没做。要用工具的话
-          现在走导出 bundle 手改 <code>agent.yaml</code> 那条路。
-        </div>
-      </div>
-    </details>
-
-    {# ------------------------------------------------------------ 可观测 #}
-    <details class="card" {% if form.instrumented %}open{% endif %}>
-      <summary class="card-head">
-        <h2>可观测</h2>
-        <span class="dim small">{% if form.instrumented %}上报中{% else %}不上报{% endif %}</span>
-      </summary>
-      <div class="card-body">
-        {% if trace_endpoint %}
-        <label class="check">
-          <input type="checkbox" name="instrument" value="1" {% if form.instrumented %}checked{% endif %}>
-          <span>
-            <strong>上报这个 Agent 的 trace</strong>
+          <div class="row">
+            <button type="button" class="btn primary" data-lock id="run-test"
+                    hx-post="/admin/agents/test" hx-include="closest form"
+                    hx-target="#test-result" hx-swap="innerHTML"
+                    hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+              跑一次 <span class="htmx-indicator">…</span>
+            </button>
             <span class="hint">
-              每次调用的完整消息、重试与耗时会发到 <code class="mono">{{ trace_endpoint }}</code>。
-              {% if trace_include_content %}<strong>包含提示词与模型输出。</strong>
-              {% else %}当前配置<strong>不含</strong>内容，只有耗时与 token。{% endif %}
+              会<strong>真的调一次上游、真的花钱</strong>。跑完显示上游实际收发的整条链路。
             </span>
-          </span>
-        </label>
-        <div class="hint mt4">
-          按 Agent 单独开，而不是全局一刀切：一个跑客户合同的 Agent 与一个跑内部
-          分类的 Agent，对"对话内容能不能离开这台机器"的答案通常不一样。
-        </div>
-        {% else %}
-        <div class="notice mb4">
-          还没配上报地址。到<a href="/admin/settings">设置 → 可观测</a>填好之后，
-          这里就能按 Agent 勾选。
-        </div>
-        <label class="check" style="opacity:.5">
-          <input type="checkbox" disabled>
-          <span><strong>上报这个 Agent 的 trace</strong>
-            <span class="hint">需要先配置上报地址</span></span>
-        </label>
-        {% endif %}
-      </div>
-    </details>
-  </div>
+          </div>
+          <div class="obs-in-test">
+            <div class="obs-head">可观测</div>
+            {% if trace_endpoint %}
+                    <label class="check">
+                      <input type="checkbox" name="instrument" value="1" {% if form.instrumented %}checked{% endif %}>
+                      <span>
+                        <strong>上报这个 Agent 的 trace</strong>
+                        <span class="hint">
+                          每次调用的完整消息、重试与耗时会发到 <code class="mono">{{ trace_endpoint }}</code>。
+                          {% if trace_include_content %}<strong>包含提示词与模型输出。</strong>
+                          {% else %}当前配置<strong>不含</strong>内容，只有耗时与 token。{% endif %}
+                        </span>
+                      </span>
+                    </label>
+                    <div class="hint mt4">
+                      按 Agent 单独开，而不是全局一刀切：一个跑客户合同的 Agent 与一个跑内部
+                      分类的 Agent，对"对话内容能不能离开这台机器"的答案通常不一样。
+                    </div>
+                    {% else %}
+                    <div class="notice mb4">
+                      还没配上报地址。到<a href="/admin/settings">设置 → 可观测</a>填好之后，
+                      这里就能按 Agent 勾选。
+                    </div>
+                    <label class="check" style="opacity:.5">
+                      <input type="checkbox" disabled>
+                      <span><strong>上报这个 Agent 的 trace</strong>
+                        <span class="hint">需要先配置上报地址</span></span>
+                    </label>
+                    {% endif %}
+          </div>
 
-  {# -------------------------------------------------------------- 试运行 #}
-  <section class="card mb4" id="test">
-    <div class="card-head">
-      <h2>试运行</h2>
-      <span class="small muted">按上面表单里此刻的内容跑，不保存、不落库、不占配额</span>
-    </div>
-    <div class="card-body">
-      <div class="field">
-        <label for="test_input">测试输入 <span class="dim small">调用方会发来的那条 user 消息</span></label>
-        <textarea id="test_input" name="test_input" rows="4"
-                  placeholder="粘一段真实的输入进来。Ctrl/⌘ + Enter 直接跑。"></textarea>
-      </div>
-      <div class="row">
-        <button type="button" class="btn primary" data-lock id="run-test"
-                hx-post="/admin/agents/test" hx-include="closest form"
-                hx-target="#test-result" hx-swap="innerHTML"
-                hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
-          跑一次 <span class="htmx-indicator">…</span>
-        </button>
-        <span class="hint">
-          会<strong>真的调一次上游、真的花钱</strong>。跑完显示上游实际收发的整条链路。
-        </span>
-      </div>
-      <div id="test-result" class="mt4"></div>
-    </div>
-  </section>
+          <div id="test-result" class="mt4">{% include "_agent_test.html" %}</div>
+        </div>
+      </section>
+  </div>
 
   <div class="row">
-    <button class="btn primary" type="submit">{{ '创建' if is_new else '保存为新版本' }}</button>
+    {% if is_new %}
+    <button class="btn primary" type="submit">创建</button>
+    {% else %}
+    {# 保存按钮在页头（停用右侧）。这里再放一个是为了长表单滚到底时不用回头， #}
+    {# 两个是同一个 form 的 submit，点哪个都一样。 #}
+    <button class="btn primary" type="submit">保存为新版本</button>
+    {% endif %}
     <a class="btn ghost" href="/admin/agents">取消</a>
     {% if not is_new %}
     <span class="grow"></span>
@@ -403,36 +384,50 @@
 </div>
 {% endif %}
 
-{% if not is_new and versions %}
-<div class="card mt4">
-  <div class="card-head"><h2>版本</h2></div>
-  <div class="card-body flush">
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>版本</th><th>档位</th><th>创建</th><th></th></tr></thead>
-        <tbody>
-        {% for v in versions %}
-          <tr>
-            <td class="mono">v{{ v.version }}{% if v.current %} <span class="badge ok">当前</span>{% endif %}</td>
-            <td class="mono small">{{ v.tier }}</td>
-            <td class="mono small dim">{{ v.created }}</td>
-            <td style="text-align:right">
-              {% if not v.current %}
-              <form method="post" action="/admin/agents/{{ agent.slug }}/rollback"
-                    data-confirm="回滚到 v{{ v.version }}？当前指针挪回它，历史版本一个都不动。">
-                <input type="hidden" name="csrf_token" value="{{ csrf }}">
-                <input type="hidden" name="version" value="{{ v.version }}">
-                <button class="btn sm" type="submit">回滚到这个版本</button>
-              </form>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+{% if not is_new %}
+{# 版本列表做成弹窗：它是"偶尔回头看一眼"的东西，常驻在页面底部只是把导出说明和
+   表单本身推得更远。回滚的表单在弹窗里，仍然是独立的 <form>。 #}
+<dialog id="versions-dialog" class="modal wide">
+  <div class="card">
+    <div class="card-head">
+      <h2>版本</h2>
+      <span class="small muted">回滚只挪当前指针，历史版本一个都不动</span>
+    </div>
+    <div class="card-body flush">
+      {% if versions %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>版本</th><th>档位</th><th>创建</th><th></th></tr></thead>
+          <tbody>
+          {% for v in versions %}
+            <tr>
+              <td class="mono">v{{ v.version }}{% if v.current %} <span class="badge ok">当前</span>{% endif %}</td>
+              <td class="mono small">{{ v.tier }}</td>
+              <td class="mono small dim">{{ v.created }}</td>
+              <td style="text-align:right">
+                {% if not v.current %}
+                <form method="post" action="/admin/agents/{{ agent.slug }}/rollback"
+                      data-confirm="回滚到 v{{ v.version }}？当前指针挪回它，历史版本一个都不动。">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="version" value="{{ v.version }}">
+                  <button class="btn sm" type="submit">回滚到这个版本</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty"><div class="empty-title">只有当前这一版</div></div>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <div class="row"><a class="btn" href="#" data-close-dialog>关闭</a></div>
     </div>
   </div>
-</div>
+</dialog>
 {% endif %}
 
 {# 「再加一组示例」克隆的模板。放在 <template> 里，浏览器不会渲染它，里面的

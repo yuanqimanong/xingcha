@@ -435,8 +435,12 @@ class TestAgents:
         assert "v2" in page.inner_text("body")
 
         page.goto(f"{site.base_url}/admin/agents/versioned", wait_until="networkidle")
+        # 版本列表在弹窗里：它是"偶尔回头看一眼"的东西，常驻页面底部只会把表单
+        # 推得更远。先点开「查看版本」。
+        page.click("[data-open-dialog='#versions-dialog']")
+        page.wait_for_selector("#versions-dialog", state="visible")
         rollback = page.locator("form[action$='/rollback'] button").first
-        assert rollback.count(), "编辑页没有回滚按钮——M2 点名的「版本与回滚」"
+        assert rollback.count(), "版本弹窗里没有回滚按钮——M2 点名的「版本与回滚」"
         # 这个表单带 data-confirm。**必须显式接受**：playwright 在没有 handler 时
         # 自动 dismiss，表单于是从未提交，而失败信息会指向"回滚没生效"——
         # 看起来像产品 bug，实际是测试没点"确定"。

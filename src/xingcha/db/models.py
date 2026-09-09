@@ -161,6 +161,46 @@ class Agent(Base):
     __table_args__ = (sa.Index("idx_agent_slug", "slug", unique=True),)
 
 
+class AgentTestRun(Base):
+    """后台「试运行」的记录。**与 run 分开，这是有意的。**
+
+    ``run`` 是账单与配额的事实来源；试运行是管理员按未保存的表单跑的一次实验，
+    既不进任何调用方的账、也不占配额。混进去的后果是"这个月花了多少"里掺着调试
+    开销——而那个数是要拿去对账的。
+
+    另一半理由是隐私取舍不同：这张表**存内容**（提示词原文与模型输出的完整链路），
+    而 ``run`` 从来不存。两种保留期不该被同一张表的清理策略绑在一起。
+
+    按 slug 只留最近 3 条，写入时顺手删旧的（见 services/agent_test.py）。
+    """
+
+    __tablename__ = "agent_test_run"
+
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+    #: 空串 = 新建页上跑的、还没有 slug。
+    slug: Mapped[str] = mapped_column(sa.Text, nullable=False, default="", server_default="")
+    model: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    tier: Mapped[str | None] = mapped_column(sa.Text)
+    ok: Mapped[bool] = mapped_column(sa.Boolean, nullable=False)
+    input: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    output: Mapped[str | None] = mapped_column(sa.Text)
+    error: Mapped[str | None] = mapped_column(sa.Text)
+    #: 渲染好的消息链（JSON）。**这里面有提示词原文与模型输出。**
+    chain_json: Mapped[str | None] = mapped_column(sa.Text)
+    elapsed_ms: Mapped[int | None] = mapped_column(sa.Integer)
+    input_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    requests: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    violations: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    retries: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    #: Decimal 的 str。NULL（查不到价）与真实的 0 必须可区分，与 run_usage 同口径。
+    cost_usd: Mapped[str | None] = mapped_column(sa.Text)
+    cost_source: Mapped[str | None] = mapped_column(sa.Text)
+    created_at: Mapped[str] = mapped_column(sa.Text, nullable=False, default=utcnow)
+
+    __table_args__ = (sa.Index("idx_agent_test_slug", "slug", "created_at"),)
+
+
 class AgentAlias(Base):
     """slug 改名的唯一出路。
 

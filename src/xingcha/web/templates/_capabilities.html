@@ -1,0 +1,43 @@
+{# 能力勾选列表。**随选定的模型重渲染**，所以单独成片。
+
+   模型明确说了不支持的，这里根本不出现——摆一个勾了必然报错的开关，比不摆更糟。
+   "不知道"（目录没有能力信息）按可用处理，理由见 routes._model_report_ctx。 #}
+<div class="check-list">
+  {% for name, label, hint, _args in capabilities %}
+  <label class="check">
+    <input type="checkbox" name="cap_{{ name }}" value="1"
+           {% if name in checked %}checked{% endif %}>
+    <span>
+      <strong>{{ label }}</strong> <code class="dim">{{ name }}</code>
+      <span class="hint">{{ hint }}</span>
+    </span>
+  </label>
+  {% endfor %}
+</div>
+
+{% if not capabilities %}
+<div class="empty"><div class="empty-title">这个模型没有可用的能力</div></div>
+{% endif %}
+
+{% if hidden_caps %}
+<div class="hint mt2">
+  <strong>{{ hidden_caps | join('、') }}</strong> 没有列出来——所选模型不支持。
+  换个模型就会出现。
+</div>
+{% endif %}
+
+{% if legacy_capabilities %}
+<div class="notice warn mt4">
+  <strong>这个 Agent 上还留着已经不再提供的能力。</strong>
+  它们在当前通道上不会生效（多半还会让调用直接报错）。
+  <div class="check-list mt2">
+    {% for name in legacy_capabilities %}
+    <label class="check">
+      <input type="checkbox" name="cap_{{ name }}" value="1" checked>
+      <span><strong>{{ name }}</strong>
+        <span class="hint">取消勾选并保存即可移除。留着不动也不会被悄悄清掉。</span></span>
+    </label>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

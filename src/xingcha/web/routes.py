@@ -1760,18 +1760,48 @@ def _model_report_ctx(request: Request, model: str) -> dict[str, Any]:
     state = request.app.state.xc
     model = model.strip()
     if not model:
-        return {"model": "", "checks": [], "info": None, "no_catalog": False}
+        # 空模型名也要给全键：调用方会直接把这份 dict 摊进模板上下文，缺键会 KeyError。
+        return {
+            "model": "",
+            "checks": [],
+            "info": None,
+            "no_catalog": False,
+            "capabilities": [],
+            "hidden_caps": [],
+        }
     info = state.catalog.get(model)
     known = info is not None and info.declares_capabilities
+    checks = builder.model_report(model, state.provider, info) if state.provider is not None else []
+    by_key = {c.key: c for c in checks}
+
+    def usable(cap_key: str) -> bool:
+        """这个模型明确说了不支持才算不支持。
+
+        ``unknown`` 按**可用**处理：目录没有能力信息时（厂商直连的 /models 常常
+        只回一个 id）把选项藏起来，等于因为"不知道"而把一个明明能用的能力拿走。
+        实测 DeepSeek 直连的深度思考就是这种情况——目录一片空白，而它真的会想。
+        """
+        c = by_key.get(cap_key)
+        return c is None or c.state != "no"
+
     return {
         "model": model,
         "info": info,
         # 目录里根本没有能力信息（厂商直连的 /models 常常只回 id）——那时候满屏
         # 打叉是在撒谎。这一位让模板改说"不知道"。
         "no_catalog": not known,
-        "checks": builder.model_report(model, state.provider, info)
-        if state.provider is not None
-        else [],
+        "checks": checks,
+        # 这个模型用不了的能力，表单里就别摆出来。
+        "capabilities": [
+            (name, label, hint, args)
+            for name, label, hint, args in builder.form_capabilities()
+            if usable({"Thinking": "reasoning", "WebSearch": "web_search"}.get(name, name))
+        ],
+        "hidden_caps": [
+            label
+            for name, label, _, _ in builder.form_capabilities()
+            if not usable({"Thinking": "reasoning", "WebSearch": "web_search"}.get(name, name))
+        ],
     }
 
 
@@ -1788,15 +1818,36 @@ async def agent_model_report(request: Request) -> Response:
     ——一半来自模型目录，一半来自 pydantic-ai 的 model profile。
     """
     await require_admin(request)
-    model = request.query_params.get("model", "")
+    q = request.query_params
+    # 勾选状态由请求带回来（hx-include 把 cap_* 一起发上来）。不带的话，换一次模型
+    # 就把已经勾上的清空了——而用户只是想看看这个模型行不行。
+    checked = {k[len("cap_") :] for k in q if k.startswith("cap_") and q.get(k)}
+    ctx = _model_report_ctx(request, q.get("model", ""))
+    offered = {n for n, _, _, _ in ctx["capabilities"]}
     return security_headers(
-        _render(request, "_model_report.html", _model_report_ctx(request, model))
+        _render(
+            request,
+            "_model_report.html",
+            {
+                **ctx,
+                "checked": checked,
+                # 勾着、但这个模型用不了的，仍然当"已不再提供"渲染出来让人自己决定，
+                # 不静默丢。
+                "legacy_capabilities": sorted(checked - offered),
+            },
+        )
     )
 
 
 @router.get("/agents/new")
 async def agent_new(request: Request) -> Response:
     await require_admin(request)
+    from ..services import agent_test as test_svc
+
+    state = request.app.state.xc
+    async with state.sessionmaker() as s:
+        # 新建页上的试运行还没有 slug，那几条归在空串下。
+        history = [_test_history_row(r) for r in await test_svc.recent(s, "")]
     csrf = await _ensure_csrf_cookie(request)
     resp = _render(
         request,
@@ -1811,6 +1862,7 @@ async def agent_new(request: Request) -> Response:
             "hints": [],
             "error": None,
             "saved": None,
+            "history": history,
             **await _form_shell(request),
         },
     )
@@ -1840,12 +1892,14 @@ async def agent_edit(slug: str, request: Request) -> Response:
     session = await require_admin(request)
     state = request.app.state.xc
     from ..services import agent as agent_svc
+    from ..services import agent_test as test_svc
 
     async with state.sessionmaker() as s:
         resolved = await agent_svc.resolve(s, slug, include_inactive=True)
         row = await s.get(AgentRow, resolved.agent_id)
         group_name = row.group_name if row else None
         vers = await agent_svc.versions(s, resolved.agent_id)
+        history = [_test_history_row(r) for r in await test_svc.recent(s, slug)]
         version_rows = [
             SimpleNamespace(
                 version=v.version,
@@ -1890,6 +1944,7 @@ async def agent_edit(slug: str, request: Request) -> Response:
             "error": None,
             # 取走上一次保存的结果（经 flash 跨过 303）。一次性：刷新页面不再提示。
             "saved": _take_saved(request, session),
+            "history": history,
             **_lint_ctx(form.schema, form.tier),
         },
     )
@@ -2003,6 +2058,7 @@ async def agent_save(
                 "hints": [],
                 "error": e.message,
                 "saved": None,
+                "history": [],
                 **await _form_shell(request),
             },
         )
@@ -2050,6 +2106,26 @@ async def agent_lint(
     """
     await guard_mutation(request, csrf_token)
     return security_headers(_render(request, "_lint.html", _lint_ctx(output_schema, tier)))
+
+
+def _test_history_row(row: Any) -> Any:
+    """一条试运行历史的展示形状。"""
+    from ..services import agent_test as test_svc
+
+    return SimpleNamespace(
+        when=_fmt_time(row.created_at),
+        ok=row.ok,
+        model=row.model,
+        tier=row.tier or "—",
+        input=row.input,
+        output=row.output or "",
+        error=row.error or "",
+        elapsed=f"{(row.elapsed_ms or 0) / 1000:.1f}",
+        tokens=f"{row.input_tokens} → {row.output_tokens}",
+        cost=_fmt_cost(row.cost_usd) if row.cost_usd else "—",
+        violations=row.violations,
+        rows=test_svc.chain_of(row),
+    )
 
 
 def _chain_rows(messages: list[Any]) -> list[Any]:
@@ -2119,20 +2195,36 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
     from ..core.builder import BuildOptions
     from ..core.schema_guard import SchemaRejected, validate_schema
     from ..errors import XingchaError
+    from ..services import agent_test as test_svc
     from ..services import run as run_svc
 
     raw = await request.form()
     probe = str(raw.get("test_input") or "").strip()
+    slug = str(raw.get("slug") or "").strip()
 
-    def failed(message: str) -> Response:
+    async def render(ctx: dict[str, Any]) -> Response:
+        """把这一次的结果连同最近几次一起渲染。
+
+        历史与本次走同一个模板片段：两套渲染迟早在"这一列显示什么"上分叉，而这里
+        要的恰恰是能把这次和上次并排比。
+        """
+        async with state.sessionmaker() as s:
+            rows = await test_svc.recent(s, slug)
         return security_headers(
-            _render(request, "_agent_test.html", {"ok": False, "message": message})
+            _render(
+                request,
+                "_agent_test.html",
+                {**ctx, "history": [_test_history_row(r) for r in rows]},
+            )
         )
 
+    async def failed(message: str) -> Response:
+        return await render({"ok": False, "message": message})
+
     if not probe:
-        return failed("先填一段测试输入——它就是调用方会发来的那条 user 消息。")
+        return await failed("先填一段测试输入——它就是调用方会发来的那条 user 消息。")
     if state.provider is None:
-        return failed("还没有配置上游 key。到「上游」页配好之后再试。")
+        return await failed("还没有配置上游 key。到「上游」页配好之后再试。")
 
     try:
         prompting = _prompting_from_form(raw)
@@ -2144,7 +2236,7 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
         tier_raw = str(raw.get("tier") or "")
         model = str(raw.get("model") or "").strip()
         if not model:
-            return failed("先选一个模型。")
+            return await failed("先选一个模型。")
 
         from ..core.guarantee import resolve_tier
 
@@ -2181,7 +2273,7 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             concurrency=state.concurrency,
         )
     except (SchemaRejected, XingchaError, ValueError) as e:
-        return failed(str(getattr(e, "message", e)))
+        return await failed(str(getattr(e, "message", e)))
 
     conv = run_svc.apply_prompting(
         run_svc.to_conversation([{"role": "user", "content": probe}]), rt.prompting
@@ -2192,18 +2284,25 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
         outcome = await run_svc.execute(rt, conv=conv, run_timeout=state.settings.run_timeout)
     except XingchaError as e:
         # 失败也把链路渲染出来：**看得见模型到底收到了什么**，才知道是提示词的问题
-        # 还是 schema 的问题。只显示一句"失败了"等于什么都没说。
-        return security_headers(
-            _render(
-                request,
-                "_agent_test.html",
-                {
-                    "ok": False,
-                    "message": e.message,
-                    "rows": _chain_rows(getattr(e, "messages", []) or []),
-                    "elapsed": f"{time.monotonic() - started:.1f}",
-                },
+        # 还是 schema 的问题。只显示一句"失败了"等于什么都没说。失败同样入历史——
+        # "上一版为什么挂"正是下一次要对照的东西。
+        rows = _chain_rows(getattr(e, "messages", []) or [])
+        elapsed = time.monotonic() - started
+        async with state.sessionmaker() as s:
+            await test_svc.record(
+                s,
+                slug=slug,
+                model=model,
+                tier=choice.tier.value,
+                ok=False,
+                prompt=probe,
+                error=e.message,
+                chain=[vars(r) for r in rows],
+                elapsed_ms=int(elapsed * 1000),
             )
+            await s.commit()
+        return await render(
+            {"ok": False, "message": e.message, "rows": rows, "elapsed": f"{elapsed:.1f}"}
         )
 
     from ..api.runlog_mw import price
@@ -2217,26 +2316,44 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             "cache_read_tokens": outcome.cache_read_tokens,
         },
     )
-    return security_headers(
-        _render(
-            request,
-            "_agent_test.html",
-            {
-                "ok": True,
-                "rows": _chain_rows(outcome.messages),
-                "output": outcome.content,
-                "tier": choice.tier.value,
-                "tier_note": choice.reason,
-                "elapsed": f"{time.monotonic() - started:.1f}",
-                "input_tokens": outcome.input_tokens,
-                "output_tokens": outcome.output_tokens,
-                "requests": outcome.requests,
-                "retries": outcome.schema_retries,
-                "violations": outcome.schema_violations,
-                "cost": _fmt_cost(str(cost)) if cost is not None else "—",
-                "cost_source": source,
-            },
+    rows = _chain_rows(outcome.messages)
+    elapsed = time.monotonic() - started
+    async with state.sessionmaker() as s:
+        await test_svc.record(
+            s,
+            slug=slug,
+            model=model,
+            tier=choice.tier.value,
+            ok=True,
+            prompt=probe,
+            output=outcome.content,
+            chain=[vars(r) for r in rows],
+            elapsed_ms=int(elapsed * 1000),
+            input_tokens=outcome.input_tokens,
+            output_tokens=outcome.output_tokens,
+            requests=outcome.requests,
+            violations=outcome.schema_violations,
+            retries=outcome.schema_retries,
+            cost_usd=str(cost) if cost is not None else None,
+            cost_source=source,
         )
+        await s.commit()
+    return await render(
+        {
+            "ok": True,
+            "rows": rows,
+            "output": outcome.content,
+            "tier": choice.tier.value,
+            "tier_note": choice.reason,
+            "elapsed": f"{elapsed:.1f}",
+            "input_tokens": outcome.input_tokens,
+            "output_tokens": outcome.output_tokens,
+            "requests": outcome.requests,
+            "retries": outcome.schema_retries,
+            "violations": outcome.schema_violations,
+            "cost": _fmt_cost(str(cost)) if cost is not None else "—",
+            "cost_source": source,
+        }
     )
 
 

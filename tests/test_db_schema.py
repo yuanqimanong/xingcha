@@ -90,6 +90,7 @@ class TestMigrationChain:
             "agent",
             "agent_alias",
             "agent_version",
+            "agent_test_run",
             "run",
             "run_usage",
             "quota",
