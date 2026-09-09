@@ -480,3 +480,35 @@ class TestEnvNameAlignment:
         documented = set(re.findall(r"^#?\s*(XINGCHA_[A-Z_]+)=", text, re.M))
         unknown = sorted(documented - _KNOWN_ENV_NAMES)
         assert not unknown, f".env.example 里这些名字应用不认识：{unknown}"
+
+
+# =============================================================================
+# 文档不重复
+# =============================================================================
+
+
+class TestDocsHaveOneOwner:
+    """网关的部署说明**只有一份**，在 deploy/CADDY.md。
+
+    用户明确要求过"其他地方不要有重复的部分"。这不是洁癖：两处各写一份的结果一定是
+    其中一份先过期，而读到过期那份的人会照着做——然后撞上一个已经不存在的步骤
+    （这个项目已经发生过：deploy.sh 在 Caddy 去掉之后还在校验 XINGCHA_DOMAIN）。
+    """
+
+    #: 只该出现在 CADDY.md 里的字眼。都是网关的实现细节，不是 xingcha 的部署步骤。
+    GATEWAY_ONLY: ClassVar[list[str]] = ["edge trust", "root.crt", "default_sni", "内部 CA"]
+
+    def test_the_gateway_doc_exists_and_is_linked(self):
+        caddy = ROOT / "deploy" / "CADDY.md"
+        assert caddy.exists(), "deploy/CADDY.md 不见了"
+        assert "CADDY.md" in (ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+        assert "CADDY.md" in (ROOT / "README.md").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("phrase", GATEWAY_ONLY)
+    def test_gateway_details_live_in_one_place(self, phrase: str):
+        others = [
+            q.relative_to(ROOT).as_posix()
+            for q in [ROOT / "README.md", ROOT / "deploy" / "README.md"]
+            if phrase in q.read_text(encoding="utf-8")
+        ]
+        assert not others, f"「{phrase}」是网关的细节，只该在 deploy/CADDY.md 里，却出现在 {others}"

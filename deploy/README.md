@@ -5,11 +5,8 @@
 顺序是固定的——**先起网关，再部署 xingcha**：
 
 ```bash
-# 1. 网关（独立项目，fin / pyp 共用同一台）。文档：../edge/README.md
-cd ~/Desktop/my-project/edge && ./edge start
-
-# 2. 在每台要访问的设备上装一次根证书（上一步会打印命令）
-#    不装的话浏览器每次都拦，而点"继续前往"只防被动嗅听
+# 1-2. 起网关 + 装根证书 —— 全部见 deploy/CADDY.md
+#      （网关是独立项目，fin / pyp 共用同一台）
 
 # 3. xingcha
 cd ~/Desktop/my-project/xingcha && ./deploy/xc start
@@ -22,8 +19,8 @@ cd ~/Desktop/my-project/xingcha && ./deploy/xc start
 
 ## 为什么只有一条路
 
-曾经有两条：直连明文 HTTP（宿主端口 8720）与经网关的 HTTPS（8443）。去掉直连不是
-为了少一个选项，而是因为**两条路的安全性质不同，而人只会记住能打开的那一个**：
+曾经有两条：直连明文 HTTP（宿主端口 8720）与经网关的 HTTPS。去掉直连不是为了少一个
+选项，而是因为**两条路的安全性质不同，而人只会记住能打开的那一个**：
 
 - 直连那条上，后台密码与 `sk-xc-` 密钥在网络上**裸传**；
 - 而那个宿主端口走 Docker 的 `DOCKER-USER` 链，**绕过 ufw**——你在防火墙里写的
@@ -40,6 +37,9 @@ cd ~/Desktop/my-project/xingcha && ./deploy/xc start
 （compose 里的 `XINGCHA_TRUSTED_PROXIES=*`）。不信任的话应用以为自己在 http 上，
 **会话 cookie 不带 `Secure`**——浏览器那半段明明是 HTTPS，却少了一层保护，
 而功能完全正常，没人会注意到。敢用 `*` 的前提就是上面那条：零宿主端口。
+
+网关自己怎么部署、根证书怎么装、按端口怎么分流——**全在
+[CADDY.md](CADDY.md)**，这里不重复。
 
 ---
 

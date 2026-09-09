@@ -12,6 +12,15 @@
   变的只有标题、说明与按钮文案；品牌锁定块与页脚两种模式完全一致。
 #}
 <div class="auth-shell">
+  {# 银河。三层星点 + 一条带尘埃暗带的银河核心，纯 CSS。
+     aria-hidden：它是氛围，不该被读屏软件念出来。 #}
+  <div class="galaxy" aria-hidden="true">
+    <div class="galaxy-band"></div>
+    <div class="stars s1"></div>
+    <div class="stars s2"></div>
+    <div class="stars s3"></div>
+  </div>
+
   <form class="auth-card" method="post" action="{{ action }}">
     <div class="auth-lockup">
       <div class="auth-seal">槎</div>
@@ -63,5 +72,11 @@
 
     <div class="auth-foot">v{{ version }} · 契约 v{{ contract }} · 自托管，数据不出这台机器</div>
   </form>
+
+  {# 题解。名字不是随手取的，值得在第一屏解释一次；放卡片外面，不干扰"我该填什么"。 #}
+  <div class="auth-colophon">
+    <span class="pin">星槎</span>（xīng chá）——《博物志》载有人乘槎溯河，直抵天河；明代费信随郑和下西洋，
+    著《星槎胜览》。一条渡海之筏：把提示词渡成可被调用的服务。
+  </div>
 </div>
 {% endblock %}

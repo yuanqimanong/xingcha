@@ -47,6 +47,18 @@ templates = Jinja2Templates(directory=str(HERE / "templates"))
 
 
 @cache
+def _asset_digest(name: str, _stamp: tuple[int, int]) -> str:
+    """静态资源内容的短哈希。
+
+    ``_stamp`` 是 ``(mtime_ns, size)``，只用来做缓存键：**文件一改，键就变，
+    哈希自动重算。** 不这么做的话进程内只算一次，而我们对静态资源发的是
+    ``immutable`` 一年缓存——URL 不变 + 浏览器永久缓存 = 改了 CSS 却永远看不到，
+    而且看起来像"改的地方没生效"。生产上无所谓（部署就是新进程），开发时能耗掉
+    很长时间才想到是缓存。实际踩过。
+    """
+    return hashlib.sha256((HERE / "static" / name).read_bytes()).hexdigest()[:8]
+
+
 def asset(name: str) -> str:
     """静态资源的带版本 URL，形如 ``/admin/static/style.css?v=1a2b3c4d``。
 
@@ -58,10 +70,10 @@ def asset(name: str) -> str:
     平时零请求，升级后必取新的。这直接服务于"升级对用户透明"——用户不该需要知道
     "改完样式要硬刷新"这件事。
 
-    ``@cache``：每个名字只读盘一次。文件在 wheel 里，进程生命周期内不会变。
+    每次渲染一个 ``stat()``（三个小文件），哈希本身由 :func:`_asset_digest` 缓存。
     """
-    digest = hashlib.sha256((HERE / "static" / name).read_bytes()).hexdigest()[:8]
-    return f"/admin/static/{name}?v={digest}"
+    st = (HERE / "static" / name).stat()
+    return f"/admin/static/{name}?v={_asset_digest(name, (st.st_mtime_ns, st.st_size))}"
 
 
 templates.env.globals["asset"] = asset
