@@ -55,7 +55,7 @@ class TestFieldListsAreSchemaDriven:
 
     def test_every_form_capability_exists_in_pydantic_ai(self):
         known = set(builder.declarable_capabilities())
-        for name, _, _ in builder.form_capabilities():
+        for name, _, _, _ in builder.form_capabilities():
             assert name in known, f"{name} 不是官方能力"
         assert builder.CAPABILITY_INSTRUMENTATION in known
 
@@ -66,7 +66,7 @@ class TestFieldListsAreSchemaDriven:
         """
         for field, label, hint in builder.model_settings_fields():
             assert label and len(hint) > 8, f"{field} 的说明太短"
-        for name, label, hint in builder.form_capabilities():
+        for name, label, hint, _ in builder.form_capabilities():
             assert label and hint, f"{name} 缺标签或提示"
 
 
@@ -266,7 +266,7 @@ class TestFormPage:
 
     def test_capabilities_are_rendered(self, logged_in: TestClient):
         body = logged_in.get("/admin/agents/new").text
-        for name, _, _ in builder.form_capabilities():
+        for name, _, _, _ in builder.form_capabilities():
             assert f'name="cap_{name}"' in body
 
     def test_observability_switch_is_absent_without_an_endpoint(self, logged_in: TestClient):
@@ -335,6 +335,43 @@ class TestSaveWithNewFields:
         logged_in.get("/admin/agents/new")
         assert self._create(logged_in).status_code == 303
         assert "model_settings" not in _spec_of(settings, "params")
+
+    def test_web_fetch_carries_its_local_fallback(
+        self, logged_in: TestClient, settings: Settings
+    ):
+        """**网页抓取不带 local 就是一个必然报错的开关。**
+
+        实测 pydantic-ai 2.35.3：``OpenAIChatModel.supported_native_tools()`` 只有
+        ``{WebSearchTool}``——而星槎对所有模型都用这个类（``OpenRouterModel`` 对缺
+        provider 字段的中转响应会硬失败，而走中转正是这个项目的用途）。所以网页抓取
+        跟模型无关地拿不到原生支持，只能由星槎自己的进程做，而那需要 ``local=True``。
+        """
+        logged_in.get("/admin/agents/new")
+        assert self._create(logged_in, cap_WebFetch="1").status_code == 303
+        caps = _spec_of(settings, "params")["capabilities"]
+        assert caps == [{"name": "WebFetch", "arguments": {"local": True}}], caps
+
+    def test_a_capability_with_args_is_still_readable_back(self):
+        """带参数的形状也要能反填，否则编辑一次就把参数清掉。"""
+        assert builder.capability_names(
+            [{"name": "WebFetch", "arguments": {"local": True}}]
+        ) == {"WebFetch"}
+
+    def test_the_arg_shape_is_one_from_spec_accepts(self):
+        """带参数那一种同样要过"存得下 + 跑得起来"这一关。"""
+        from pydantic_ai import Agent
+        from pydantic_ai.models.test import TestModel
+
+        spec = builder.validate_spec(
+            builder.spec_from_form(
+                name="x",
+                description=None,
+                instructions="i",
+                model="openai/gpt-5",
+                capabilities=[{"WebFetch": {"local": True}}],
+            )
+        )
+        Agent.from_spec(spec, model=TestModel(), custom_capability_types=())
 
     def test_capabilities_land_in_the_spec(self, logged_in: TestClient, settings: Settings):
         logged_in.get("/admin/agents/new")

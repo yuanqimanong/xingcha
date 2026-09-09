@@ -1879,7 +1879,7 @@ async def agent_save(
     settings_raw = {
         field: str(raw.get(f"ms_{field}") or "") for field, _, _ in builder.model_settings_fields()
     }
-    caps = [name for name, _, _ in builder.form_capabilities() if raw.get(f"cap_{name}")]
+    caps = builder.capabilities_from_form(raw)
     if raw.get("instrument"):
         # 可观测就是 Instrumentation 这个 capability——不是 AgentSpec 的顶层字段
         caps.append(builder.CAPABILITY_INSTRUMENTATION)
@@ -2108,7 +2108,7 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
         settings_raw = {
             f: str(raw.get(f"ms_{f}") or "") for f, _, _ in builder.model_settings_fields()
         }
-        caps = [n for n, _, _ in builder.form_capabilities() if raw.get(f"cap_{n}")]
+        caps = builder.capabilities_from_form(raw)
         spec = builder.spec_from_form(
             name=str(raw.get("name") or "试运行"),
             description=None,

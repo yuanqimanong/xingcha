@@ -273,7 +273,7 @@
           才报的、不在保存那一刻——所以勾完请用下面的「试运行」跑一次再上线。
         </p>
         <div class="check-list">
-          {% for name, label, hint in capabilities %}
+          {% for name, label, hint, _args in capabilities %}
           <label class="check">
             <input type="checkbox" name="cap_{{ name }}" value="1"
                    {% if name in form.capabilities %}checked{% endif %}>

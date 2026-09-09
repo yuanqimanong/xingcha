@@ -316,35 +316,65 @@ FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str], ...]] = (
 #: 上游还提供 ``local=`` 回退（``WebSearch(local='duckduckgo')`` / ``WebFetch(local=True)``），
 #: 那会让抓取发生在**星槎自己的进程里**。没有开放：那等于给服务端开一个由模型
 #: 决定目标地址的出网原语，也就是 SSRF；要开得先过 urlguard，而那是一次单独的决定。
-FORM_CAPABILITIES: Final[tuple[tuple[str, str, str], ...]] = (
+#: **这条通道原生只认一个工具。** 实测 pydantic-ai 2.35.3：
+#:
+#:     class OpenAIChatModel:
+#:         def supported_native_tools(cls): return frozenset({WebSearchTool})
+#:
+#: 星槎对所有模型都用 ``OpenAIChatModel``（见 make_model 的注释：``OpenRouterModel``
+#: 对缺 ``provider`` 字段的中转响应会硬失败，而走中转正是这个项目的用途）。所以
+#: 网页抓取、图像生成、原生 MCP **跟模型无关，一律做不到**——它们只存在于
+#: ``OpenAIResponsesModel``（OpenAI 的 Responses API）那条通道上。
+#:
+#: 这不是"支持的模型很少"，是**零**。两者的区别很要紧：前者让人去换模型试，后者
+#: 让人知道该等哪条路通。
+CHAT_CHANNEL_NATIVE_TOOLS: Final = ("WebSearch",)
+
+#: ``(能力名, 标签, 说明, 勾上时带的参数)``。
+#:
+#: 第四项是这一版新加的：勾选框此前只能表达"开/不开"，而 ``local=`` 这类参数恰恰
+#: 是让一个能力从"永远报错"变成"能用"的东西。spec 里带参数的形状是
+#: ``{"名字": {参数}}``，:func:`validate_spec` 会规范化成
+#: ``{"name": ..., "arguments": {...}}``，而 ``from_spec`` **收这一种**（不收
+#: 只有 name 一个键的那种，见 runnable_capabilities）。
+FORM_CAPABILITIES: Final[tuple[tuple[str, str, str, dict[str, Any] | None], ...]] = (
     (
         "Thinking",
         "思考",
         "让模型先想再答。任何上游都收，但只有推理型模型真的会想，且会多花 token。"
         "实测在 DeepSeek 直连与 OpenRouter 上都可用。",
+        None,
     ),
     (
         "WebSearch",
         "联网搜索",
-        "模型自己搜。**只在 OpenRouter 这类上游下可用**——厂商直连一律被拒；"
-        "而且模型本身要支持。拿不准就用下面的「试运行」跑一次，一次就知道。",
+        "**由上游去搜**，不占这台机器的网络。这条通道上唯一能交给上游做的能力。"
+        "要两个条件：上游得是 OpenRouter 这一类（厂商直连一律被拒），模型自己也要支持。"
+        "拿不准用下面的「试运行」跑一次，一次就知道。",
+        None,
     ),
     (
         "WebFetch",
         "网页抓取",
-        "模型自己取网页正文。**支持的模型很少**——多数模型只支持联网搜索、不支持抓取。"
-        "同样先用「试运行」验一次。",
+        "**由星槎自己的进程去抓**，不是上游——网页抓取在这条 API 通道上跟模型无关地"
+        "做不到，只能本地做。于是能抓到的范围就是**这台机器能到的范围**："
+        "国内站点可以，被墙的站点不行。私有网段与云元数据地址一律拒（上游自带守卫）。",
+        {"local": True},
     ),
     (
         "ToolSearch",
         "工具搜索",
         "工具很多时让模型先检索再调用。**现在开了等于没开**：星槎还没有注册工具的"
-        "入口（唯一的路是 MCP，未接），没有工具可检索。",
+        "入口（唯一的路是 MCP，未接），没有工具可检索。不报错，但也不做任何事。",
+        None,
     ),
     (
         "ImageGeneration",
         "图像生成",
-        "让模型能出图。**支持的模型很少**，不支持时请求会被直接拒。先用「试运行」验。",
+        "**这条通道上做不到。** 勾了必然报错——原生要 OpenAI 的 Responses API"
+        "（星槎有意没走，中转会挂），本地回退要传一个 Python 函数，网页表单表达不了。"
+        "留在这里是为了别让已经勾过的 Agent 静默丢设置。",
+        None,
     ),
 )
 
@@ -368,10 +398,27 @@ def model_settings_fields() -> tuple[tuple[str, str, str], ...]:
     return FORM_MODEL_SETTINGS
 
 
-def form_capabilities() -> tuple[tuple[str, str, str], ...]:
+def capabilities_from_form(raw: Any) -> list[Any]:
+    """勾选框 → spec 里的 capabilities 列表。
+
+    没参数的写成裸字符串，有参数的写成 ``{"名字": {参数}}``——这两种正好是
+    :func:`validate_spec` 的官方 schema 与 ``from_spec`` **同时**接受的形状
+    （交集，见 :func:`runnable_capabilities`）。
+
+    参数不是可选的花活：网页抓取只有带上 ``local=True`` 才可能工作，不带就是一个
+    勾了必然报错的开关。
+    """
+    out: list[Any] = []
+    for name, _, _, args in form_capabilities():
+        if raw.get(f"cap_{name}"):
+            out.append({name: dict(args)} if args else name)
+    return out
+
+
+def form_capabilities() -> tuple[tuple[str, str, str, dict[str, Any] | None], ...]:
     """表单要用的能力，**对着官方 CAPABILITY_TYPES 校验过**。"""
     known = set(declarable_capabilities())
-    missing = [name for name, _, _ in FORM_CAPABILITIES if name not in known]
+    missing = [name for name, _, _, _ in FORM_CAPABILITIES if name not in known]
     if missing:  # pragma: no cover
         raise RuntimeError(f"这些能力在 pydantic-ai 里不存在了：{missing}")
     if CAPABILITY_INSTRUMENTATION not in known:  # pragma: no cover
