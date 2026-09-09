@@ -9,7 +9,7 @@
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://192.168.1.10:8720/v1", api_key="sk-xc-1-...")
+client = OpenAI(base_url="https://192.168.1.10:8443/v1", api_key="sk-xc-1-...")
 
 # 裸模型直通
 client.chat.completions.create(model="openai/gpt-5", messages=[...])
@@ -46,7 +46,12 @@ client.chat.completions.create(model="extract", messages=[...])
 
 ```bash
 git clone git@github.com:yuanqimanong/xingcha.git
-cd xingcha && ./deploy/xc start     # 首次会生成 .env 并停下来提示填写
+
+# 1. 先起网关（独立项目，多个项目共用同一台）
+cd edge && ./edge start && cd ..
+
+# 2. 再部署 xingcha（首次会生成 .env 并停下来提示填写）
+cd xingcha && ./deploy/xc start
 ```
 
 日常就三条：
@@ -60,15 +65,16 @@ cd xingcha && ./deploy/xc start     # 首次会生成 .env 并停下来提示填
 Windows 用 `.\deploy\xc.ps1`，动作名一样。
 
 一台 1C1G 的 VPS 足够。**一个容器、一个 compose 文件、一个 SQLite 文件**，没有
-Postgres / Redis / 消息队列，也没有反向代理。
+Postgres / Redis / 消息队列。
 
-默认只绑回环（`127.0.0.1`），只有本机能访问。要开给局域网，在 `.env` 里写
-`XINGCHA_BIND_ADDR=0.0.0.0`——这必须是一次显式选择，因为映射出去的端口走
-Docker 的 DOCKER-USER 链，**会绕过 ufw**。
+**对外只有一条路：网关上的 HTTPS。** xingcha 自己一个宿主端口都不发布——直连那条
+路曾经存在过，去掉是因为它是明文（密码与 `sk-xc-` 裸传），而且那个宿主端口走
+Docker 的 `DOCKER-USER` 链、**绕过 ufw**。两条入口并存最糟：它们的安全性质不同，
+而人只会记住能打开的那一个。
 
-对外是明文 HTTP：**密码与 `sk-xc-` 密钥在网络上是裸传的**。这适合自己的局域网；
-要放到公网上就在前面放一个反代做 TLS（星槎的 cookie 会跟着请求协议自动带
-`Secure`，但你需要给反代配好 `X-Forwarded-Proto` 的信任范围）。
+代价是**网关成了硬依赖**，`./deploy/xc start` 会在启动前检查它。网关是独立项目
+（`edge/`，多个项目共用一台，于是根证书只需在每台设备装一次），它自己的文档在
+`edge/README.md`。
 
 ---
 

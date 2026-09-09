@@ -5,19 +5,21 @@
 # **同一个东西的参数**——监听哪个地址、哪个端口、数据放哪儿——而参数应该是变量，
 # 不是文件。三份文件的真实代价是它们会各自漂移，且只在真的 `up` 时才暴露。
 #
-# Caddy 也去掉了：明文 HTTP 直连。代价是明确的——后台密码与 sk-xc- 密钥在网络上
-# 是裸传的，同网段的人能读到。这是一次明确的取舍（自己的局域网），不是遗漏。
-# 要重新戴上 TLS 的话，在前面放任何一个反代即可，星槎的 cookie 会跟着请求协议
-# 自动带上 Secure（见 web/routes.py 的 _cookie_secure）。
+# **只有一条对外路径：共享网关（../edge）上的 HTTPS。**
 #
-# 用法一律走 ../deploy/xc（或 xc.ps1），它替你把 -f 与 --env-file 传好：
+# 曾经有两条——直连明文 HTTP（宿主端口 8720）与经网关的 HTTPS（8443）。两条并存的
+# 问题不是多余，是**它们的安全性质不同而人只记得住能打开的那一个**：直连那条上
+# 后台密码与 sk-xc- 密钥在网络上裸传，而且那个端口绕过 ufw。所以直连去掉了。
+#
+# 代价写在这里：**网关是硬依赖**。它没起，后台完全进不去。
+#
+# 用法一律走 ../deploy/xc（或 xc.ps1），它替你把 -f 与 --env-file 传好，
+# 并在启动前检查网关在不在：
 #
 #     ./deploy/xc start        构建并启动，数据不动
 #     ./deploy/xc redeploy     清空数据从零开始
 #
-# 直接手敲的话（路径相对于仓库根）：
-#
-#     docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
+# 网关自己怎么起，见 ../edge/README.md（那是一个独立项目，fin / pyp 共用同一台）。
 
 # 项目名写死。不写的话 compose 用 compose 文件所在目录名，也就是 "deploy"——
 # 容器会叫 deploy-xingcha-1，而所有文档、脚本与运维记忆里都是 xingcha-xingcha-1。
@@ -32,14 +34,19 @@ services:
     image: xingcha:local
     restart: unless-stopped
 
-    # 宿主上绑哪个地址，**默认只绑回环**。
+    # **刻意没有 ports。** 对外只经共享网关（../edge），一个宿主端口都不发布。
     #
-    # 这一条是有意的默认值：映射出去的端口会走 Docker 的 DOCKER-USER 链，
-    # **绕过 ufw**——你在防火墙里写的 deny 对它无效。所以"让整个局域网能访问"
-    # 必须是一次显式的选择（在 .env 里写 XINGCHA_BIND_ADDR=0.0.0.0），
-    # 而不是装上就默认对外。
-    ports:
-      - "${XINGCHA_BIND_ADDR:-127.0.0.1}:${XINGCHA_WEB_PORT:-8720}:8720"
+    # 两个理由：
+    #   1. 映射出去的端口走 Docker 的 DOCKER-USER 链，**绕过 ufw**——你在防火墙里
+    #      写的 deny 对它无效；
+    #   2. 直连那条路是明文 HTTP，密码与 sk-xc- 密钥在网络上裸传。同时留着两条
+    #      入口最糟：它们的 TLS 状态不同，而人只会记住能打开的那一个。
+    #
+    # 代价是**网关成了硬依赖**：它没起，后台就完全进不去（包括进去修东西）。
+    # deploy/xc 在启动前会检查网关，缺了就给出可执行的提示——不然症状是
+    # "容器 healthy 却什么都打不开"。
+    expose:
+      - "8720"
 
     # 宿主的 .env 直接注进容器：后台密码（XINGCHA_ADMIN_PASSWORD）与各厂商的
     # key 变量（DEEPSEEK_API_KEY 之类，上游页会读它们）都从这里来。
@@ -58,9 +65,19 @@ services:
       XINGCHA_DATA_DIR: /data
       XINGCHA_HOST: 0.0.0.0
       XINGCHA_PORT: "8720"
-      # 后台里展示的 curl 示例用它。协议是 http——见文件头那段取舍。
-      XINGCHA_PUBLIC_URL: http://${XINGCHA_WEB_HOST:-localhost}:${XINGCHA_WEB_PORT:-8720}
+      # 后台里展示的 curl 示例用它。**是网关的地址**，不是容器自己的。
+      XINGCHA_PUBLIC_URL: https://${XINGCHA_WEB_HOST:-localhost}:${XINGCHA_WEB_PORT:-8443}
       XINGCHA_LOG_LEVEL: ${XINGCHA_LOG_LEVEL:-INFO}
+
+      # 信任网关发来的 X-Forwarded-Proto，否则**会话 cookie 不带 Secure**。
+      #
+      # 网关到这里那一跳是 http，所以应用自己看到的 scheme 是 http，
+      # cookie_secure() 会返回 False——浏览器那半段明明是 HTTPS，却少了一层保护，
+      # 而功能完全正常，没人会注意到。
+      #
+      # 敢写 `*`（信任所有来源）的理由很具体：上面**一个宿主端口都没有**，
+      # 这个容器唯一的入口就是 edge 网络里的网关。
+      XINGCHA_TRUSTED_PROXIES: "*"
 
     volumes:
       # 默认宿主目录（../data，即仓库根下的 data/）。
@@ -88,6 +105,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+networks:
+  default:
+    # **外部网络**，由 ../edge/edge start 创建。写成 external 而不是让 compose 自建：
+    # 网关要 join 的是同一个网络，而 compose 自建的网络名会带项目名前缀
+    # （xingcha_edge），网关根本不在那里面——症状是网关一直 502 而两边容器都"在跑"。
+    name: edge
+    external: true
 
 volumes:
   # 只有 XINGCHA_DATA_MOUNT=xingcha_data 时才会真的被创建（Windows 那条路径）。

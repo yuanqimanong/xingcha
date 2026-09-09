@@ -793,11 +793,11 @@ UPSTREAM_ENV_WITHOUT_CATALOG: Final[frozenset[str]] = frozenset({"PERPLEXITY_API
 #: 东西，要么学会忽略这类警告——而忽略之后，**真的拼错时也不会有人看**。
 ORCHESTRATION_ENV_NAMES: Final = frozenset(
     {
-        "XINGCHA_BIND_ADDR",  # 宿主绑哪个地址（compose 的 ports）
-        "XINGCHA_WEB_PORT",  # 宿主端口（compose 的 ports）
-        "XINGCHA_WEB_HOST",  # 只用于拼 XINGCHA_PUBLIC_URL 与 xc 打印的地址
+        # 这两个只用于拼 XINGCHA_PUBLIC_URL 与 xc 打印的访问地址。
+        # 它们是**网关**上的主机与端口，不是这个容器的——容器一个宿主端口都不发布。
+        "XINGCHA_WEB_HOST",
+        "XINGCHA_WEB_PORT",
         "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷（Windows 用后者）
-        "XINGCHA_EDGE",  # deploy/xc 的拓扑开关，等价于 --edge
     }
 )
 

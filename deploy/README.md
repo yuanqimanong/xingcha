@@ -1,33 +1,45 @@
 # 部署
 
-**一个容器、一个 compose 文件、明文 HTTP。**
+**一个容器，对外只有一条路：共享网关上的 HTTPS。**
+
+顺序是固定的——**先起网关，再部署 xingcha**：
 
 ```bash
-git clone git@github.com:yuanqimanong/xingcha.git
-cd xingcha && ./deploy/xc start
+# 1. 网关（独立项目，fin / pyp 共用同一台）。文档：../edge/README.md
+cd ~/Desktop/my-project/edge && ./edge start
+
+# 2. 在每台要访问的设备上装一次根证书（上一步会打印命令）
+#    不装的话浏览器每次都拦，而点"继续前往"只防被动嗅听
+
+# 3. xingcha
+cd ~/Desktop/my-project/xingcha && ./deploy/xc start
 ```
 
-首次会从 `deploy/.env.example` 生成一份 `.env` 并停下来，让你决定要不要开给局域网。
-填完再跑一次 `./deploy/xc start` 就起来了。Windows 用 `.\deploy\xc.ps1`，动作名一样。
+首次会从 `deploy/.env.example` 生成一份 `.env` 并停下来。Windows 用
+`.\deploy\xc.ps1`，动作名一样。
 
 ---
 
-## 为什么没有 TLS / 没有反向代理
+## 为什么只有一条路
 
-早先这里是两个容器（xingcha + Caddy）、三份 compose、两份 Caddyfile，Caddy 负责
-自动签证书。现在收敛成单容器明文 HTTP，这是一次**明确的取舍**，代价必须写清楚：
+曾经有两条：直连明文 HTTP（宿主端口 8720）与经网关的 HTTPS（8443）。去掉直连不是
+为了少一个选项，而是因为**两条路的安全性质不同，而人只会记住能打开的那一个**：
 
-- **密码与 `sk-xc-` 密钥在网络上是裸传的。** 同网段的人 `tcpdump` 一开就能读到，
-  ARP 欺骗都不用做。
-- 之前那套用的是 Caddy 的内部 CA，浏览器不认，你每次都点"继续前往"。**那一档只防
-  被动嗅听**：主动中间人递一张自己的自签证书，你同样会点过去。除非把 Caddy 的根 CA
-  装进每台设备的信任库，否则它给的保护比看起来少。
+- 直连那条上，后台密码与 `sk-xc-` 密钥在网络上**裸传**；
+- 而那个宿主端口走 Docker 的 `DOCKER-USER` 链，**绕过 ufw**——你在防火墙里写的
+  deny 对它无效。
 
-所以：**自己的局域网可以这么用；放公网必须在前面加 TLS。** 加法是在前面放任何一个
-反代（Caddy / nginx / Traefik），星槎的会话 cookie 会跟着请求协议自动带上 `Secure`
-（见 `web/routes.py` 的 `cookie_secure`）；你需要额外给 uvicorn 开
-`proxy_headers` 并把 `forwarded_allow_ips` 限定到反代的地址——**默认不开是有意的**，
-开了就等于信任任何人伪造的 `X-Forwarded-Proto`。
+现在 xingcha **一个宿主端口都不发布**（compose 里只有 `expose`），唯一入口是
+`edge` 网络里的网关。代价必须说清楚：
+
+> **网关是硬依赖。** 它没起，后台就完全进不去——包括进去修东西。
+> `./deploy/xc start` 会在启动前检查它，缺了就给出可执行的提示，
+> 而不是让你看到"容器 healthy 却什么都打不开"。
+
+反代后面还有一件必须做对的事：应用得**信任网关发来的 `X-Forwarded-Proto`**
+（compose 里的 `XINGCHA_TRUSTED_PROXIES=*`）。不信任的话应用以为自己在 http 上，
+**会话 cookie 不带 `Secure`**——浏览器那半段明明是 HTTPS，却少了一层保护，
+而功能完全正常，没人会注意到。敢用 `*` 的前提就是上面那条：零宿主端口。
 
 ---
 
@@ -72,13 +84,12 @@ docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `XINGCHA_BIND_ADDR` | `127.0.0.1` | 宿主上绑哪个地址。**默认只有本机能访问**；开给局域网写 `0.0.0.0` |
-| `XINGCHA_WEB_PORT` | `8720` | 宿主端口 |
+| `XINGCHA_WEB_HOST` | `localhost` | 你在浏览器里敲的主机名或 IP（**网关**的） |
+| `XINGCHA_WEB_PORT` | `8443` | 网关上分给 xingcha 的端口（`edge/.env` 的 `PORT_XINGCHA`） |
 | `XINGCHA_ADMIN_PASSWORD` | 空 | 留空 = 没设置，首次访问 `/admin` 引导设定 |
 
-`XINGCHA_BIND_ADDR` 的默认值是一条**安全属性**：映射出去的端口走 Docker 的
-`DOCKER-USER` 链，**会绕过 ufw** —— 你在防火墙里写的 deny 对它无效。所以"开给整个
-局域网"必须是一次显式选择，而不是装上就默认对外。
+前两项**只用于拼后台里展示的 curl 示例**，不影响监听——容器根本不监听宿主端口。
+填错的后果是用户复制那条 curl 命令连不上，而错误信息指不到"该走网关"。
 
 **Windows 必须加一行** `XINGCHA_DATA_MOUNT=xingcha_data`：Docker Desktop 经
 9p/virtiofs 把 Windows 目录挂进虚拟机，那是网络文件系统，**SQLite 的 WAL 在上面会
@@ -88,7 +99,7 @@ docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 
 ## 初始化
 
-打开 `http://<地址>:8720/admin`。
+打开 `https://<网关地址>:8443/admin`。
 
 1. 首次访问引导**设置管理员密码**（至少 12 位，别复用其它服务的——这个后台能改写
    上游 `base_url`）。
@@ -107,7 +118,7 @@ docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 验证打通：
 
 ```bash
-curl http://<地址>:8720/v1/chat/completions \
+curl https://<网关地址>:8443/v1/chat/completions \
   -H "Authorization: Bearer sk-xc-1-..." \
   -H "Content-Type: application/json" \
   -d '{"model":"openai/gpt-5","messages":[{"role":"user","content":"说一句话"}]}'
@@ -117,7 +128,7 @@ curl http://<地址>:8720/v1/chat/completions \
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://<地址>:8720/v1", api_key="sk-xc-1-...")
+client = OpenAI(base_url="https://<网关地址>:8443/v1", api_key="sk-xc-1-...")
 ```
 
 ### ⚠️ 到上游厂商后台给这把 key 设信用上限
@@ -215,8 +226,9 @@ $DC exec xingcha xingcha db verify
 
 ## 安全注意
 
-- **对外是明文 HTTP。** 见开头那节。放公网前面必须加 TLS。
-- **默认只绑回环。** 改成 `0.0.0.0` 之前先想清楚：那个端口绕过 ufw。
+- **零宿主端口，对外只经网关。** 别给这个服务加 `ports:` —— 那既绕过 ufw 又绕过 TLS。
+- **网关的根证书要装到每台设备上。** 只有 `tls internal` 而继续点"继续前往"，
+  只防被动嗅听：主动中间人递一张自签证书你同样会点过去。
 - **`data/` 目录不要放网络存储。** SQLite 的 WAL 在上面会静默降级，症状是零星的
   `database is locked`。星槎启动时会断言 WAL 并拒绝启动，但把它放对地方更省事。
   （Windows 上的宿主目录就属于这一类，所以要用命名卷。）
@@ -233,11 +245,13 @@ $DC exec xingcha xingcha db verify
 |---|---|
 | 容器起不来 | `./deploy/xc logs`。启动时的断言（WAL、密钥环、迁移）失败都会打印明确原因 |
 | 重启循环 + `PermissionError: /data/backups` | `data/` 属主不对。`./deploy/xc start` 会自动 chown（要 sudo） |
-| 别的设备访问不到 | `XINGCHA_BIND_ADDR` 还是默认的 `127.0.0.1` |
+| 什么都打不开 | 网关没起。`cd ../edge && ./edge start` |
+| 网关能开但回 502 | xingcha 不在 `edge` 网络里，或没起来。`./deploy/xc status` |
+| 浏览器一直拦证书 | 这台设备还没装根证书。`cd ../edge && ./edge ca` |
 | 密码输对却一直跳回登录页 | cookie 带了 `Secure` 而你走的是 http。CI 有一条断言守这个，正常不该发生 |
 | `/v1` 返回 503 | 还没配上游 key。后台「上游」页（当场生效） |
 | 想看整体状况 | `./deploy/xc status`，或 `xingcha doctor` |
-| 磁盘水位 | `curl -s http://<地址>:8720/readyz`，低于 10% 会标 `degraded` |
+| 磁盘水位 | `curl -sk https://<网关地址>:8443/readyz`，低于 10% 会标 `degraded` |
 
 `xingcha doctor` 会一次性检查数据目录权限、schema 版本、密钥环、磁盘、代理环境变量
 与运行约束，并对机器级 socks5 代理这类"报错看不出根因"的情况给出解释。

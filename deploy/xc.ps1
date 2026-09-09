@@ -38,6 +38,18 @@ Set-Location $Root
 
 $Files = @('-f', 'deploy/docker-compose.yml', '--env-file', '.env')
 
+function Require-Gateway {
+  # 网关（..\edge）是**硬依赖**：xingcha 一个宿主端口都不发布，对外只经它。
+  # 不检查的话症状是"容器 healthy 却什么都打不开"，而每一层单独看都正常。
+  docker network inspect edge 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Die '共享网络 edge 不存在。先起网关：cd ..\edge; .\edge start（见 ..\edge\README.md）'
+  }
+  $running = docker inspect -f '{{.State.Running}}' edge-caddy-1 2>$null
+  if ($running -ne 'true') { Die '网关容器 edge-caddy-1 没在跑。先：cd ..\edge; .\edge start' }
+  Ok '网关就绪（edge-caddy-1）'
+}
+
 function Say  { param($m) Write-Host "→ $m" -ForegroundColor Cyan }
 function Ok   { param($m) Write-Host "✓ $m" -ForegroundColor Green }
 function Die  { param($m) Write-Host "✗ $m" -ForegroundColor Red; exit 1 }
@@ -59,7 +71,7 @@ function Need-Env {
     Copy-Item 'deploy/.env.example' '.env'
     Ok '已生成 .env'
     Write-Host '  Windows 上必须加一行 XINGCHA_DATA_MOUNT=xingcha_data（见文件头的说明）。'
-    Write-Host '  默认只绑回环；要开给局域网就把 XINGCHA_BIND_ADDR 改成 0.0.0.0。'
+    Write-Host '  XINGCHA_WEB_HOST / XINGCHA_WEB_PORT 填**网关**的地址与端口。'
     exit 0
   }
 }
@@ -92,22 +104,17 @@ function Wait-Healthy {
 
 function Show-Url {
   $host_ = From-Env 'XINGCHA_WEB_HOST'; if (-not $host_) { $host_ = 'localhost' }
-  $port  = From-Env 'XINGCHA_WEB_PORT'; if (-not $port)  { $port  = '8720' }
-  $bind  = From-Env 'XINGCHA_BIND_ADDR'; if (-not $bind) { $bind  = '127.0.0.1' }
+  $port  = From-Env 'XINGCHA_WEB_PORT'; if (-not $port)  { $port  = '8443' }
   Write-Host ''
-  Write-Host "  http://${host_}:${port}" -ForegroundColor White
-  if ($bind -eq '127.0.0.1') {
-    Write-Host '  只绑在回环上，别的设备访问不到。要开给局域网：在 .env 里写'
-    Write-Host '  XINGCHA_BIND_ADDR=0.0.0.0，再 .\deploy\xc.ps1 start。'
-  } else {
-    Write-Host '  明文 HTTP：密码与 sk-xc- 密钥在网络上是裸传的。'
-  }
+  Write-Host "  https://${host_}:${port}" -ForegroundColor White
+  Write-Host '  经共享网关。xingcha 自己零宿主端口，没有别的入口。'
+  Write-Host '  浏览器还拦的话，说明这台设备还没装网关的根证书：cd ..\edge; .\edge ca'
   Write-Host ''
 }
 
 switch ($Action) {
   'start' {
-    Need-Env
+    Need-Env; Require-Gateway
     Say '构建并启动（数据保留）'
     Up
     Wait-Healthy
@@ -124,6 +131,7 @@ switch ($Action) {
     # `down -v` 删掉本项目声明的命名卷（xingcha_data 与 caddy 的两个）。
     # 数据在卷里而不是宿主目录里，所以**不存在** Linux 版那个"容器还在跑时删目录、
     # 进程握着已删除的 inode 继续写"的陷阱——down 一定先于卷被删除。
+    Require-Gateway
     Say '停止容器并删除数据卷'
     Compose down -v --remove-orphans
     Say '构建并启动'
@@ -134,7 +142,7 @@ switch ($Action) {
   }
 
   'update' {
-    Need-Env
+    Need-Env; Require-Gateway
     # `pull --ff-only` 而不是 `reset --hard`：这个脚本也会在开发机上被跑，
     # 而那里 reset --hard 会不声不响地毁掉未提交的工作。
     git diff --quiet; $dirty = $LASTEXITCODE -ne 0

@@ -37,21 +37,24 @@ UID_IN_CONTAINER=$(from_contract CONTAINER_UID)
 [ -n "$UID_IN_CONTAINER" ] || { echo "读不到 CONTAINER_UID（契约文件动过？）" >&2; exit 1; }
 DATA_DIR=./data
 
-# `--edge`：接进共享网关（../edge），不发布任何宿主端口。
-#
-# 这是**拓扑**开关，不是参数，所以它是一个叠加文件而不是一个环境变量
-# （compose 的 networks 没法靠 ${} 条件出现）。写进 .env 也可以，这样以后
-# 不用每次都带这个参数。
-EDGE=${XINGCHA_EDGE:-}
-for a in "$@"; do [ "$a" = --edge ] && EDGE=1; done
-set -- "${@/--edge/}"
-
 # compose 文件与 .env 都显式传，**不依赖 COMPOSE_FILE 环境变量**：
 # 那东西的分隔符跟着 os.pathsep 走（Linux `:`、Windows `;`），而且它意味着
 # "在哪个目录下敲命令"会改变结果——正是上一版让人在 deploy/ 里 restart 失败的原因。
-FILES=(-f deploy/docker-compose.yml)
-[ -n "$EDGE" ] && FILES+=(-f deploy/docker-compose.edge.yml)
-c() { docker compose "${FILES[@]}" --env-file .env "$@"; }
+c() { docker compose -f deploy/docker-compose.yml --env-file .env "$@"; }
+
+# 网关（../edge）是**硬依赖**：xingcha 一个宿主端口都不发布，对外只经它。
+#
+# 必须在启动前检查，否则症状是"容器 healthy 却什么都打不开"——那种状态最难认，
+# 因为每一层单独看都正常。实际踩过一次（xingcha 没在 edge 网络里，网关一直 502）。
+require_gateway() {
+  docker network inspect edge >/dev/null 2>&1 || die \
+    "共享网络 edge 不存在。先起网关：cd ../edge && ./edge start（见 ../edge/README.md）"
+  docker inspect edge-caddy-1 >/dev/null 2>&1 || die \
+    "网关容器 edge-caddy-1 没在跑。先：cd ../edge && ./edge start"
+  [ "$(docker inspect -f '{{.State.Running}}' edge-caddy-1)" = true ] || die \
+    "网关容器存在但没在运行。先：cd ../edge && ./edge start"
+  ok "网关就绪（edge-caddy-1）"
+}
 
 # up / down 一律带 --remove-orphans。
 #
@@ -80,8 +83,8 @@ need_env() {
     say ".env 不存在，从模板生成一份"
     cp deploy/.env.example .env
     ok "已生成 .env"
-    printf '  默认只绑回环（只有这台机器能访问）。要开给局域网，在 .env 里写\n'
-    printf '  XINGCHA_BIND_ADDR=0.0.0.0 与 XINGCHA_WEB_HOST=<你的 IP>，然后再跑一次。\n'
+    printf '  把 XINGCHA_WEB_HOST / XINGCHA_WEB_PORT 填成**网关**的地址与端口，\n'
+    printf '  然后再跑一次。网关怎么起见 ../edge/README.md。\n'
     exit 0
   fi
 }
@@ -121,30 +124,18 @@ wait_healthy() {
 }
 
 show_url() {
-  local host port bind
+  local host port
   host=$(from_env XINGCHA_WEB_HOST); [ -n "$host" ] || host=localhost
-  if [ -n "$EDGE" ]; then
-    port=$(from_env EDGE_PORT_XINGCHA); [ -n "$port" ] || port=8443
-    printf '\n\033[1m  https://%s:%s\033[0m\n' "$host" "$port"
-    printf '  经共享网关（../edge）。xingcha 自己零宿主端口。\n'
-    printf '  浏览器还拦的话，说明这台设备还没装网关的根证书：../edge/edge ca\n\n'
-    return
-  fi
-  port=$(from_env XINGCHA_WEB_PORT); [ -n "$port" ] || port=8720
-  bind=$(from_env XINGCHA_BIND_ADDR); [ -n "$bind" ] || bind=127.0.0.1
-  printf '\n\033[1m  http://%s:%s\033[0m\n' "$host" "$port"
-  if [ "$bind" = 127.0.0.1 ]; then
-    printf '  只绑在回环上，别的设备访问不到。要开给局域网：在 .env 里写\n'
-    printf '  XINGCHA_BIND_ADDR=0.0.0.0，再 ./deploy/xc start。\n'
-    printf '  （注意：映射出去的端口走 DOCKER-USER 链，会绕过 ufw。）\n\n'
-  else
-    printf '  明文 HTTP：密码与 sk-xc- 密钥在网络上是裸传的。\n\n'
-  fi
+  port=$(from_env XINGCHA_WEB_PORT); [ -n "$port" ] || port=8443
+  printf '\n\033[1m  https://%s:%s\033[0m\n' "$host" "$port"
+  printf '  经共享网关。xingcha 自己零宿主端口，没有别的入口。\n'
+  printf '  浏览器还拦的话，说明这台设备还没装网关的根证书：\n'
+  printf '    cd ../edge && ./edge ca\n\n'
 }
 
 case "${1:-}" in
   start)
-    need_env; ensure_data_owner
+    need_env; require_gateway; ensure_data_owner
     say "构建并启动（保留 data）"
     up
     wait_healthy; show_url
@@ -172,7 +163,7 @@ case "${1:-}" in
     ;;
 
   update)
-    need_env
+    need_env; require_gateway
     # `pull --ff-only` 而不是 `reset --hard`。
     #
     # 原来的 deploy.sh 用的是 reset --hard，理由是"部署机以远程为准"。但这个脚本
@@ -200,7 +191,6 @@ case "${1:-}" in
 星槎
 
   ./xc start        重新构建代码并启动，data 不动（日常用这个）
-                    加 --edge 则接进共享网关 ../edge（零宿主端口 + HTTPS）
   ./xc update       拉代码 + 重新构建启动（工作区脏时会拒绝）
   ./xc redeploy     清空 data 从零开始（会问一次 yes）
   ./xc stop         停止，data 保留

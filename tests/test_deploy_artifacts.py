@@ -73,16 +73,13 @@ class TestSingleFile:
     根本不对（``:`` vs ``;``），表现为"端口没开、也没有任何报错"。
     """
 
-    #: 允许存在的 compose 文件，**闭集**。
+    #: 允许存在的 compose 文件，**闭集：就一份**。
     #:
-    #: 基础那一份 + 一个可选的拓扑叠加层。多出任何一份都要经过一次决定：
-    #: 参数（端口、地址、数据位置）必须做成变量，只有**拓扑**（独立跑 vs 挂在
-    #: 共享网关后面）才配得上一个文件——因为 `networks` 这类字段没法靠 ${} 条件
-    #: 出现。此前三份文件（生产/局域网/Windows）全是参数，已经收敛掉了。
-    ALLOWED: ClassVar[list[str]] = [
-        "deploy/docker-compose.edge.yml",
-        "deploy/docker-compose.yml",
-    ]
+    #: 历史上到过三份（生产/局域网/Windows）+ 一个可选的网关叠加层。前三份的差异
+    #: 全是参数（端口、地址、数据位置），参数该做成变量；那个叠加层是拓扑
+    #: （直连 vs 经网关），而"直连"这条路后来整条去掉了——它是明文 HTTP，且那个
+    #: 宿主端口绕过 ufw，与经网关的 HTTPS 并存只会让人记住能打开的那一个。
+    ALLOWED: ClassVar[list[str]] = ["deploy/docker-compose.yml"]
 
     def test_compose_files_are_a_closed_set(self):
         found = sorted(
@@ -92,23 +89,22 @@ class TestSingleFile:
         )
         assert found == self.ALLOWED, f"编排文件与闭集不符：{found}"
 
-    def test_caddy_is_really_gone(self):
-        """Caddy 去掉了就要**彻底**去掉。
+    def test_this_repo_owns_no_reverse_proxy_of_its_own(self):
+        """**本仓库不含任何 Caddy 配置或服务。**
 
-        留下一份 Caddyfile 或一处引用，下一个读到它的人（包括三个月后的自己）会
-        以为前面还有反代，于是在 cookie、HSTS、X-Forwarded-Proto 上做出错误假设。
+        反代确实回来了，但它是一个**独立项目**（../edge，fin / pyp 共用同一台），
+        理由是证书：一台 Caddy = 一个内部 CA = 根证书只需在每台设备装一次。
+        每个项目自带一个就是 N 个 CA、装 N 次，那种事没人会坚持做，最后大家都在点
+        "继续前往"——那一档只防被动嗅听。
+
+        所以这里守的是**归属**，不是"提不提"：本仓库里不能出现 Caddyfile，
+        compose 里不能声明 caddy 服务。引用外部网关的容器名（xc 要检查它在不在）
+        是正当的。
         """
-        assert not list(ROOT.glob("Caddyfile*")), "根目录还有 Caddyfile"
-        assert not list((ROOT / "deploy").glob("Caddyfile*")), "deploy/ 还有 Caddyfile"
-        for path in (COMPOSE, XC, XC_PS1, DRILL_SH):
-            # 只看真正执行的行。注释里解释"为什么没有 Caddy 了"是正当的——
-            # 那条信息恰恰能拦住下一个人做出"前面有反代"的错误假设。
-            code = "\n".join(
-                ln
-                for ln in path.read_text(encoding="utf-8").splitlines()
-                if not ln.lstrip().startswith(("#", "//"))
-            )
-            assert "caddy" not in code.lower(), f"{path.name} 的可执行部分还引用 caddy"
+        assert not list(ROOT.glob("Caddyfile*")), "根目录出现了 Caddyfile"
+        assert not list((ROOT / "deploy").glob("Caddyfile*")), "deploy/ 出现了 Caddyfile"
+        compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        assert "caddy" not in compose["services"], "本仓库的编排里不该声明 caddy 服务"
 
     def test_project_name_is_pinned(self, compose: dict):
         """不写死 ``name:`` 的话 compose 用 compose 文件所在目录名，也就是
@@ -203,17 +199,35 @@ class TestContainerUid:
 
 
 class TestOrchestrationShape:
-    def test_the_default_bind_is_loopback_only(self, compose_raw: str):
-        """**默认只绑回环。这是一条安全属性，不是风格。**
+    def test_it_publishes_no_host_ports_at_all(self, compose: dict):
+        """**一个宿主端口都不发布。** 对外只经共享网关。
 
-        映射出去的端口走 Docker 的 DOCKER-USER 链，**会绕过 ufw**——你在防火墙里
-        写的 deny 对它无效。所以"开给局域网"必须是 .env 里的一次显式选择，
-        装上就默认对外是不可接受的。
+        两条理由，都不是风格问题：
+          1. 映射出去的端口走 Docker 的 DOCKER-USER 链，**绕过 ufw**——防火墙里
+             写的 deny 对它无效；
+          2. 直连那条是明文 HTTP，后台密码与 sk-xc- 密钥在网络上裸传。
 
-        （Caddy 在的时候 xingcha 一个宿主端口都不发布，那条更强的性质随 Caddy 一起
-        没了；能保留的最强形式就是这条默认值。）
+        并存最糟：两条入口的 TLS 性质不同，而人只会记住能打开的那一个。
         """
-        assert compose_vars(compose_raw)["XINGCHA_BIND_ADDR"] == "127.0.0.1"
+        svc = compose["services"]["xingcha"]
+        assert "ports" not in svc, "出现了 ports:，这既绕过 ufw 又绕过 TLS"
+        assert svc["expose"] == ["8720"]
+
+    def test_it_joins_the_shared_external_network(self, compose: dict):
+        """网络必须是 external。让 compose 自建的话名字会带项目名前缀
+        （xingcha_edge），网关根本不在那个网络里——症状是网关一直 502 而两边容器
+        都"在跑"。实际踩过。"""
+        assert compose["networks"]["default"] == {"name": "edge", "external": True}
+
+    def test_it_trusts_the_gateway_for_forwarded_proto(self, compose: dict):
+        """不信任 ``X-Forwarded-Proto`` 的话**会话 cookie 不带 Secure**。
+
+        网关到应用那一跳是 http，应用看到的 scheme 就是 http。浏览器那半段明明是
+        HTTPS，却少了一层保护——而功能完全正常，没人会注意到。
+
+        敢用 ``*`` 的前提是上面那条断言：**零宿主端口**，唯一入口就是网关。
+        """
+        assert compose["services"]["xingcha"]["environment"]["XINGCHA_TRUSTED_PROXIES"] == "*"
 
     def test_only_one_service(self, compose: dict):
         assert list(compose["services"]) == ["xingcha"]
@@ -235,14 +249,14 @@ class TestOrchestrationShape:
         assert env["XINGCHA_DATA_DIR"] == "/data"
         assert env["XINGCHA_HOST"] == "0.0.0.0"
 
-    def test_public_url_is_http_now_that_tls_is_gone(self, compose: dict):
-        """后台展示的 curl 示例必须与真实协议一致。
+    def test_public_url_points_at_the_gateway_over_https(self, compose: dict):
+        """后台展示的 curl 示例必须与真实入口一致。
 
-        写成 https 的话用户复制那条命令会直接连不上，而错误信息（连接被重置）
-        完全指不到"协议写错了"。
+        写成容器自己的 http 地址，用户复制那条命令会直接连不上（那个端口根本没
+        发布），而错误信息完全指不到"该走网关"。
         """
         assert compose["services"]["xingcha"]["environment"]["XINGCHA_PUBLIC_URL"].startswith(
-            "http://"
+            "https://"
         )
 
     def test_logging_is_capped(self, compose: dict):
@@ -369,6 +383,16 @@ class TestOpsScripts:
         assert "'deploy/docker-compose.yml'" in ps1
         assert "'--env-file', '.env'" in ps1
 
+    def test_both_scripts_refuse_to_start_without_the_gateway(self, sh: str, ps1: str):
+        """网关是**硬依赖**，必须在启动前检查。
+
+        不检查的症状是"容器 healthy 却什么都打不开"——那种状态最难认，因为每一层
+        单独看都正常。实际踩过一次（xingcha 不在 edge 网络里，网关一直 502）。
+        """
+        for name, text in (("deploy/xc", sh), ("deploy/xc.ps1", ps1)):
+            assert "edge-caddy-1" in text, f"{name} 没检查网关容器"
+            assert "network inspect edge" in text, f"{name} 没检查共享网络"
+
     def test_bash_and_powershell_agree_on_the_compose_invocation(self, sh: str, ps1: str):
         """两个脚本必须用**同一份** compose 文件与同一个 .env。
 
@@ -396,70 +420,6 @@ class TestOpsScripts:
 
 
 # =============================================================================
-# 共享网关的叠加层
-# =============================================================================
-
-
-class TestEdgeOverlay:
-    """接进共享网关（../edge）的可选叠加层。
-
-    为什么这一份第二个 compose 文件是正当的，而此前那三份不是：**它是拓扑，不是
-    参数。** 独立跑（自己发布端口、明文 HTTP）与挂在网关后面（零宿主端口、HTTPS）
-    是两种结构；`networks` 这类字段没法靠 ``${}`` 条件出现，硬塞进一份文件只会
-    得到一堆互相排斥的变量。
-    """
-
-    @pytest.fixture(scope="class")
-    def edge(self) -> dict:
-        return yaml.safe_load(
-            (ROOT / "deploy" / "docker-compose.edge.yml")
-            .read_text(encoding="utf-8")
-            .replace("!override", "")
-        )
-
-    def test_it_publishes_no_host_ports(self, edge: dict):
-        """挂在网关后面时**必须零宿主端口**。
-
-        留着直连口等于同时存在两条入口，而两条的 TLS 状态完全不同：一条经网关是
-        HTTPS，一条直连是明文——而且直连那条走 DOCKER-USER 链，绕过 ufw。
-        """
-        assert edge["services"]["xingcha"]["ports"] == []
-
-    def test_ports_are_overridden_not_appended(self):
-        """compose 对 ports 默认是**追加**。少了 `!override`，基础那份的端口映射
-        会继续存在，上面那条性质就没了——而配置看起来完全正常。"""
-        raw = (ROOT / "deploy" / "docker-compose.edge.yml").read_text(encoding="utf-8")
-        assert "ports: !override" in raw
-
-    def test_it_joins_the_shared_external_network(self, edge: dict):
-        """网络必须是 external。让 compose 自建的话名字会带项目名前缀
-        （xingcha_edge），网关根本不在那个网络里——症状是网关一直 502
-        而两边容器都"在跑"。"""
-        assert edge["networks"]["default"] == {"name": "edge", "external": True}
-
-    def test_it_trusts_the_gateway_for_forwarded_proto(self, edge: dict):
-        """不信任 ``X-Forwarded-Proto`` 的话**会话 cookie 不带 Secure**。
-
-        网关到应用这一跳是 http，应用看到的 scheme 就是 http。浏览器那半段明明是
-        HTTPS，却少了一层保护——而功能完全正常，没人会注意到。
-        """
-        assert edge["services"]["xingcha"]["environment"]["XINGCHA_TRUSTED_PROXIES"] == "*"
-
-    def test_the_base_deployment_trusts_nobody(self, compose: dict):
-        """默认部署里**不能**有这一项。
-
-        无条件信任 X-Forwarded-* 意味着任何能直连应用的人都能左右它，而基础部署
-        恰恰是要发布宿主端口的。
-        """
-        assert "XINGCHA_TRUSTED_PROXIES" not in compose["services"]["xingcha"]["environment"]
-
-    def test_public_url_switches_to_https(self, edge: dict):
-        assert edge["services"]["xingcha"]["environment"]["XINGCHA_PUBLIC_URL"].startswith(
-            "https://"
-        )
-
-
-# =============================================================================
 # 编排变量与应用设置的对齐
 # =============================================================================
 
@@ -483,7 +443,7 @@ class TestEnvNameAlignment:
     def _referenced() -> set[str]:
         """部署产物里出现的所有 ``XINGCHA_*`` 名字（只看可执行部分）。"""
         names: set[str] = set()
-        for name in ("docker-compose.yml", "docker-compose.edge.yml", "xc", "xc.ps1"):
+        for name in ("docker-compose.yml", "xc", "xc.ps1"):
             text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
             code = "\n".join(
                 ln for ln in text.splitlines() if not ln.lstrip().startswith(("#", "//", "<#"))
