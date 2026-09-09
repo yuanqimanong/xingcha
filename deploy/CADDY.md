@@ -1,5 +1,9 @@
 # 网关部署（Caddy）
 
+> **`edge` 就是这台 Caddy。** 目录、docker 网络、`.env` 里的 `XINGCHA_GATEWAY`
+> 用的都是这个名字。取角色名而不是产品名，是为了哪天换成 nginx / Traefik 时
+> 目录与配置不用跟着改。
+>
 > 网关是一个**独立项目**，代码在 `../../edge/`（与 xingcha 平行的目录）。
 > 这份文档是它唯一的部署说明——xingcha 自己的部署见 [README.md](README.md)。
 
@@ -114,11 +118,19 @@ services:
 然后把 `Caddyfile` 里对应站点的 `reverse_proxy` 目标改成 `<服务名>:<端口>`，
 最后 `./edge reload`（零中断：配置验不过会保留旧配置，不会让所有项目一起躺下）。
 
-**xingcha 已经备好**（它的编排默认就是零宿主端口 + 加入 edge），直接：
+**xingcha 已经备好**，在它的 `.env` 里打开开关即可：
+
+```bash
+XINGCHA_GATEWAY=edge          # 留空则独立跑、明文 HTTP，不经网关
+XINGCHA_GATEWAY_PORT=8443     # 网关上分给它的端口
+```
 
 ```bash
 cd ../xingcha && ./deploy/xc start
 ```
+
+`xc` 自己读这一项决定叠不叠 `deploy/docker-compose.gateway.yml`，并且**只在配了
+网关时才检查它在不在**——没配就不该被一个不相干的容器挡住。
 
 还没接进来的站点会回 **502**，不会拖垮网关——一个项目没上线不该影响别的项目。
 
@@ -173,11 +185,19 @@ RFC 6066 不允许 IP 出现在 SNI 里。没有 SNI 时 Caddy 默认无从挑�
 
 ---
 
-## 跨机器接入（fin 在 Windows 那台）
+## 跨机器接入（比如 Windows 那台）
 
-技术上可行：Windows 上让 fin 监听局域网地址，Caddyfile 里
-`reverse_proxy 192.168.x.y:3000`。浏览器只访问网关地址，证书是网关的，
-Windows 那台的 IP 从不出现在浏览器里。
+**别的机器上的程序加入不了这个 docker 网络**——docker 网络不跨主机。做法是让它
+发布自己的端口，网关按 `IP:端口` 反代：
+
+```
+https://{$EDGE_HOST}:9445 {
+	import common
+	reverse_proxy 192.168.x.y:3000 { flush_interval -1 }
+}
+```
+
+浏览器只访问网关地址，证书是网关的，那台机器的 IP 从不出现在浏览器里。
 
 **但 Caddy → 应用这一跳会变成跨网络的明文**，也就是"浏览器那半段加密、网络这半段
 不加密"。别在这种情况下以为 TLS 是端到端的。另外网关会成为硬依赖：Windows 那台

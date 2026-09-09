@@ -523,16 +523,22 @@ class TestQuota:
 # =============================================================================
 
 
-def open_manual_upstream_form(page) -> None:
-    """展开上游页的「手填上游」。
+def submit_new_provider(page, *, name: str, base_url: str, api_key: str, password: str) -> None:
+    """走一遍「添加供应商」的完整交互。
 
-    那个表单**故意**折叠在 ``<details>`` 里：这一页的主路径是从环境变量里发现的
-    上游中挑一个，手填是备用路径。所以测试必须像用户一样先点开它——
-    元素在 DOM 里但不可见，``page.fill`` 会等满 30 秒然后超时，而报错
-    （"element is not visible"）看起来像布局坏了。
+    密码**不在表单里**，在一个 ``<dialog>`` 里——点「保存并切换」先开弹窗，
+    填完再点弹窗里的确认。这样表单版面上只剩"这个供应商是什么"，而身份确认是
+    提交那一刻的事。
+
+    表单走 htmx：失败时页面**不重载**，所以断言之后仍然能读到用户填的内容。
     """
-    page.click("summary:has-text('手填上游')")
-    page.wait_for_selector("#api_key", state="visible")
+    page.fill("#p_name", name)
+    page.fill("#p_base_url", base_url)
+    page.fill("#p_api_key", api_key)
+    page.click("[data-open-dialog='#pw-dialog']")
+    page.wait_for_selector("#p_password", state="visible")
+    page.fill("#p_password", password)
+    page.click("#pw-dialog button[type=submit]")
 
 
 class TestFormAlignment:
@@ -645,32 +651,62 @@ class TestUpstreamPage:
         assert "***" in page.inner_text("body")
 
     @pytest.mark.expect_console_errors("403")
-    def test_changing_upstream_needs_the_password(self, site: LiveSite, page):
-        """改上游配置是全后台后果最严重的操作：这个表单被跨站提交一次，付费 key
+    def test_adding_a_provider_needs_the_password(self, site: LiveSite, page):
+        """改上游是全后台后果最严重的操作：这个表单被跨站提交一次，付费 key
         就会被送到攻击者的服务器。所以 CSRF 三层之外再加一道密码。"""
         login(page, site)
         page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
-        open_manual_upstream_form(page)
-        page.fill("#api_key", "sk-or-v1-attacker")
-        page.fill("#password", "wrong-password")
-        page.click("form[action='/admin/settings/upstream'] button[type=submit]")
-        page.wait_for_load_state("networkidle")
-        assert "密码不正确" in page.inner_text("body")
+        submit_new_provider(
+            page,
+            name="坏人",
+            base_url="https://evil.example.com/v1",
+            api_key="sk-or-v1-attacker",
+            password="wrong-password",
+        )
+        page.wait_for_selector("#check-result .notice")
+        assert "当前密码不正确" in page.inner_text("#check-result")
 
         rows = site.db_rows("SELECT key FROM setting WHERE is_secret = 1")
         assert rows, "上游 key 记录不见了"
 
-    @pytest.mark.expect_console_errors("403")
+    def test_a_failed_save_keeps_what_the_user_typed(self, site: LiveSite, page):
+        """**失败不能清空输入。**
+
+        这个表单要填名字、地址、key，最常错的是地址（少了或多了 /v1）。清空一次
+        就等于罚他重输三遍——而这正是用户报过的那个问题。
+        """
+        login(page, site)
+        page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
+        submit_new_provider(
+            page,
+            name="打不通的",
+            base_url="http://127.0.0.1:9/v1",  # 本机没人监听，SSRF 守卫放行但连不上
+            api_key="sk-nope-000",
+            password=site.password,
+        )
+        page.wait_for_selector("#check-result .notice")
+        assert "没有保存" in page.inner_text("#check-result")
+
+        # 三个输入原样还在
+        assert page.input_value("#p_name") == "打不通的"
+        assert page.input_value("#p_base_url") == "http://127.0.0.1:9/v1"
+        assert page.input_value("#p_api_key") == "sk-nope-000"
+        # 而且**没有**被存进列表
+        assert "打不通的" not in page.inner_text("table")
+
     def test_dangerous_base_url_is_refused(self, site: LiveSite, page):
         """A2：云元数据端点必须被拒，且报错要指出是什么问题。"""
         login(page, site)
         page.goto(f"{site.base_url}/admin/upstreams", wait_until="networkidle")
-        open_manual_upstream_form(page)
-        page.fill("#base_url", "http://169.254.169.254/v1")
-        page.fill("#password", site.password)
-        page.click("form[action='/admin/settings/upstream'] button[type=submit]")
-        page.wait_for_load_state("networkidle")
-        assert "元数据" in page.inner_text("body")
+        submit_new_provider(
+            page,
+            name="元数据",
+            base_url="http://169.254.169.254/v1",
+            api_key="sk-x",
+            password=site.password,
+        )
+        page.wait_for_selector("#check-result .notice")
+        assert "元数据" in page.inner_text("#check-result")
 
     def test_connection_self_check_runs_and_reports(self, site: LiveSite, page):
         """自检按钮是 htmx 局部刷新。
@@ -699,13 +735,22 @@ class TestSettings:
         assert "会被发送到" in body, "没有提示打开之后提示词与模型输出会外发"
 
     def test_trace_secret_is_never_echoed(self, site: LiveSite, page):
+        """密码走弹窗：表单上只留"要配什么"，身份确认是提交那一刻的事。
+
+        弹窗在 ``<form>`` 内部，所以密码仍是这个表单的字段——不点开就填不了，
+        但填完之后与其它字段一起提交，不需要任何 JS 搬运值。
+        """
         login(page, site)
         page.goto(f"{site.base_url}/admin/settings", wait_until="networkidle")
         page.fill("#trace_endpoint", "http://10.0.0.9:3000/api/public/otel/v1/traces")
         page.fill("#trace_public_key", "pk-lf-e2e")
         page.fill("#trace_secret_key", "sk-lf-e2e-secret")
+
+        page.click("[data-open-dialog='#trace-pw-dialog']")
+        page.wait_for_selector("#trace_password", state="visible")
         page.fill("#trace_password", site.password)
-        page.click("form[action='/admin/settings/trace'] button[type=submit]")
+        page.click("#trace-pw-dialog button[type=submit]")
+
         page.wait_for_load_state("networkidle")
         assert "已开启" in page.inner_text("body")
         assert "sk-lf-e2e-secret" not in page.content(), "trace 的 secret key 被回显了"

@@ -73,13 +73,21 @@ class TestSingleFile:
     根本不对（``:`` vs ``;``），表现为"端口没开、也没有任何报错"。
     """
 
-    #: 允许存在的 compose 文件，**闭集：就一份**。
+    #: 允许存在的 compose 文件，**闭集**：基础一份 + 一个可选的拓扑叠加层。
     #:
-    #: 历史上到过三份（生产/局域网/Windows）+ 一个可选的网关叠加层。前三份的差异
-    #: 全是参数（端口、地址、数据位置），参数该做成变量；那个叠加层是拓扑
-    #: （直连 vs 经网关），而"直连"这条路后来整条去掉了——它是明文 HTTP，且那个
-    #: 宿主端口绕过 ufw，与经网关的 HTTPS 并存只会让人记住能打开的那一个。
-    ALLOWED: ClassVar[list[str]] = ["deploy/docker-compose.yml"]
+    #: 历史上到过三份（生产/局域网/Windows）。那三份的差异全是**参数**（端口、
+    #: 地址、数据位置），参数该做成变量，所以收敛掉了。
+    #:
+    #: 留下的这个叠加层是**拓扑**：独立跑（发布宿主端口、明文 HTTP）与挂在共享网关
+    #: 后面（零宿主端口、HTTPS）——`ports` 要整条去掉、`networks` 要凭空出现，
+    #: 这两件事都没法用 ${} 表达。
+    #:
+    #: 关键是二者**互斥**：叠加层用 `!override` 把宿主端口清掉。两条入口同时存在
+    #: 才是真问题——它们的安全性质不同，而人只会记住能打开的那一个。
+    ALLOWED: ClassVar[list[str]] = [
+        "deploy/docker-compose.gateway.yml",
+        "deploy/docker-compose.yml",
+    ]
 
     def test_compose_files_are_a_closed_set(self):
         found = sorted(
@@ -199,35 +207,22 @@ class TestContainerUid:
 
 
 class TestOrchestrationShape:
-    def test_it_publishes_no_host_ports_at_all(self, compose: dict):
-        """**一个宿主端口都不发布。** 对外只经共享网关。
+    def test_standalone_binds_to_loopback_by_default(self, compose_raw: str):
+        """独立跑时**默认只绑回环**。
 
-        两条理由，都不是风格问题：
-          1. 映射出去的端口走 Docker 的 DOCKER-USER 链，**绕过 ufw**——防火墙里
-             写的 deny 对它无效；
-          2. 直连那条是明文 HTTP，后台密码与 sk-xc- 密钥在网络上裸传。
-
-        并存最糟：两条入口的 TLS 性质不同，而人只会记住能打开的那一个。
+        这条默认值是安全属性：映射出去的端口走 Docker 的 DOCKER-USER 链，
+        **绕过 ufw**——防火墙里写的 deny 对它无效。所以"开给局域网"必须是一次
+        显式选择，装上就默认对外是不可接受的。
         """
-        svc = compose["services"]["xingcha"]
-        assert "ports" not in svc, "出现了 ports:，这既绕过 ufw 又绕过 TLS"
-        assert svc["expose"] == ["8720"]
+        assert compose_vars(compose_raw)["XINGCHA_BIND_ADDR"] == "127.0.0.1"
 
-    def test_it_joins_the_shared_external_network(self, compose: dict):
-        """网络必须是 external。让 compose 自建的话名字会带项目名前缀
-        （xingcha_edge），网关根本不在那个网络里——症状是网关一直 502 而两边容器
-        都"在跑"。实际踩过。"""
-        assert compose["networks"]["default"] == {"name": "edge", "external": True}
+    def test_the_base_file_trusts_no_proxy(self, compose: dict):
+        """独立跑时**不能**信任 X-Forwarded-*。
 
-    def test_it_trusts_the_gateway_for_forwarded_proto(self, compose: dict):
-        """不信任 ``X-Forwarded-Proto`` 的话**会话 cookie 不带 Secure**。
-
-        网关到应用那一跳是 http，应用看到的 scheme 就是 http。浏览器那半段明明是
-        HTTPS，却少了一层保护——而功能完全正常，没人会注意到。
-
-        敢用 ``*`` 的前提是上面那条断言：**零宿主端口**，唯一入口就是网关。
+        那时应用是直接可达的，无条件读那个头等于让任何人左右 cookie 的 Secure 标记。
+        只有叠加层（零宿主端口、唯一入口是网关）才配得上 ``*``。
         """
-        assert compose["services"]["xingcha"]["environment"]["XINGCHA_TRUSTED_PROXIES"] == "*"
+        assert "XINGCHA_TRUSTED_PROXIES" not in compose["services"]["xingcha"]["environment"]
 
     def test_only_one_service(self, compose: dict):
         assert list(compose["services"]) == ["xingcha"]
@@ -249,14 +244,45 @@ class TestOrchestrationShape:
         assert env["XINGCHA_DATA_DIR"] == "/data"
         assert env["XINGCHA_HOST"] == "0.0.0.0"
 
-    def test_public_url_points_at_the_gateway_over_https(self, compose: dict):
-        """后台展示的 curl 示例必须与真实入口一致。
+    def test_the_gateway_overlay_removes_every_host_port(self):
+        """挂网关时**一个宿主端口都不能剩**。
 
-        写成容器自己的 http 地址，用户复制那条命令会直接连不上（那个端口根本没
-        发布），而错误信息完全指不到"该走网关"。
+        `ports: !override []` 而不是让它合并：compose 对列表默认是**追加**，
+        少了 override 基础那份的端口映射会继续存在——于是同时有两条入口，一条经
+        网关是 HTTPS，一条直连是明文且绕过 ufw。而人只会记住能打开的那一个。
+        """
+        raw = (ROOT / "deploy" / "docker-compose.gateway.yml").read_text(encoding="utf-8")
+        assert "ports: !override" in raw, "少了 !override，宿主端口会被保留"
+        overlay = yaml.safe_load(raw.replace("!override", ""))
+        assert overlay["services"]["xingcha"]["ports"] == []
+        assert overlay["services"]["xingcha"]["expose"] == ["8720"]
+
+    def test_the_gateway_overlay_trusts_the_proxy_and_joins_an_external_network(self):
+        """两件事必须同时成立，缺一件都会出安静的问题。
+
+        - 不信任 ``X-Forwarded-Proto``：应用以为自己在 http 上，**会话 cookie 不带
+          Secure**——浏览器那半段明明是 HTTPS，却少一层保护，而功能完全正常。
+        - 网络不是 external：compose 自建的名字会带项目名前缀（xingcha_edge），
+          网关根本不在那里面——症状是网关一直 502 而两边容器都"在跑"。实际踩过。
+        """
+        overlay = yaml.safe_load(
+            (ROOT / "deploy" / "docker-compose.gateway.yml")
+            .read_text(encoding="utf-8")
+            .replace("!override", "")
+        )
+        env = overlay["services"]["xingcha"]["environment"]
+        assert env["XINGCHA_TRUSTED_PROXIES"] == "*"
+        assert env["XINGCHA_PUBLIC_URL"].startswith("https://")
+        assert overlay["networks"]["default"]["external"] is True
+
+    def test_the_base_public_url_is_http(self, compose: dict):
+        """独立跑时展示的 curl 示例必须是 http —— 那时确实没有 TLS。
+
+        写成 https 的话用户复制那条命令会连不上，而错误信息（连接被重置）完全指不到
+        "协议写错了"。
         """
         assert compose["services"]["xingcha"]["environment"]["XINGCHA_PUBLIC_URL"].startswith(
-            "https://"
+            "http://"
         )
 
     def test_logging_is_capped(self, compose: dict):
@@ -383,15 +409,16 @@ class TestOpsScripts:
         assert "'deploy/docker-compose.yml'" in ps1
         assert "'--env-file', '.env'" in ps1
 
-    def test_both_scripts_refuse_to_start_without_the_gateway(self, sh: str, ps1: str):
-        """网关是**硬依赖**，必须在启动前检查。
+    def test_both_scripts_check_the_gateway_when_one_is_configured(self, sh: str, ps1: str):
+        """配了网关就必须在启动前检查它；没配则不该被一个不相干的容器挡住。
 
         不检查的症状是"容器 healthy 却什么都打不开"——那种状态最难认，因为每一层
         单独看都正常。实际踩过一次（xingcha 不在 edge 网络里，网关一直 502）。
         """
         for name, text in (("deploy/xc", sh), ("deploy/xc.ps1", ps1)):
             assert "edge-caddy-1" in text, f"{name} 没检查网关容器"
-            assert "network inspect edge" in text, f"{name} 没检查共享网络"
+            assert "network inspect" in text, f"{name} 没检查共享网络"
+            assert "XINGCHA_GATEWAY" in text, f"{name} 没读拓扑开关"
 
     def test_bash_and_powershell_agree_on_the_compose_invocation(self, sh: str, ps1: str):
         """两个脚本必须用**同一份** compose 文件与同一个 .env。
@@ -443,7 +470,7 @@ class TestEnvNameAlignment:
     def _referenced() -> set[str]:
         """部署产物里出现的所有 ``XINGCHA_*`` 名字（只看可执行部分）。"""
         names: set[str] = set()
-        for name in ("docker-compose.yml", "xc", "xc.ps1"):
+        for name in ("docker-compose.yml", "docker-compose.gateway.yml", "xc", "xc.ps1"):
             text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
             code = "\n".join(
                 ln for ln in text.splitlines() if not ln.lstrip().startswith(("#", "//", "<#"))
@@ -512,3 +539,78 @@ class TestDocsHaveOneOwner:
             if phrase in q.read_text(encoding="utf-8")
         ]
         assert not others, f"「{phrase}」是网关的细节，只该在 deploy/CADDY.md 里，却出现在 {others}"
+
+
+# =============================================================================
+# 默认值的分工
+# =============================================================================
+
+
+class TestEnvDefaults:
+    """**非敏感项必须有默认值；敏感项一律不能有。**
+
+    两条规则的理由不同，所以要分开断言：
+
+    - 非敏感项（端口、地址、日志级别、数据位置）有默认值，是为了让**一个空
+      ``.env`` 也能起来**。装上先跑起来看看是最常见的第一步，而"必填三项才能启动"
+      会把那一步变成读文档。
+    - 敏感项（各种 key、后台密码）**不能**有默认值。一个内置的默认 key 是假的
+      凭据，会让"配好了"这件事变得看不出来：调用一路走到上游才失败，而错误信息
+      指向上游而不是"你还没配 key"。空 = 没设置 = 登录后再加。
+    """
+
+    #: 敏感项。这些在 Settings 里必须是 None，在 .env.example 里必须留空。
+    SECRETS: ClassVar[list[str]] = [
+        "api_key",
+        "admin_password",
+    ]
+
+    #: 非敏感项，必须有一个能直接用的默认值。
+    WITH_DEFAULTS: ClassVar[list[str]] = [
+        "host",
+        "port",
+        "log_level",
+        "session_ttl_hours",
+        "data_dir",
+    ]
+
+    @pytest.fixture(scope="class")
+    def fields(self) -> dict[str, object]:
+        from xingcha.config import Settings
+
+        return {name: f.get_default() for name, f in Settings.model_fields.items()}
+
+    @pytest.mark.parametrize("name", SECRETS)
+    def test_secrets_have_no_default(self, fields: dict[str, object], name: str):
+        assert name in fields, f"Settings 里没有 {name} 这个字段"
+        assert fields[name] is None, f"{name} 有默认值 {fields[name]!r} —— 敏感项不能有"
+
+    @pytest.mark.parametrize("name", WITH_DEFAULTS)
+    def test_non_secrets_have_a_usable_default(self, fields: dict[str, object], name: str):
+        assert name in fields, f"Settings 里没有 {name} 这个字段"
+        got = fields[name]
+        assert got is not None and got != "", f"{name} 没有默认值，空 .env 起不来"
+
+    def test_the_env_example_leaves_every_secret_blank(self):
+        """``.env.example`` 里敏感项必须是 ``KEY=``（等号后面什么都没有）。
+
+        写一个占位值（``sk-xxx``）的代价：用户 cp 之后忘了改，服务带着一个假 key
+        起来，第一次调用才失败——而错误信息指向上游，不指向"你还没配"。
+        """
+        text = (ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            if any(w in name.upper() for w in ("KEY", "PASSWORD", "SECRET", "TOKEN")):
+                assert value.strip() == "", f"{name} 在 .env.example 里带了值：{value!r}"
+
+    def test_an_empty_env_still_produces_a_valid_compose_config(self):
+        """空 ``.env`` 必须能解析出完整编排。
+
+        这条是上面那些默认值的**端到端**证明：``${VAR}`` 少一个 ``:-default``，
+        这里就会红——而症状在真部署时是"某个值静默变成空串"。
+        """
+        raw = COMPOSE.read_text(encoding="utf-8")
+        missing = [k for k, v in compose_vars(raw).items() if v is None]
+        assert not missing, f"这些变量没有默认值：{missing}"

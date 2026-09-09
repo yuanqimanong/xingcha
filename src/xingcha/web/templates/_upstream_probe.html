@@ -11,6 +11,7 @@
     </p>
     {% if probe.error %}<div class="notice warn mt4 mono small">{{ probe.error }}</div>{% endif %}
     <div class="hint mt4">常见原因：key 不对、端点地址不对、或这台机器到不了那个地址（要代理）。</div>
+    <div class="mt4"><a class="btn" href="/admin/upstreams" data-close-dialog>关闭</a></div>
   </div>
 </div>
 {% else %}
@@ -63,13 +64,14 @@
 
     <form method="post" action="/admin/upstreams/switch">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <input type="hidden" name="env_name" value="{{ probe.env_name }}">
+      <input type="hidden" name="ref" value="{{ probe.ref }}">
+      <input type="hidden" name="source" value="{{ probe.source }}">
       <input type="hidden" name="base_url" value="{{ probe.base_url }}">
       <button class="btn primary" type="submit"
               data-confirm="切到 {{ probe.label }}？{% if probe.broken %}{{ probe.broken | length }} 个 Agent 会开始报错。{% endif %}">
         确认切换
       </button>
-      <a class="btn" href="/admin/upstreams">取消</a>
+      <a class="btn" href="/admin/upstreams" data-close-dialog>取消</a>
     </form>
   </div>
 </div>

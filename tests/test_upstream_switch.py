@@ -220,7 +220,7 @@ class TestProbeBeforeSwitch:
         r = client.post(
             "/admin/upstreams/probe",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": upstream.base_url,
                 "csrf_token": csrf_of(client),
             },
@@ -240,7 +240,7 @@ class TestProbeBeforeSwitch:
         r = client.post(
             "/admin/upstreams/probe",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": "http://127.0.0.1:9/v1",  # 黑洞
                 "csrf_token": csrf_of(client),
             },
@@ -261,22 +261,39 @@ class TestProbeBeforeSwitch:
         client.post(
             "/admin/upstreams/probe",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": upstream.base_url,
                 "csrf_token": csrf_of(client),
             },
         )
         assert _active_env(settings) == before
 
-    def test_unknown_vendor_needs_a_base_url(self, wired):
+    def test_unknown_vendor_needs_a_base_url(self, wired, monkeypatch):
+        """名单外的变量名没有内置端点，必须让用户填 base_url。
+
+        环境变量要真的存在——不存在时先撞的是"读不到值"，那是另一条错误路径。
+        两条都该有各自的话，而此前这条测试因为没设变量，其实一直在验另一条。
+        """
+        client, _ = wired
+        monkeypatch.setenv("MY_OWN_KEY", "sk-mine-000000000000")
+        client.get("/admin/upstreams")
+        r = client.post(
+            "/admin/upstreams/probe",
+            data={"ref": "MY_OWN_KEY", "csrf_token": csrf_of(client)},
+        )
+        assert r.status_code == 403
+        assert "base_url" in r.text
+
+    def test_a_ref_that_is_not_in_the_environment_says_so(self, wired):
+        """读不到值时的话要指向 .env，而不是让人去猜 base_url。"""
         client, _ = wired
         client.get("/admin/upstreams")
         r = client.post(
             "/admin/upstreams/probe",
-            data={"env_name": "MY_OWN_KEY", "csrf_token": csrf_of(client)},
+            data={"ref": "GONE_KEY", "csrf_token": csrf_of(client)},
         )
         assert r.status_code == 403
-        assert "base_url" in r.text
+        assert "读不到值" in r.text
 
     def test_base_url_goes_through_the_ssrf_guard(self, wired, monkeypatch):
         """这是一个"服务端会主动去打"的地址，云元数据端点一律拒。"""
@@ -286,7 +303,7 @@ class TestProbeBeforeSwitch:
         r = client.post(
             "/admin/upstreams/probe",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": "http://169.254.169.254/v1",
                 "csrf_token": csrf_of(client),
             },
@@ -324,7 +341,7 @@ class TestSwitch:
         r = client.post(
             "/admin/upstreams/switch",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": upstream.base_url,
                 "csrf_token": csrf_of(client),
             },
@@ -348,7 +365,7 @@ class TestSwitch:
         client.post(
             "/admin/upstreams/switch",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": upstream.base_url,
                 "csrf_token": csrf_of(client),
             },
@@ -382,7 +399,7 @@ class TestSwitch:
         client.post(
             "/admin/upstreams/switch",
             data={
-                "env_name": "DEEPSEEK_API_KEY",
+                "ref": "DEEPSEEK_API_KEY",
                 "base_url": upstream.base_url,
                 "csrf_token": csrf_of(client),
             },
@@ -397,7 +414,7 @@ class TestSwitch:
         r = client.post(
             "/admin/upstreams/switch",
             data={
-                "env_name": "GROQ_API_KEY",  # 环境里没有
+                "ref": "GROQ_API_KEY",  # 环境里没有
                 "base_url": upstream.base_url,
                 "csrf_token": csrf_of(client),
             },

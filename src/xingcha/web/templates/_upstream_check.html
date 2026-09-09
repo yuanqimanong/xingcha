@@ -1,0 +1,5 @@
+{# 「检查」的结果。htmx 换进表单下方，**不动用户已填的输入**。 #}
+<div class="notice {{ 'ok' if ok else 'warn' }}">
+  {% if ok %}<strong>可以保存。</strong>{% else %}<strong>先别保存。</strong>{% endif %}
+  {{ message }}
+</div>

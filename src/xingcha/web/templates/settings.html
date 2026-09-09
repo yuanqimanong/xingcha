@@ -133,14 +133,31 @@
                placeholder="{% if trace_has_secret %}已保存，留空表示不修改{% else %}sk-lf-...{% endif %}">
         <div class="hint">加密存在本机数据库里，页面上不回显。Basic 头由星槎自己拼，不用手算 base64。</div>
       </div>
-      <div class="field">
-        <label for="trace_password">当前密码</label>
-        <input id="trace_password" name="password" type="password" autocomplete="current-password" required>
-        <div class="hint">
-          点「保存」时校验。<strong>不正确就什么都不改</strong>，已填的地址与 public key 会留在页面上。
+      <button class="btn primary" type="button" data-open-dialog="#trace-pw-dialog">保存</button>
+
+      {# 密码放弹窗里，与上游页一致：表单版面上只留"要配什么"，身份确认是提交那一刻
+         的事。<dialog> 在 <form> **内部**，里面的 input 仍然是这个表单的字段，
+         提交时一起发出去——不需要任何 JS 搬运值。 #}
+      <dialog id="trace-pw-dialog" class="modal">
+        <div class="card">
+          <div class="card-head"><h2>确认身份</h2></div>
+          <div class="card-body">
+            <p class="muted small mb4">
+              这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本。
+            </p>
+            <div class="field">
+              <label for="trace_password">当前密码</label>
+              <input id="trace_password" name="password" type="password"
+                     autocomplete="current-password" required>
+              <div class="hint">不正确就<strong>什么都不改</strong>。</div>
+            </div>
+            <div class="row mt4">
+              <button class="btn primary" type="submit">确认保存</button>
+              <a class="btn" href="#" data-close-dialog>取消</a>
+            </div>
+          </div>
         </div>
-      </div>
-      <button class="btn primary" type="submit">保存</button>
+      </dialog>
     </form>
   </div>
 </div>

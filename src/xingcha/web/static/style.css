@@ -564,6 +564,13 @@ table.mini td.mono {
   background: var(--warn-soft);
   color: var(--warn);
 }
+/* 成功那一档。有 warn 没有 ok 的话，"检查通了"只能用中性色显示——
+   而这一格的全部作用就是让人一眼看出该不该继续。 */
+.notice.ok {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
 .notice strong {
   font-weight: 600;
 }
@@ -1293,6 +1300,38 @@ textarea {
   .galaxy-band {
     opacity: 0.7;
   }
+}
+
+/* 左右并排的两张卡。窄了就自动叠成一列——不是"隐藏一个"，两边都要能用。 */
+.split {
+  display: grid;
+  /* **不是 50/50。** 左边是一张四行的定义表，右边是一个表单——等宽的话左边那张
+     卡里全是空白，两边看起来像没对齐。5:7 让内容密度接近。 */
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--s5);
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 弹窗。用原生 <dialog>：焦点陷阱、Esc 关闭、::backdrop 都是白拿的。 */
+.modal {
+  width: min(46rem, 92vw);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r3);
+  background: transparent;
+  color: var(--ink);
+}
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+.modal .card {
+  margin: 0;
 }
 
 /* --- 工具类 --- */

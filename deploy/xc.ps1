@@ -36,18 +36,20 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 Set-Location $Root
 
-$Files = @('-f', 'deploy/docker-compose.yml', '--env-file', '.env')
+# 拓扑由 .env 里的 XINGCHA_GATEWAY 决定，与 bash 版一致（空 = 独立明文 HTTP）。
+$Gateway = $null
+$Files = @('-f', 'deploy/docker-compose.yml')
 
 function Require-Gateway {
-  # 网关（..\edge）是**硬依赖**：xingcha 一个宿主端口都不发布，对外只经它。
-  # 不检查的话症状是"容器 healthy 却什么都打不开"，而每一层单独看都正常。
-  docker network inspect edge 2>$null | Out-Null
+  # 只在**配了网关**时检查。没配就是独立跑，不该被一个不相干的容器挡住。
+  if (-not $Gateway) { return }
+  docker network inspect $Gateway 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) {
-    Die '共享网络 edge 不存在。先起网关：cd ..\edge; .\edge start（见 ..\edge\README.md）'
+    Die "共享网络 $Gateway 不存在。先起网关：cd ..\edge; .\edge start（见 deploy\CADDY.md）"
   }
   $running = docker inspect -f '{{.State.Running}}' edge-caddy-1 2>$null
   if ($running -ne 'true') { Die '网关容器 edge-caddy-1 没在跑。先：cd ..\edge; .\edge start' }
-  Ok '网关就绪（edge-caddy-1）'
+  Ok "网关就绪（$Gateway / edge-caddy-1）"
 }
 
 function Say  { param($m) Write-Host "→ $m" -ForegroundColor Cyan }
@@ -61,6 +63,12 @@ function Compose { docker compose @Files @args }
 # up 重建，就一直跑着占端口。实际踩过（Caddy 去掉之后 xingcha-caddy-1 还占着端口）。
 function Up   { Compose up -d --build --remove-orphans }
 function Down { Compose down --remove-orphans }
+
+function Read-Gateway {
+  $script:Gateway = From-Env 'XINGCHA_GATEWAY'
+  if ($script:Gateway) { $script:Files += @('-f', 'deploy/docker-compose.gateway.yml') }
+  $script:Files += @('--env-file', '.env')
+}
 
 function Need-Env {
   # 与 bash 版一致：没有 .env 就生成一份并停下来，而不是让人先去读文档。
@@ -104,17 +112,24 @@ function Wait-Healthy {
 
 function Show-Url {
   $host_ = From-Env 'XINGCHA_WEB_HOST'; if (-not $host_) { $host_ = 'localhost' }
-  $port  = From-Env 'XINGCHA_WEB_PORT'; if (-not $port)  { $port  = '8443' }
   Write-Host ''
-  Write-Host "  https://${host_}:${port}" -ForegroundColor White
-  Write-Host '  经共享网关。xingcha 自己零宿主端口，没有别的入口。'
-  Write-Host '  浏览器还拦的话，说明这台设备还没装网关的根证书：cd ..\edge; .\edge ca'
+  if ($Gateway) {
+    $port = From-Env 'XINGCHA_GATEWAY_PORT'; if (-not $port) { $port = '8443' }
+    Write-Host "  https://${host_}:${port}" -ForegroundColor White
+    Write-Host "  经共享网关（$Gateway）。xingcha 自己零宿主端口，没有别的入口。"
+    Write-Host '  浏览器还拦的话，这台设备还没装网关根证书：cd ..\edge; .\edge trust'
+  } else {
+    $port = From-Env 'XINGCHA_WEB_PORT'; if (-not $port) { $port = '8720' }
+    Write-Host "  http://${host_}:${port}" -ForegroundColor White
+    Write-Host '  **明文 HTTP**：密码与 sk-xc- 密钥在网络上是裸传的。'
+    Write-Host '  想要 HTTPS：在 .env 里写 XINGCHA_GATEWAY=edge，见 deploy\CADDY.md。'
+  }
   Write-Host ''
 }
 
 switch ($Action) {
   'start' {
-    Need-Env; Require-Gateway
+    Need-Env; Read-Gateway; Require-Gateway
     Say '构建并启动（数据保留）'
     Up
     Wait-Healthy
@@ -131,7 +146,7 @@ switch ($Action) {
     # `down -v` 删掉本项目声明的命名卷（xingcha_data 与 caddy 的两个）。
     # 数据在卷里而不是宿主目录里，所以**不存在** Linux 版那个"容器还在跑时删目录、
     # 进程握着已删除的 inode 继续写"的陷阱——down 一定先于卷被删除。
-    Require-Gateway
+    Read-Gateway; Require-Gateway
     Say '停止容器并删除数据卷'
     Compose down -v --remove-orphans
     Say '构建并启动'
@@ -142,7 +157,7 @@ switch ($Action) {
   }
 
   'update' {
-    Need-Env; Require-Gateway
+    Need-Env; Read-Gateway; Require-Gateway
     # `pull --ff-only` 而不是 `reset --hard`：这个脚本也会在开发机上被跑，
     # 而那里 reset --hard 会不声不响地毁掉未提交的工作。
     git diff --quiet; $dirty = $LASTEXITCODE -ne 0
@@ -157,9 +172,10 @@ switch ($Action) {
 
   'stop' { Down; Ok '已停止（数据卷保留）' }
 
-  'logs' { Compose logs -f --tail $Tail xingcha }
+  'logs' { Read-Gateway; Compose logs -f --tail $Tail xingcha }
 
   'status' {
+    Read-Gateway
     Compose ps
     Write-Host ''
     try { Compose exec -T xingcha xingcha admin status } catch { }

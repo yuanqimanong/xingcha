@@ -18,6 +18,7 @@ import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import FakeUpstream
 from xingcha import contract as C
 from xingcha.app import create_app
 from xingcha.config import Settings
@@ -349,70 +350,198 @@ class TestGuardPolicySplit:
         assert "https" in str(e.value)
 
 
-class TestSettingsMutation:
-    def test_requires_password_confirmation(self, logged_in: TestClient):
-        """改上游配置是全后台后果最严重的操作，CSRF 三层之外再加一道。"""
-        logged_in.get("/admin/settings")
-        r = logged_in.post(
-            "/admin/settings/upstream",
-            data={
-                "password": "wrong-password",
-                "api_key": "sk-or-v1-attacker",
-                "csrf_token": csrf_of(logged_in),
-            },
+class TestAddProvider:
+    """「添加供应商」：手填一个上游，**只进列表，不切换**。
+
+    加和用是两件事：加进来是"我以后可能用它"，切过去是"现在就换出口"，而后者会打断
+    所有现有 Agent。绑在一个按钮上等于每次新增供应商都强制来一次出口变更。
+
+    与此前的"手填上游"的实质区别是**它会被记住**。旧行为直接覆盖当前出口、不留
+    痕迹——切走之后就只能把 key 再输一遍，也就是说"手填"事实上是一条单向门。
+    """
+
+    def _post(self, client: TestClient, **data):
+        client.get("/admin/upstreams")
+        return client.post(
+            "/admin/upstreams/providers",
+            data={"csrf_token": csrf_of(client), **data},
             follow_redirects=False,
         )
-        assert r.status_code == 403
-        assert "密码不正确" in r.text
+
+    @staticmethod
+    def _err(r) -> str:
+        m = re.search(r"alert danger[^>]*><div>([^<]*)", r.text)
+        return m.group(1) if m else "（无 alert）"
+
+    def test_requires_password_confirmation(self, logged_in: TestClient):
+        """改上游是全后台后果最严重的操作，CSRF 三层之外再加一道。"""
+        r = self._post(
+            logged_in,
+            password="wrong-password",
+            name="坏人",
+            base_url="https://evil.example.com/v1",
+            api_key="sk-attacker",
+        )
+        assert r.status_code == 200
+        assert "当前密码不正确" in r.text
+        assert "evil.example.com" not in logged_in.get("/admin/upstreams").text
+
+    def test_the_password_check_works_when_it_comes_from_the_environment(
+        self, settings: Settings, upstream: FakeUpstream
+    ):
+        """**密码由环境变量托管时也要能通过。**
+
+        此前这里用的是 ``verify_password``（只查库里的 argon2id 哈希），而环境变量
+        托管时库里根本没有哈希 —— 于是它对任何输入都返回 False：用户输的是对的，
+        却永远被告知"密码不正确"，日志里也什么都没有。整条"改上游"的路被堵死，
+        而看起来像是密码记错了。实际撞过。
+        """
+        env_pw = "env-managed-password-1"
+        settings.admin_password = env_pw
+        with TestClient(create_app(settings), base_url="https://testserver") as c:
+            assert (
+                c.post(
+                    "/admin/login", data={"password": env_pw}, follow_redirects=False
+                ).status_code
+                == 303
+            )
+            c.get("/admin/upstreams")
+            r = c.post(
+                "/admin/upstreams/providers",
+                data={
+                    "csrf_token": csrf_of(c),
+                    "password": env_pw,
+                    "name": "自建中转",
+                    "base_url": upstream.base_url,
+                    "api_key": "sk-relay-000",
+                },
+                follow_redirects=False,
+            )
+            assert r.status_code == 204, f"环境变量密码被拒了：{r.text[:300]}"
+
+    def test_an_unreachable_upstream_saves_nothing_at_all(self, logged_in: TestClient):
+        """**拉不通就不保存。**
+
+        此前是"先存下来再探测"，理由是"失败时用户填的东西不要白丢"。那个理由错在两处：
+        失败的条目会留在列表里（用户看到一个从来没通过的条目，还得自己去删），
+        而"不丢输入"根本不该靠落库实现——表单走 htmx，失败时页面不重载，输入本来就在。
+
+        用户报的就是这个：地址打错成 /v111，点保存之后「目前使用」被改成了那条坏配置。
+        """
+        before = logged_in.get("/admin/upstreams").text
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            name="打不通的",
+            # 本机上没人监听的端口：SSRF 守卫放行 localhost，但连不上
+            base_url="http://127.0.0.1:9/v1",
+            api_key="sk-nope",
+        )
+        assert r.status_code == 200
+        assert "没有保存" in r.text
+
+        after = logged_in.get("/admin/upstreams").text
+        assert "打不通的" not in after, "拉不通却把它存进了列表"
+        assert "127.0.0.1:9" not in after, "拉不通却把它写成了当前出口"
+        # 出口一个字节都没动
+        assert ("生效中" in before) == ("生效中" in after)
 
     def test_dangerous_base_url_is_rejected_even_with_password(self, logged_in: TestClient):
-        logged_in.get("/admin/settings")
-        r = logged_in.post(
-            "/admin/settings/upstream",
-            data={
-                "password": PASSWORD,
-                "base_url": "http://169.254.169.254/",
-                "csrf_token": csrf_of(logged_in),
-            },
-            follow_redirects=False,
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            name="元数据",
+            base_url="http://169.254.169.254/",
+            api_key="sk-x",
         )
-        assert r.status_code == 403
+        assert r.status_code == 200
         assert "元数据" in r.text
 
-    def test_valid_update_succeeds(self, logged_in: TestClient):
-        logged_in.get("/admin/settings")
+    def test_saving_does_not_change_the_active_upstream(
+        self, logged_in: TestClient, upstream: FakeUpstream
+    ):
+        """**保存不等于切换。**
+
+        点「保存」之后当前出口必须一个字节都没动——要用它得再去列表点
+        「检查并切换」，那条路径会先列出哪些 Agent 会失效。
+        """
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+        before = state.upstream.config
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            name="备用中转",
+            base_url=upstream.base_url,
+            api_key="sk-standby-000",
+        )
+        assert r.status_code == 204, self._err(r)
+        assert state.upstream.config == before, "保存却把出口换了"
+        assert "备用中转" in logged_in.get("/admin/upstreams").text
+
+    def test_a_saved_provider_shows_up_in_the_switch_list(
+        self, logged_in: TestClient, upstream: FakeUpstream
+    ):
+        """**这条是整个改动的理由。**
+
+        加完之后它必须出现在切换列表里，否则切走了就回不来——那正是旧行为的问题。
+
+        成功返回 **204 + HX-Redirect**，不是 303：这个表单走 htmx（失败时不重载页面，
+        输入才留得住），而 htmx 会去跟随 303、把整页 HTML 塞进那个结果小方块里。
+        """
+        r = self._post(
+            logged_in,
+            password=PASSWORD,
+            name="公司内网中转",
+            base_url=upstream.base_url,
+            api_key="sk-relay-legit-000",
+        )
+        assert r.status_code == 204, self._err(r)
+        assert r.headers["hx-redirect"] == "/admin/upstreams"
+        body = logged_in.get("/admin/upstreams").text
+        assert "公司内网中转" in body
+        assert "sk-relay-legit-000" not in body, "完整 key 出现在页面上"
+        assert "***" in body
+
+    def test_the_key_is_encrypted_at_rest(
+        self, logged_in: TestClient, settings: Settings, upstream: FakeUpstream
+    ):
+        """供应商列表是个 JSON blob，里面装着每家的 key——必须整体加密落盘。
+
+        漏了的话就是一串明文 key 躺在 SQLite 里，而页面上一切正常。
+        """
+        self.test_a_saved_provider_shows_up_in_the_switch_list(logged_in, upstream)
+        raw = settings.db_path.read_bytes()
+        assert b"sk-relay-legit-000" not in raw
+
+    def test_deleting_a_provider_does_not_touch_the_active_upstream(
+        self, logged_in: TestClient, upstream: FakeUpstream
+    ):
+        """删的是"列表里那一行"，不是"正在用的配置"。
+
+        混在一起的话，删一行会让服务当场失去上游，而用户以为自己只是在整理列表。
+        """
+        self.test_a_saved_provider_shows_up_in_the_switch_list(logged_in, upstream)
+
+        logged_in.get("/admin/upstreams")
         r = logged_in.post(
-            "/admin/settings/upstream",
-            data={
-                "password": PASSWORD,
-                "api_key": "sk-or-v1-legit",
-                "csrf_token": csrf_of(logged_in),
-            },
+            "/admin/upstreams/providers/delete",
+            data={"name": "公司内网中转", "csrf_token": csrf_of(logged_in)},
             follow_redirects=False,
         )
         assert r.status_code == 303
+        after = logged_in.get("/admin/upstreams").text
+        # 列表里那一行没了：删除按钮消失就是它不在列表里了
+        assert 'value="公司内网中转"' not in after, "列表里那一行还在"
 
-    def test_saved_key_is_masked_in_ui(self, logged_in: TestClient):
-        """页面上不能出现完整的上游 key —— 截图、录屏、肩窥都是真实路径。
-
-        上游配置在**上游页**（/admin/upstreams），不在设置页：那一页专管"出口是
-        哪一个"，配置、自检、切换在一起才说得通。
-        """
-        self.test_valid_update_succeeds(logged_in)
-        body = logged_in.get("/admin/upstreams").text
-        assert "sk-or-v1-legit" not in body
-        assert "***" in body
-
-    def test_settings_page_no_longer_holds_the_upstream_key(self, logged_in: TestClient):
-        """设置页**不该**再出现上游 key —— 它整块搬走了。
+    def test_settings_page_no_longer_holds_the_upstream_form(self, logged_in: TestClient):
+        """设置页**不该**再有上游表单——它整块搬走了。
 
         这条防的是"搬走了但忘了删"：两处都能改同一个值时，用户改了一处、另一处
         显示的还是旧的，而没人知道哪个是真的。
         """
-        self.test_valid_update_succeeds(logged_in)
         body = logged_in.get("/admin/settings").text
-        assert "sk-or-v1-legit" not in body
-        assert 'action="/admin/settings/upstream"' not in body, "上游表单还留在设置页"
+        assert 'action="/admin/settings/upstream"' not in body
+        assert 'action="/admin/upstreams/providers"' not in body, "添加供应商表单不该在设置页"
 
 
 class TestTraceMutation:
@@ -626,11 +755,20 @@ class TestSettingsCopy:
         body = logged_in.get("/admin/settings").text
         assert "只有 Langfuse 需要这两把 key" in body
 
-    def test_the_password_field_says_when_it_is_checked(self, logged_in: TestClient):
-        """用户问过"这个当前密码是不是只是验证用、为什么不等保存时再验"——
-        答案是保存时才验，那就得写在字段上。"""
+    def test_the_password_is_asked_for_in_a_dialog(self, logged_in: TestClient):
+        """当前密码走**弹窗**，不占表单版面。
+
+        表单上只留"要配什么"，身份确认是提交那一刻的事——与上游页的「添加供应商」
+        一致。``<dialog>`` 在 ``<form>`` 内部，所以密码仍是这个表单的字段，
+        提交时一起发出去，不需要 JS 搬运值。
+        """
         body = logged_in.get("/admin/settings").text
-        assert "点「保存」时校验" in body
+        assert 'data-open-dialog="#trace-pw-dialog"' in body, "保存按钮没接上密码弹窗"
+        assert '<dialog id="trace-pw-dialog"' in body
+        # 密码框仍然在同一个 form 里（在 dialog 之内），否则提交时带不出去
+        form = body[body.index('action="/admin/settings/trace"') :]
+        form = form[: form.index("</form>")]
+        assert 'id="trace_password"' in form, "密码框跑到 form 外面去了，提交带不出去"
 
 
 class TestThemeSwitch:

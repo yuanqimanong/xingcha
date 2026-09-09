@@ -1,0 +1,43 @@
+# 挂到共享网关（../edge）上。**可选的拓扑叠加层**，由 .env 里的 XINGCHA_GATEWAY 触发。
+#
+# 不叠这一层时，基础那份独立跑：发布一个宿主端口、明文 HTTP。
+# 叠上之后：零宿主端口、加入共享网络、对外 HTTPS 由网关终止。
+#
+# 为什么是文件而不是变量：`ports` 要整条去掉、`networks` 要凭空出现，这两件事都
+# 没法用 `${}` 表达——它们是**拓扑**的差别，不是参数。
+#
+# 用法：在 .env 里写 `XINGCHA_GATEWAY=edge`，然后 ./deploy/xc start。
+# 网关自己怎么起，见 deploy/CADDY.md。
+
+services:
+  xingcha:
+    # `!override` 而不是让它合并：compose 对 ports 这类列表默认是**追加**。
+    # 少了它，基础那份的宿主端口映射会继续存在——于是同时有两条入口，一条经网关是
+    # HTTPS，一条直连是明文且绕过 ufw。而人只会记住能打开的那一个。
+    ports: !override []
+
+    expose:
+      - "8720"
+
+    environment:
+      # curl 示例要用**网关**的地址。写成容器自己的 http 地址，用户复制那条命令会
+      # 直接连不上（那个端口根本没发布），而错误信息指不到"该走网关"。
+      XINGCHA_PUBLIC_URL: https://${XINGCHA_WEB_HOST:-localhost}:${XINGCHA_GATEWAY_PORT:-8443}
+
+      # 信任网关发来的 X-Forwarded-Proto，否则**会话 cookie 不带 Secure**。
+      #
+      # 网关到这里那一跳是 http，所以应用自己看到的 scheme 是 http，
+      # cookie_secure() 会返回 False——浏览器那半段明明是 HTTPS，却少了一层保护，
+      # 而功能完全正常，没人会注意到。
+      #
+      # 敢写 `*`（信任所有来源）的前提是上面那条 `ports: !override []`：
+      # **零宿主端口**，这个容器唯一的入口就是 edge 网络里的网关。
+      XINGCHA_TRUSTED_PROXIES: "*"
+
+networks:
+  default:
+    # **外部网络**，由 ../edge/edge start 创建。写成 external 而不是让 compose 自建：
+    # 网关要 join 的是同一个网络，而 compose 自建的网络名会带项目名前缀
+    # （xingcha_edge），网关根本不在那里面——症状是网关一直 502 而两边容器都"在跑"。
+    name: ${XINGCHA_GATEWAY:-edge}
+    external: true

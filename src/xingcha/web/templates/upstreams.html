@@ -11,23 +11,39 @@
   </div>
 </div>
 
-<div class="card mb5">
+{% if error %}
+<div class="alert danger mb4"><div>{{ error }}</div></div>
+{% endif %}
+
+<div class="split mb5">
+<div class="card">
   <div class="card-head">
     <h2>目前使用</h2>
-    {% if active.configured %}
-      <span class="badge ok">{{ active.label }}</span>
-    {% else %}
-      <span class="badge danger">未配置</span>
-    {% endif %}
+    <div class="row">
+      {% if active.configured %}
+        <span class="badge ok">{{ active.label }}</span>
+        {# 自检放在这里：它问的是"现在这个出口通不通"，而答案属于"目前使用"。
+           单独一张卡的时候，人得先在两处之间对应"我测的是哪个"。 #}
+        <button class="btn sm" hx-post="/admin/settings/test" hx-target="#test-result"
+                hx-swap="innerHTML" hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+          连接自检
+          <span class="htmx-indicator">…</span>
+        </button>
+      {% else %}
+        <span class="badge danger">未配置</span>
+      {% endif %}
+    </div>
   </div>
   <div class="card-body flush">
     {% if active.configured %}
     <div class="table-wrap">
       <table>
         <tbody>
-          <tr><th>来源</th><td class="mono">{{ active.env_name or '手动填写' }}</td></tr>
-          <tr><th>API key</th><td class="mono">{{ active.masked }}</td></tr>
-          <tr><th>base_url</th><td class="mono truncate">{{ active.base_url }}</td></tr>
+          <tr><th>来源</th><td class="mono">{{ active.ref or '手动填写' }}</td></tr>
+          {# Base URL 在 API Key 之前：地址决定"打到哪家"，key 只是那家的凭据。
+             读的时候也是先看地址对不对。 #}
+          <tr><th>Base URL</th><td class="mono truncate">{{ active.base_url }}</td></tr>
+          <tr><th>API Key</th><td class="mono">{{ active.masked }}</td></tr>
           <tr>
             <th>模型目录</th>
             <td>
@@ -44,58 +60,120 @@
     {% else %}
     <div class="empty">
       <div class="empty-title">还没有上游</div>
-      <div class="small">在下面挑一个，或到「设置」页手填。</div>
+      <div class="small">在下面挑一个，或添加一个供应商。</div>
     </div>
     {% endif %}
   </div>
-</div>
-
-<details class="card mb5">
-  <summary class="card-head">
-    <h2>手填上游</h2>
-    <span class="dim small">环境变量里没有的厂商，或自建中转</span>
-  </summary>
-  <div class="card-body">
-    <p class="muted small mb4">
-      不在环境变量里的上游走这里。填完即生效，与从下面挑一个是同一条路径——
-      <strong>都会加密落库</strong>。
-    </p>
-    <form method="post" action="/admin/settings/upstream">
-      <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <div class="field">
-        <label for="api_key">API key</label>
-        <input id="api_key" name="api_key" type="password" class="mono" autocomplete="off"
-               placeholder="{{ active.masked or 'sk-...' }}">
-        <div class="hint">
-          {% if active.configured %}当前：<code>{{ active.masked }}</code>。留空表示不修改。
-          {% else %}还没有配置。{% endif %}
-        </div>
-      </div>
-      <div class="field">
-        <label for="base_url">base_url</label>
-        <input id="base_url" name="base_url" type="text" class="mono" value="{{ active.base_url }}"
-               placeholder="https://openrouter.ai/api/v1">
-        <div class="hint">
-          必须是 <code>https</code>（本机 <code>127.0.0.1</code> 除外），且不能指向私有网段或
-          云元数据地址——那会把这台机器变成一个带着付费 key 的通用代理。
-        </div>
-      </div>
-      <div class="field">
-        <label for="password">当前密码</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
-        <div class="hint">
-          改上游要二次确认身份：这个表单一旦被跨站提交，付费 key 就会被送到攻击者的服务器。
-        </div>
-      </div>
-      <button class="btn primary" type="submit">保存</button>
-    </form>
+  {% if active.configured %}
+  <div class="card-body" id="test-result">
+    <p class="muted small">点上面的「连接自检」，用<strong>当前已保存</strong>的配置向上游要一次模型列表。</p>
   </div>
-</details>
+  {% endif %}
+</div>
 
 <div class="card">
   <div class="card-head">
-    <h2>环境里扫到的</h2>
-    <span class="badge">{{ discovered | length }} 个</span>
+    <h2>添加供应商</h2>
+    <span class="dim small">环境变量里没有的，或自建中转</span>
+  </div>
+  <div class="card-body">
+    <p class="muted small mb4">
+      加进左边的切换列表，<strong>不改当前出口</strong>。要用它再去点「检查并切换」。
+      key 加密落库；<strong>拉不通就不保存</strong>。
+    </p>
+    {# 走 htmx 而不是普通提交：**失败时页面不重载，四个输入原样留着**。
+       普通提交要么整页重渲染（清空输入），要么把 key 回显进 HTML（等于写进缓存
+       与截图）。htmx 两个都不用。 #}
+    <form hx-post="/admin/upstreams/providers"
+          hx-target="#check-result" hx-swap="innerHTML"
+          hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      {# 竖排：名称 → Base URL → API Key。顺序照着"填的时候的思路"走——
+         先给它起个名，再说打到哪儿，最后才是那家的凭据。 #}
+      <div class="field">
+        <label for="p_name">名称</label>
+        <input id="p_name" name="name" type="text" required maxlength="{{ provider_name_max }}"
+               placeholder="例如：公司内网中转">
+        <div class="hint">重名会覆盖旧的那条。</div>
+      </div>
+      {# Base URL 与 API Key 同一行：这张卡比左边那张高出一截，看起来不对称。
+         这两项本来也是一对——"打到哪儿"和"用谁的凭据"。 #}
+      <div class="form-row">
+        <div class="field" style="flex:1 1 20rem">
+          <label for="p_base_url">Base URL</label>
+          <input id="p_base_url" name="base_url" type="text" class="mono" required
+                 placeholder="https://…/v1">
+        </div>
+        <div class="field" style="flex:1 1 12rem">
+          <label for="p_api_key">API Key</label>
+          <input id="p_api_key" name="api_key" type="password" class="mono" required
+                 autocomplete="off" placeholder="sk-…">
+        </div>
+      </div>
+      <div class="hint">
+        Base URL 必须是 <code>https</code>（本机除外），不能指向私有网段或云元数据地址。
+      </div>
+      {# 「检查」在「保存」之前。它只探测、**什么都不写**，结果换进下面那个 div，
+         所以用户已填的四个输入一个都不会丢。
+         最常错的是地址（少了或多了 /v1），而没有干跑时唯一的验证方式是"保存一次
+         看看"——那要么写坏配置，要么把四个输入全部重填。 #}
+      <div class="row mt4">
+        <button class="btn" type="button"
+                hx-post="/admin/upstreams/check"
+                hx-include="#p_name, #p_base_url, #p_api_key"
+                hx-target="#check-result" hx-swap="innerHTML"
+                hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+          检查
+          <span class="htmx-indicator">…</span>
+        </button>
+        <button class="btn primary" type="button" data-open-dialog="#pw-dialog">保存</button>
+      </div>
+      {# 检查/保存的结果进弹窗，不在表单下面占一块。
+         那块位置平时是空的，只为偶尔一条消息把整张卡撑高一截。 #}
+      <dialog id="check-dialog" class="modal">
+        <div class="card">
+          <div class="card-body">
+            <div id="check-result"></div>
+            <div class="row mt4">
+              <a class="btn" href="#" data-close-dialog>知道了</a>
+            </div>
+          </div>
+        </div>
+      </dialog>
+
+      {# 密码放弹窗里，不占表单版面。
+         <dialog> 在 <form> **内部**，所以里面的 input 仍然是这个表单的字段，
+         提交时一起发出去——不需要任何 JS 去搬运值。 #}
+      <dialog id="pw-dialog" class="modal">
+        <div class="card">
+          <div class="card-head"><h2>确认身份</h2></div>
+          <div class="card-body">
+            <p class="muted small mb4">
+              这个表单一旦被跨站提交，付费 key 就会被送到攻击者的服务器。
+            </p>
+            <div class="field">
+              <label for="p_password">当前密码</label>
+              <input id="p_password" name="password" type="password"
+                     autocomplete="current-password" required>
+              <div class="hint">不正确就<strong>什么都不保存</strong>，已填的内容留在页面上。</div>
+            </div>
+            <div class="row mt4">
+              <button class="btn primary" type="submit">确认保存</button>
+              <a class="btn" href="#" data-close-dialog>取消</a>
+            </div>
+          </div>
+        </div>
+      </dialog>
+    </form>
+  </div>
+</div>
+
+</div>
+
+<div class="card mb5">
+  <div class="card-head">
+    <h2>模型切换</h2>
+    <span class="badge">{{ options | length }} 个可选</span>
   </div>
   <div class="card-body">
     {% if in_container %}
@@ -106,51 +184,73 @@
     </div>
     {% endif %}
 
+    {# 「切换会影响什么」原先是页面最下方独立一张卡。搬到这里：它要回答的是
+       "我点那个按钮会发生什么"，而那个按钮就在下面几行。 #}
+    <div class="notice mb4">
+      <strong>切换会打断现有 Agent。</strong>
+      你的 {{ agent_count }} 个 Agent 里写的是模型名（如 <code>openai/gpt-5</code>），
+      换上游之后那些模型可能不存在。所以点「检查并切换」会<strong>先</strong>用新 key
+      拉一次目录，把要失效的 Agent 列出来给你确认，<strong>拉不通就直接拒绝切换</strong>。
+      裸模型直通不受影响——它把你给的 model 原样转发。
+    </div>
+
     <p class="muted small mb4">
-      只认内置名单里的厂商变量名（大小写不敏感），所以 <code>GITHUB_TOKEN</code>
-      这类不会被误列。<strong>选中的那把会加密落库</strong>，环境变量只作为发现来源——
+      三个来源并列：<code>.env</code> 里的默认那一对、环境里扫到的厂商 key、以及你
+      自己添加的。<strong>选中的那把会加密落库</strong>，环境变量只作为发现来源——
       它会出现在 <code>docker inspect</code> 与 <code>/proc/&lt;pid&gt;/environ</code> 里，不是长期存放处。
+      自动识别只认内置名单里的变量名（大小写不敏感），所以 <code>GITHUB_TOKEN</code> 这类不会被误列。
     </p>
 
-    {% if discovered %}
+    {% if options %}
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>厂商</th><th>环境变量</th><th>key</th><th>base_url</th><th></th></tr>
+          <tr><th>名称</th><th>来源</th><th>Base URL</th><th>API Key</th><th></th></tr>
         </thead>
         <tbody>
-          {% for u in discovered %}
+          {% for u in options %}
           <tr>
             <td>
               <strong>{{ u.label }}</strong>
-              {% if u.env_name.upper() == active.env_name.upper() and active.configured %}
+              {% if active.configured and u.ref.lower() == active.ref.lower() %}
                 <span class="badge ok">生效中</span>
               {% endif %}
               {% if not u.has_catalog %}
                 <span class="badge warn" title="这个上游没有 /models 端点">无目录</span>
               {% endif %}
             </td>
-            <td class="mono dim">{{ u.env_name }}</td>
-            <td class="mono">{{ u.masked }}</td>
+            <td class="mono dim small">{{ u.detail }}</td>
             <td class="mono dim truncate" title="{{ u.base_url or '' }}">
               {{ u.base_url or '需要你填' }}
             </td>
+            <td class="mono">{{ u.masked }}</td>
             <td class="num">
-              <form method="post" action="/admin/upstreams/probe"
-                    hx-post="/admin/upstreams/probe" hx-target="#probe-result" hx-swap="innerHTML">
-                <input type="hidden" name="csrf_token" value="{{ csrf }}">
-                <input type="hidden" name="env_name" value="{{ u.env_name }}">
-                {% if u.base_url %}
-                  <input type="hidden" name="base_url" value="{{ u.base_url }}">
-                {% else %}
-                  <input name="base_url" type="text" class="mono" required
-                         placeholder="https://…/v1" style="width:15rem">
+              <div class="row">
+                <form method="post" action="/admin/upstreams/probe"
+                      hx-post="/admin/upstreams/probe" hx-target="#probe-result" hx-swap="innerHTML">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="ref" value="{{ u.ref }}">
+                  <input type="hidden" name="source" value="{{ u.source }}">
+                  {% if u.base_url %}
+                    <input type="hidden" name="base_url" value="{{ u.base_url }}">
+                  {% else %}
+                    <input name="base_url" type="text" class="mono" required
+                           placeholder="https://…/v1" style="width:15rem">
+                  {% endif %}
+                  <button class="btn sm" type="submit">
+                    检查并切换
+                    <span class="htmx-indicator">…</span>
+                  </button>
+                </form>
+                {% if u.removable %}
+                <form method="post" action="/admin/upstreams/providers/delete"
+                      data-confirm="从列表里删掉「{{ u.label }}」？不会影响当前正在用的出口。">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="name" value="{{ u.ref }}">
+                  <button class="btn ghost sm" type="submit" title="从列表里删掉">删除</button>
+                </form>
                 {% endif %}
-                <button class="btn sm" type="submit">
-                  检查并切换
-                  <span class="htmx-indicator">…</span>
-                </button>
-              </form>
+              </div>
             </td>
           </tr>
           {% endfor %}
@@ -159,64 +259,20 @@
     </div>
     {% else %}
     <div class="empty">
-      <div class="empty-title">环境里没有扫到厂商 key</div>
-      <div class="small">
-        在 <code>.env</code> 里写一个即可，例如：
-      </div>
+      <div class="empty-title">没有可切换的上游</div>
+      <div class="small">在 <code>.env</code> 里写一个厂商 key，或在下面添加一个供应商。</div>
       <div class="mt4"><code>DEEPSEEK_API_KEY=sk-…</code></div>
-      <div class="hint mt4">
-        写完要重启星槎——环境变量在进程启动时读取。
-      </div>
+      <div class="hint mt4">写完要重启星槎——环境变量在进程启动时读取。</div>
     </div>
     {% endif %}
   </div>
 </div>
 
-<div id="probe-result" class="mt4"></div>
+{# 探测结果进弹窗，而不是页面下方的一张卡。
+   放在下方的问题是：按钮在表格里、结果在几百像素之外，长表格下你点完什么都
+   看不见，得自己往下滚——而那一步恰恰是"要不要切"的确认。 #}
+<dialog id="probe-dialog" class="modal">
+  <div id="probe-result"></div>
+</dialog>
 
-<div class="card mt5">
-  <div class="card-head"><h2>切换会影响什么</h2></div>
-  <div class="card-body">
-    <p class="muted small">
-      <strong>你现有的 {{ agent_count }} 个 Agent 里写的是模型名</strong>（如
-      <code>openai/gpt-5</code>）。换上游之后那些模型可能不存在，对应的 Agent 会开始报错。
-      所以点「检查并切换」时会先用新 key 拉一次目录，把要失效的 Agent 列出来给你确认，
-      拉不通就直接拒绝切换。
-    </p>
-    <p class="muted small mt4">
-      裸模型直通不受影响——它把你给的 model 原样转发，换上游就是换了可用模型的集合。
-    </p>
-  </div>
-</div>
-<div class="card mb5">
-  <div class="card-head">
-    <h2>连接自检</h2>
-    <button class="btn sm" hx-post="/admin/settings/test" hx-target="#test-result" hx-swap="innerHTML"
-            hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
-      测试
-      <span class="htmx-indicator">…</span>
-    </button>
-  </div>
-  <div class="card-body" id="test-result">
-    <p class="muted small">用当前保存的配置向上游要一次模型列表。<strong>不会</strong>把 key 发给尚未保存的地址。</p>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-head"><h2>运行状况</h2></div>
-  <div class="card-body flush">
-    <div class="table-wrap">
-      <table>
-        <tbody>
-          <tr><td>版本</td><td class="mono">{{ version }}</td></tr>
-          <tr><td>对外契约</td><td class="mono">v{{ contract }}</td></tr>
-          <tr><td>上游地址</td><td class="mono">{{ base_url }}</td></tr>
-          <tr><td>模型目录</td><td class="mono">{{ catalog_count }} 个{% if catalog_stale %}（已过期，将自动重试）{% endif %}</td></tr>
-          <tr><td>数据目录</td><td class="mono">{{ data_dir }}</td></tr>
-          <tr><td>数据库版本</td><td class="mono">{{ db_revision }}</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
 {% endblock %}

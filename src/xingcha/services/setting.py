@@ -22,6 +22,9 @@ SECRET_KEYS: frozenset[str] = frozenset(
     {
         C.SETTING_KEY_OPENROUTER_API_KEY,
         C.SETTING_KEY_TRACE_SECRET_KEY,
+        # **必须在这里。** 这一项是个 JSON 数组，里面装着每家供应商的 api_key ——
+        # 漏了它就是把一串明文 key 写进 SQLite，而页面上一切正常。
+        C.SETTING_KEY_UPSTREAM_PROVIDERS,
     }
 )
 
@@ -34,6 +37,8 @@ KNOWN_KEYS: frozenset[str] = frozenset(
         C.SETTING_KEY_OPENROUTER_API_KEY,
         C.SETTING_KEY_OPENROUTER_BASE_URL,
         C.SETTING_KEY_UPSTREAM_ACTIVE_ENV,
+        # 手动添加的供应商列表。**是密文**：里面每家的 api_key 都在这个 JSON 里。
+        C.SETTING_KEY_UPSTREAM_PROVIDERS,
         C.SETTING_KEY_TRACE_ENDPOINT,
         C.SETTING_KEY_TRACE_PUBLIC_KEY,
         C.SETTING_KEY_TRACE_SECRET_KEY,

@@ -171,7 +171,11 @@ class SwitchProbe:
     （那说明 key 或端点有问题，切过去只会把服务变成不可用）。
     """
 
-    env_name: str
+    #: 你要切到哪个。可能是环境变量名，也可能是用户自己起的供应商名。
+    ref: str
+    #: ``env`` 还是 ``saved``。**必须一路带到确认那一步**——探测用一个来源、
+    #: 确认用另一个的话，切过去的会是另一把 key，而两边页面看起来完全一样。
+    source: str
     label: str
     base_url: str
     #: 用新 key 拉到的模型数。0 表示目录为空。
@@ -196,7 +200,8 @@ class SwitchProbe:
 
 async def probe_switch(
     *,
-    env_name: str,
+    ref: str,
+    source: str = "env",
     base_url: str,
     api_key: str,
     agent_models: dict[str, str],
@@ -206,13 +211,18 @@ async def probe_switch(
 
     ``agent_models`` 是 ``{slug: model_id}``，由调用方从库里查好传进来——这一层不碰
     数据库（依赖方向：services 不反向依赖别的 services 的存储细节）。
+
+    ``ref`` 只用于回显"你要切到哪个"。它可能是环境变量名，也可能是用户自己给那个
+    供应商起的名字——这一层不关心来源，key 与 base_url 都是调用方解析好的。
     """
     from ..core.models_catalog import ModelsCatalog
     from ..core.upstream import UpstreamConfig, make_client
 
-    upper = env_name.upper()
-    label = C.vendor_label(upper)
-    expected_empty = not C.has_catalog(upper)
+    upper = ref.upper()
+    # 已知厂商用它的规范名；自己添加的就用用户起的那个名字（vendor_label 认不出来时
+    # 会回落成变量名本身，那对手填的供应商恰好就是它的名字）。
+    label = C.vendor_label(upper) if C.is_known_upstream_env(upper) else ref
+    expected_empty = C.is_known_upstream_env(upper) and not C.has_catalog(upper)
 
     cfg = UpstreamConfig(api_key=api_key, base_url=base_url)
     catalog = ModelsCatalog(ttl_seconds=60)
@@ -220,6 +230,13 @@ async def probe_switch(
     ok, error = False, ""
     try:
         ok = await catalog.refresh(client, cfg.api_key)
+        if not ok:
+            # **refresh 失败时是返回 False，不是抛异常**（它要保留旧快照）。
+            # 只捕获异常的话这里拿到的是空字符串，页面只能说"目录为空"——
+            # 而真实原因往往是 404（地址少了或多了 /v1），那句话才是能照着改的。
+            from ..errors import redact
+
+            error = redact(catalog.last_error or "")[:200]
     except Exception as e:  # 网络/证书/协议，什么都可能
         from ..errors import redact
 
@@ -238,7 +255,8 @@ async def probe_switch(
                 broken.append(BrokenAgent(slug=slug, model=bare))
 
     return SwitchProbe(
-        env_name=env_name,
+        ref=ref,
+        source=source,
         label=label,
         base_url=base_url,
         model_count=len(known),

@@ -706,6 +706,18 @@ SETTING_KEY_OPENROUTER_BASE_URL: Final = "openrouter.base_url"
 #: 一次 setting 写入。
 SETTING_KEY_UPSTREAM_ACTIVE_ENV: Final = "upstream.active_env"
 
+#: 用户手动添加的供应商列表（加密的 JSON 数组）。
+#:
+#: 为什么要存：自动发现只能看到环境变量里的厂商 key，而"我自己填的那个中转"必须
+#: 也能在切换列表里出现——否则手填一次之后就只能再手填一次，切走了就回不来。
+#:
+#: 存成**一个** blob 而不是每家一行：``setting_svc`` 已经对整个值做加密，一个 key
+#: 一次读写就够；拆成多行要自己维护索引，而索引与内容不一致是最难查的一类状态。
+SETTING_KEY_UPSTREAM_PROVIDERS: Final = "upstream.providers"
+
+#: 手动添加的供应商名字长度上限。够写"公司内网中转"，短到能进表格一列。
+PROVIDER_NAME_MAX: Final = 40
+
 #: 可切换的上游：环境变量名 → 该厂商的 OpenAI 兼容 base_url。**闭集，一处定义。**
 #:
 #: ------------------------------------------------------------------------------
@@ -805,9 +817,12 @@ THEMES: Final = frozenset({"system", "light", "dark"})
 #: 东西，要么学会忽略这类警告——而忽略之后，**真的拼错时也不会有人看**。
 ORCHESTRATION_ENV_NAMES: Final = frozenset(
     {
-        # 这两个只用于拼 XINGCHA_PUBLIC_URL 与 xc 打印的访问地址。
-        # 它们是**网关**上的主机与端口，不是这个容器的——容器一个宿主端口都不发布。
-        "XINGCHA_WEB_HOST",
+        # 走不走共享网关。空 = 独立跑明文 HTTP；有值 = 那个 docker 网络的名字。
+        # 它决定 deploy/xc 要不要叠 docker-compose.gateway.yml——是**拓扑**开关。
+        "XINGCHA_GATEWAY",
+        "XINGCHA_GATEWAY_PORT",  # 网关上分给 xingcha 的端口，只用于拼展示地址
+        "XINGCHA_BIND_ADDR",  # 独立跑时宿主绑哪个地址（默认只绑回环）
+        "XINGCHA_WEB_HOST",  # 只用于拼 XINGCHA_PUBLIC_URL 与 xc 打印的访问地址
         "XINGCHA_WEB_PORT",
         "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷（Windows 用后者）
     }
