@@ -4,7 +4,8 @@
 <div class="page-head">
   <div>
     <h1>配额</h1>
-    <p>三级主体 × 三种窗口，可限金额或次数。<strong>最紧的那条先生效</strong>——不是取最宽松的。</p>
+    <p>给一个<strong>主体</strong>在一个<strong>窗口</strong>内设上限。同一次调用会同时命中三层主体，
+      <strong>最紧的那条先生效</strong>——不是取最宽松的。</p>
   </div>
 </div>
 
@@ -21,24 +22,22 @@
 {% endif %}
 
 <div class="card mb5">
-  <div class="card-head"><h2>新增 / 修改</h2></div>
+  <div class="card-head">
+    <h2>新增 / 修改</h2>
+    <span class="small muted">主体 + 窗口相同即覆盖旧值</span>
+  </div>
   <div class="card-body">
     <form method="post" action="/admin/quota/save" class="form-row">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <div class="field" style="flex:0 1 140px">
-        <label for="subject_type">主体</label>
-        <select id="subject_type" name="subject_type">
-          <option value="user">用户</option>
-          <option value="token">密钥</option>
-          <option value="agent">Agent</option>
+      <div class="field" style="flex:1 1 260px">
+        <label for="subject">主体</label>
+        <select id="subject" name="subject">
+          {% for group, items in subject_groups %}
+          <optgroup label="{{ group }}">
+            {% for s in items %}<option value="{{ s.value }}" title="{{ s.hint }}">{{ s.label }}</option>{% endfor %}
+          </optgroup>
+          {% endfor %}
         </select>
-      </div>
-      <div class="field" style="flex:0 1 200px">
-        <label for="subject_id">对象</label>
-        <select id="subject_id" name="subject_id">
-          {% for s in subjects %}<option value="{{ s.id }}">{{ s.label }}</option>{% endfor %}
-        </select>
-        <div class="hint">下拉里混着三类对象，请与左边的主体类型对应。</div>
       </div>
       <div class="field" style="flex:0 1 120px">
         <label for="window">窗口</label>
@@ -48,14 +47,14 @@
           <option value="total">累计</option>
         </select>
       </div>
-      <div class="field" style="flex:0 1 140px">
+      <div class="field" style="flex:0 1 150px">
         <label for="usd">金额上限 USD</label>
         <input id="usd" name="usd" type="number" step="0.01" min="0" placeholder="留空=不限">
       </div>
       {# 提交按钮放进最后一个字段的**控件行**里，而不是作为 .form-row 的兄弟。
          这样"按钮和控件在同一行"是构造性质的：不需要猜标签行有多高，也就不会
          因为换一台机器字体不同而差几个像素。 #}
-      <div class="field" style="flex:0 1 220px">
+      <div class="field" style="flex:0 1 230px">
         <label for="requests">次数上限</label>
         <div class="control-row">
           <input id="requests" name="requests" type="number" min="1" placeholder="留空=不限">
@@ -64,9 +63,44 @@
       </div>
     </form>
     <div class="hint mt4">
-      两个上限至少设一个。<strong>次数上限是永远精确的</strong>；金额上限最多超出
+      两个上限至少设一个。<strong>次数上限永远精确</strong>；金额上限最多超出
       「在飞请求数 × 单次费用」——调用前不可能知道要花多少，所以它天然是事后判定。
-      另外约三分之一的在售模型查不到价，对它们金额上限完全无效，次数上限才是兜底。
+      另外约三分之一的在售模型查不到价，对它们只有次数上限兜底。
+    </div>
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head"><h2>三层主体是什么关系</h2></div>
+  <div class="card-body flush">
+    <div class="table-wrap">
+      <table class="mini">
+        <thead><tr><th>层</th><th>限的是</th><th>用它来</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>账号</strong></td>
+            <td>这台星槎的全部用量</td>
+            <td>总闸。星槎是单管理员的，没有多用户体系，所以这一层实际就是「全站合计」。</td>
+          </tr>
+          <tr>
+            <td><strong>密钥</strong></td>
+            <td>某一把 <code>sk-xc-</code> 的用量</td>
+            <td>按调用方分账：一个业务一把 key，哪个业务跑飞只停哪个。</td>
+          </tr>
+          <tr>
+            <td><strong>Agent</strong></td>
+            <td>某个 Agent 的用量，不分是谁调的</td>
+            <td>给贵的 Agent 单独封顶——结构化 Agent 最坏会调 <strong>1+重试次数</strong> 次模型。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body">
+      <div class="hint">
+        三层<strong>同时</strong>检查，不是三选一。一次经过 Agent 的调用会同时记进
+        「账号」「那把密钥」「那个 Agent」三个计数器，任意一条超了就拒。
+        所以常见的配法是：账号设一个大的兜底，再给具体密钥或 Agent 设小的。
+      </div>
     </div>
   </div>
 </div>
@@ -79,7 +113,7 @@
   <div class="card-body flush">
     {% if rules %}
     <div class="table-wrap">
-      <table>
+      <table id="quota-rules">
         <thead>
           <tr><th>主体</th><th>窗口</th><th class="num">已用 USD</th><th class="num">上限 USD</th>
               <th class="num">已用次数</th><th class="num">上限次数</th><th>周期</th><th></th></tr>

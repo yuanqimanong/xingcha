@@ -481,8 +481,7 @@ class TestQuota:
     def test_add_a_rule_and_see_it_listed(self, site: LiveSite, page):
         login(page, site)
         page.goto(f"{site.base_url}/admin/quota", wait_until="networkidle")
-        page.select_option("select[name=subject_type]", "user")
-        page.select_option("select[name=subject_id]", index=0)
+        page.select_option("select[name=subject]", "user:1")
         page.select_option("select[name=window]", "day")
         page.fill("input[name=usd]", "5")
         page.click("form[action='/admin/quota/save'] button[type=submit]")
@@ -490,7 +489,9 @@ class TestQuota:
 
         # 断言渲染后的文案而不是原始枚举值：页面是给人看的，"user/day" 那种
         # 原样输出反而说明本地化没做。
-        row = page.inner_text("table")
+        # 定位到规则表本身，而不是页面上的第一张表——表单下面还有一张讲
+        # 「三层主体是什么关系」的说明表，按位置取会取到它。
+        row = page.inner_text("#quota-rules")
         assert "用户" in row and "每天" in row and "5" in row, row
         assert site.db_rows("SELECT * FROM quota"), "库里没有这条规则"
 
@@ -498,8 +499,7 @@ class TestQuota:
         """金额与次数至少要设一个——两个都空等于没有配额，静默存下去最糟。"""
         login(page, site)
         page.goto(f"{site.base_url}/admin/quota", wait_until="networkidle")
-        page.select_option("select[name=subject_type]", "user")
-        page.select_option("select[name=subject_id]", index=0)
+        page.select_option("select[name=subject]", "user:1")
         page.click("form[action='/admin/quota/save'] button[type=submit]")
         page.wait_for_load_state("networkidle")
         assert not site.db_rows("SELECT * FROM quota"), "两个上限都空的规则被存下来了"

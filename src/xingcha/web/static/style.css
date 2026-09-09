@@ -792,10 +792,20 @@ label {
   margin-top: var(--s2);
   line-height: 1.55;
 }
-input[type="text"],
-input[type="password"],
-input[type="number"],
-input[type="url"],
+/* 控件外观。
+ *
+ * **按排除法写，不按枚举法。** 曾经是 `input[type="text"], input[type="password"],
+ * input[type="number"], input[type="url"]` 这样一条条列——而 `<input>` 的 type
+ * 默认就是 text，**省略 type 是合法 HTML**。于是新建 Agent 页上的标识、名称、
+ * 说明、模型、以及模型参数那一整格，全都没被任何一条选中器命中：它们退回浏览器
+ * 默认样式，看起来像"输入框样式都没了"。
+ *
+ * 枚举法的问题不在于漏了哪一个，而在于**漏掉是静默的**：写模板的人不会想到少写
+ * 一个 `type="text"` 会掉样式，而页面上也不报任何错。排除法反过来——新写的
+ * `<input>` 默认就有样式，只有明确列出的那几类（自带外观的控件）才例外。 */
+input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"],
+          [type="reset"], [type="file"], [type="range"], [type="color"],
+          [type="image"], [type="hidden"]),
 select,
 textarea {
   width: 100%;
@@ -809,10 +819,9 @@ textarea {
   line-height: 1.5;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-input[type="text"]:focus,
-input[type="password"]:focus,
-input[type="number"]:focus,
-input[type="url"]:focus,
+input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"],
+          [type="reset"], [type="file"], [type="range"], [type="color"],
+          [type="image"], [type="hidden"]):focus,
 select:focus,
 textarea:focus {
   outline: none;

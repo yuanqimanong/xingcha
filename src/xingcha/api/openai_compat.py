@@ -272,7 +272,7 @@ async def _run_agent(
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
         raise ModelInvalid("messages 必须是一个非空数组")
-    prompt, extra_instructions = run_svc.to_prompt(messages)
+    conv = run_svc.to_conversation(messages)
 
     # 配额：**检查并占掉名额**，就在最贵的那一步之前。
     #
@@ -319,18 +319,13 @@ async def _run_agent(
         await tracker.submit()
 
     if wants_streaming:
-        return await _stream_agent(request, rt, tracker, prompt, extra_instructions, fail)
+        return await _stream_agent(request, rt, tracker, conv, fail)
 
     with tracing_mod.run_span(
         state.tracing, kind="agent", run_id=tracker.rec.id, model=requested_model
     ) as span:
         try:
-            outcome = await run_svc.execute(
-                rt,
-                prompt=prompt,
-                extra_instructions=extra_instructions,
-                run_timeout=state.settings.run_timeout,
-            )
+            outcome = await run_svc.execute(rt, conv=conv, run_timeout=state.settings.run_timeout)
         except XingchaError as e:
             await fail(e)
             tracing_mod.record_run(span, tracker.rec)
@@ -349,8 +344,7 @@ async def _stream_agent(
     request: Request,
     rt: Any,
     tracker: RunTracker,
-    prompt: str,
-    extra_instructions: str | None,
+    conv: run_svc.Conversation,
     fail: Callable[[XingchaError], Awaitable[None]],
 ) -> Response:
     """真流式（纯文本 Agent）。
@@ -373,8 +367,7 @@ async def _stream_agent(
     gen = run_svc.stream_frames(
         rt,
         tracing=state.tracing,
-        prompt=prompt,
-        extra_instructions=extra_instructions,
+        conv=conv,
         run_timeout=state.settings.run_timeout,
         model=tracker.rec.model,
         run_id=tracker.rec.id,
