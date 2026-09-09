@@ -58,7 +58,7 @@
         <tbody>
         {% for t in tokens %}
           <tr>
-            <td>{{ t.name }}</td>
+            <td><a href="/admin/keys/{{ t.kid }}">{{ t.name }}</a></td>
             <td class="mono dim">{{ t.display_prefix }}</td>
             <td>
               {% if not t.is_active %}<span class="badge neutral">已吊销</span>
@@ -68,6 +68,7 @@
             <td class="mono dim small">{{ t.last_used_display }}</td>
             <td class="mono dim small">{{ t.created_display }}</td>
             <td style="text-align:right">
+              <a class="btn sm" href="/admin/keys/{{ t.kid }}">调用详情</a>
               {% if t.is_active %}
               <form method="post" action="/admin/keys/revoke" data-confirm="吊销后使用这把密钥的调用会立刻开始返回 401。确定吗？">
                 <input type="hidden" name="csrf_token" value="{{ csrf }}">

@@ -1,0 +1,72 @@
+{% extends "_shell.html" %}
+{% block title %}{{ token.name }}{% endblock %}
+{% block main %}
+<div class="page-head">
+  <div>
+    <h1>{{ token.name }}</h1>
+    <p>标识 <code>{{ token.display_prefix }}</code>
+      {% if not token.is_active %}<span class="badge neutral">已吊销</span>
+      {% elif token.expired %}<span class="badge warn">已过期</span>
+      {% else %}<span class="badge ok">可用</span>{% endif %}
+      · 签发于 {{ token.created }} · 有效期至 {{ token.expires }}</p>
+  </div>
+  <a class="btn ghost" href="/admin/keys">返回密钥</a>
+</div>
+
+<div class="card mb5">
+  <div class="card-head"><h2>用量与成功率</h2></div>
+  <div class="card-body">
+    {% include "_run_stats.html" %}
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head">
+    <h2>调用来源</h2>
+    <span class="small muted">最近 20 个来源</span>
+  </div>
+  <div class="card-body flush">
+    {% if sources %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>IP</th><th>User-Agent</th><th class="num">调用</th><th class="num">失败</th><th>最近一次</th></tr></thead>
+        <tbody>
+        {% for s in sources %}
+          <tr>
+            <td class="mono">{{ s.ip }}</td>
+            <td class="mono small dim truncate" title="{{ s.agent }}">{{ s.agent }}</td>
+            <td class="num">{{ s.count }}</td>
+            <td class="num {% if s.failed %}danger-text{% endif %}">{{ s.failed or '' }}</td>
+            <td class="mono small dim nowrap">{{ s.last }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body">
+      <div class="hint">
+        <strong>一把本该只给一台服务器用的 key，突然冒出第二个 IP，就是这里看出来的。</strong>
+        来源取自连接对端；只有配了 <code>XINGCHA_TRUSTED_PROXIES</code> 时才采信反代
+        传来的 <code>X-Forwarded-For</code>——不然任何人都能伪造它，这一列就变成
+        "调用方说他是谁"。
+      </div>
+    </div>
+    {% else %}
+    <div class="empty">
+      <div class="empty-title">还没有带来源的调用记录</div>
+      <div class="small">来源是 0002 之后才开始记的，更早的调用行这一列是空的（如实表示"那时候没记"）。</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>最近调用</h2>
+    <span class="small muted">最多 100 条</span>
+  </div>
+  <div class="card-body flush">
+    {% include "_runs_table.html" %}
+  </div>
+</div>
+{% endblock %}

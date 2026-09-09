@@ -1588,3 +1588,151 @@ textarea {
 .target table.mini td.mono {
   overflow-wrap: anywhere;
 }
+
+/* 卡片里的统计格。
+ *
+ * 与总览页顶部那组共用 .stat / .stat-label / .stat-value / .stat-hint——**同一个
+ * 东西不给两套类名**。此前差点写成 .stat-grid/.stat-k/.stat-v，那会让 .stat 这个
+ * 类同时受两处规则约束，改一处坏另一处。
+ *
+ * 区别只在密度：卡片里的一组通常有八格，用总览那个 1.75rem 会撑得很难看。
+ */
+.stats.dense {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s3);
+  margin-bottom: 0;
+}
+.stats.dense .stat {
+  padding: var(--s3);
+  background: var(--surface-2);
+  box-shadow: none;
+  border-radius: var(--r2);
+}
+.stats.dense .stat-value {
+  font-size: 1.125rem;
+  margin-top: 2px;
+}
+.stats.dense .stat-value.small {
+  font-size: 12px;
+  font-weight: 500;
+}
+.stats.dense .stat-label {
+  font-size: 11px;
+}
+.stats.dense .stat-hint {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.warn-text {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* 失败构成之类的小标签 */
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  margin: 0 var(--s2) var(--s2) 0;
+  border-radius: 999px;
+  border: 1px solid var(--rule-2);
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+/* --- Agent 分组 --- */
+.group {
+  margin-bottom: var(--s5);
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) 0;
+  cursor: pointer;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: var(--s4);
+  list-style: none;
+}
+.group-head::-webkit-details-marker {
+  display: none;
+}
+/* 自己画三角：原生 marker 在 flex summary 里的位置各浏览器不一致。 */
+.group-head::before {
+  content: "▸";
+  color: var(--ink-3);
+  font-size: 11px;
+  transition: transform 0.12s ease;
+}
+.group[open] > .group-head::before {
+  transform: rotate(90deg);
+}
+.group-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+/* 折叠头里的按钮不该连带触发折叠 */
+.group-actions {
+  cursor: default;
+}
+
+/* 一行四个。auto-fill + minmax 而不是写死 4 列：窄屏上写死的话卡片会被压到
+   读不了，而"一行四个"本来就是对宽屏的描述，不是对布局的要求。 */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--s4);
+}
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r3);
+  padding: var(--s4);
+  box-shadow: var(--shadow-1);
+}
+.agent-card.off {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.agent-card.off .agent-slug,
+.agent-card.off .agent-name {
+  color: var(--ink-3);
+}
+.agent-top {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  justify-content: space-between;
+}
+.agent-slug {
+  font-weight: 600;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.agent-name {
+  font-size: 13px;
+  margin-top: var(--s2);
+}
+.agent-desc {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.agent-meta {
+  margin-top: var(--s3);
+  width: 100%;
+}
+.agent-meta td.mono {
+  overflow-wrap: anywhere;
+}
+.agent-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  /* 卡片高度不齐时按钮各在各的高度上，扫一行要上下找。推到底边就都在一条线上。 */
+  margin-top: auto;
+  padding-top: var(--s3);
+}

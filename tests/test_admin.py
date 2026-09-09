@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -1278,3 +1279,34 @@ class TestThemeTokensStayInSync:
         explicit = css[css.index(':root[data-theme="dark"] {') :]
         explicit = explicit[: explicit.index("\n}")]
         assert re.search(r"--star-opacity:\s*1\s*;", explicit)
+
+
+# =============================================================================
+# 调用来源与成功率
+# =============================================================================
+
+
+class TestKeyDetailPage:
+    """密钥的调用详情页。来源记录本身在 test_agent_e2e 里测（那里才有真调用）。"""
+
+    def test_key_detail_page_renders(self, logged_in: TestClient):
+        from xingcha.services import auth as auth_svc
+
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+
+        async def issue():
+            async with state.sessionmaker() as s:
+                out = await auth_svc.issue(s, name="详情页")
+                await s.commit()
+                return out
+
+        issued = asyncio.run(issue())
+        body = logged_in.get(f"/admin/keys/{issued.kid}").text
+        assert "详情页" in body
+        assert "调用来源" in body
+        assert "成功率" in body
+
+    def test_an_unknown_kid_goes_back_to_the_list(self, logged_in: TestClient):
+        r = logged_in.get("/admin/keys/nope", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/keys"

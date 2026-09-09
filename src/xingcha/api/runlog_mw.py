@@ -219,12 +219,21 @@ class RunTracker:
 
         state = request.app.state.xc
         principal = getattr(request.state, "principal", None)
+        # **client.host 已经是可信的那个值，不要自己解 X-Forwarded-For。**
+        #
+        # uvicorn 在 `forwarded_allow_ips` 命中时才用 XFF 改写 scope["client"]，
+        # 而那个白名单来自 XINGCHA_TRUSTED_PROXIES（默认谁都不信）。在这里自己
+        # 读一遍头，就是把信任判定写第二遍——而写第二遍的那份必然更宽松：任何人
+        # 都能伪造 XFF，于是调用记录里的来源 IP 变成"调用方说他是谁"。
         self.rec = RunRecord(
             id=new_run_id(),
             kind=kind,
             model=model,
             user_id=principal.user_id if principal else 1,
             token_id=principal.token_id if principal else None,
+            client_ip=request.client.host if request.client else None,
+            # 截断：UA 是调用方可控的任意长字符串，不设上限就是让它决定这一行有多大。
+            user_agent=(request.headers.get("user-agent") or "")[:200] or None,
         )
         self._buffer = state.usage
         self._catalog = state.catalog

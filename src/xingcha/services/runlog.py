@@ -41,6 +41,9 @@ class RunRecord:
     status: str = C.RunStatus.OK.value
     error_type: str | None = None
     latency_ms: int | None = None
+    #: 谁在调。见 db.models.Run.client_ip——只记 token_id 答不了"key 现在被谁在用"。
+    client_ip: str | None = None
+    user_agent: str | None = None
     started_at: str = field(default_factory=utcnow)
     finished_at: str | None = None
 
@@ -168,6 +171,8 @@ def _to_run(rec: RunRecord) -> Run:
         status=rec.status,
         error_type=rec.error_type,
         latency_ms=rec.latency_ms,
+        client_ip=rec.client_ip,
+        user_agent=rec.user_agent,
         started_at=rec.started_at,
         finished_at=rec.finished_at or utcnow(),
     )

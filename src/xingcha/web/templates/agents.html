@@ -6,45 +6,120 @@
     <h1>Agent</h1>
     <p>把提示词配置成一个可调用的 model id。调用方把 <code>model</code> 填成标识就能用，不需要知道背后是什么模型。</p>
   </div>
-  <a class="btn primary" href="/admin/agents/new">新建 Agent</a>
+  <div class="row">
+    <a class="btn primary" href="/admin/agents/new">新建 Agent</a>
+  </div>
 </div>
 
+{% if not groups %}
 <div class="card">
   <div class="card-body flush">
-    {% if agents %}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>标识</th><th>名称</th><th>模型</th><th>输出</th><th>版本</th><th>状态</th><th></th></tr>
-        </thead>
-        <tbody>
-        {% for a in agents %}
-          <tr>
-            <td class="mono"><strong>{{ a.slug }}</strong></td>
-            <td>{{ a.name }}{% if a.description %}<div class="small muted truncate">{{ a.description }}</div>{% endif %}</td>
-            <td class="mono small dim truncate" title="{{ a.model }}">{{ a.model }}</td>
-            <td>
-              {% if a.structured %}
-                <span class="badge info" title="{{ a.tier_desc }}">{{ a.tier }} · 结构化</span>
-              {% else %}
-                <span class="badge neutral">纯文本</span>
-              {% endif %}
-            </td>
-            <td class="num dim">v{{ a.version }}</td>
-            <td>{% if a.is_active %}<span class="badge ok">启用</span>{% else %}<span class="badge neutral">已停用</span>{% endif %}</td>
-            <td style="text-align:right"><a class="btn sm" href="/admin/agents/{{ a.slug }}">编辑</a></td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
     <div class="empty">
       <div class="empty-title">还没有 Agent</div>
       <div class="small">建一个之后，业务代码把 <code>model</code> 从 <code>openai/gpt-5</code> 换成它的标识即可。</div>
       <div class="mt4"><a class="btn primary" href="/admin/agents/new">新建 Agent</a></div>
     </div>
-    {% endif %}
   </div>
 </div>
+{% endif %}
+
+{# 分组按行折叠。<details open> 而不是自己写一套展开状态：原生的能被 Ctrl+F
+   搜到（浏览器会自动展开），自己写的 display:none 不能——而"我明明有个叫
+   extract 的 Agent，搜不到"是一个很难自己反应过来的问题。 #}
+{% for group, agents in groups %}
+<details class="group" open>
+  <summary class="group-head">
+    <span class="group-name">{{ group }}</span>
+    <span class="dim small">{{ agents | length }} 个</span>
+    <span class="grow"></span>
+    {% if group != default_group %}
+    <span class="group-actions">
+      <button class="btn ghost sm" type="button" data-open-dialog="#rename-{{ loop.index }}">重命名</button>
+    </span>
+    {% endif %}
+  </summary>
+
+  {% if group != default_group %}
+  <dialog id="rename-{{ loop.index }}" class="modal">
+    <form method="post" action="/admin/agents/group/rename">
+      <div class="card">
+        <div class="card-head"><h2>重命名「{{ group }}」</h2></div>
+        <div class="card-body">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="old" value="{{ group }}">
+          <div class="field">
+            <label for="newname-{{ loop.index }}">新名字</label>
+            <input id="newname-{{ loop.index }}" name="new" type="text" maxlength="40"
+                   value="{{ group }}">
+            <div class="hint">留空 = 把这一组的 Agent 全挪回「{{ default_group }}」。</div>
+          </div>
+          <div class="row mt4">
+            <button class="btn primary" type="submit">保存</button>
+            <a class="btn" href="#" data-close-dialog>取消</a>
+          </div>
+        </div>
+      </div>
+    </form>
+  </dialog>
+  {% endif %}
+
+  <div class="agent-grid">
+    {% for a in agents %}
+    <div class="agent-card {% if not a.is_active %}off{% endif %}">
+      <div class="agent-top">
+        <a class="agent-slug mono" href="/admin/agents/{{ a.slug }}">{{ a.slug }}</a>
+        {% if a.is_active %}<span class="badge ok">启用</span>
+        {% else %}<span class="badge neutral">停用</span>{% endif %}
+      </div>
+      <div class="agent-name">{{ a.name }}</div>
+      {% if a.description %}<div class="agent-desc">{{ a.description }}</div>{% endif %}
+
+      <table class="mini agent-meta">
+        <tr><td>模型</td><td class="mono">{{ a.model }}</td></tr>
+        <tr>
+          <td>输出</td>
+          <td>
+            {% if a.structured %}<span class="badge info" title="{{ a.tier_desc }}">{{ a.tier }} · 结构化</span>
+            {% else %}<span class="badge neutral">纯文本</span>{% endif %}
+            <span class="dim small">v{{ a.version }}</span>
+          </td>
+        </tr>
+        <tr>
+          <td>提示词</td>
+          <td class="small">
+            系统提示词{% if a.templated %} + 用户模板{% endif %}{% if a.examples %} + {{ a.examples }} 组示例{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td>调用</td>
+          <td class="small">
+            {% if a.total %}
+            {{ a.total }} 次 ·
+            <span class="{% if a.failed %}warn-text{% endif %}">成功 {{ a.ok_rate }}</span> ·
+            {{ a.cost }} USD
+            {% else %}<span class="dim">还没被调用过</span>{% endif %}
+          </td>
+        </tr>
+        {% if a.total %}
+        <tr><td>最近</td><td class="mono small dim">{{ a.last }}</td></tr>
+        {% endif %}
+      </table>
+
+      <div class="agent-actions">
+        <a class="btn sm" href="/admin/agents/{{ a.slug }}">编辑</a>
+        <a class="btn sm" href="/admin/agents/{{ a.slug }}#test">测试</a>
+        <span class="grow"></span>
+        <form method="post" action="/admin/agents/{{ a.slug }}/toggle"
+              {% if a.is_active %}data-confirm="停用「{{ a.slug }}」？调用方拿它当 model 调用会开始收到 model_not_found。slug 仍然被占着，随时能开回来。"{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <button class="btn sm {% if not a.is_active %}primary{% endif %}" type="submit">
+            {{ '停用' if a.is_active else '启用' }}
+          </button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+{% endfor %}
 {% endblock %}

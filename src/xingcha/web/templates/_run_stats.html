@@ -1,0 +1,53 @@
+{# 一组主体的调用统计。总览、密钥详情、Agent 详情共用这一份。
+
+   写三份的话，三处对"成功率"的定义迟早会分叉——而分叉之后没人知道该信哪个数。 #}
+<div class="stats dense">
+  <div class="stat">
+    <div class="stat-label">调用</div>
+    <div class="stat-value">{{ stats.total }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">成功率</div>
+    <div class="stat-value {% if stats.failed %}warn-text{% endif %}">{{ stats.ok_rate }}</div>
+    <div class="stat-hint">失败 {{ stats.failed }} 次 · {{ stats.fail_rate }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">重试放大</div>
+    <div class="stat-value">{{ stats.amplification }}</div>
+    <div class="stat-hint">平均每次调用打了几次上游</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">schema 违规</div>
+    <div class="stat-value {% if stats.violations %}warn-text{% endif %}">{{ stats.violation_rate }}</div>
+    <div class="stat-hint">{{ stats.violations }} 次退回重试</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">费用 USD</div>
+    <div class="stat-value">{{ stats.cost }}</div>
+    <div class="stat-hint">
+      {% if stats.unpriced %}
+      <span class="warn-text">{{ stats.unpriced }} 次查不到价</span>（可定价 {{ stats.priced_rate }}）
+      {% else %}全部可定价{% endif %}
+    </div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">token</div>
+    <div class="stat-value small">{{ stats.input_tokens }} → {{ stats.output_tokens }}</div>
+    <div class="stat-hint">缓存命中 {{ stats.cache_rate }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">平均耗时</div>
+    <div class="stat-value">{{ stats.avg_ms }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">最近一次</div>
+    <div class="stat-value small mono">{{ stats.last }}</div>
+    <div class="stat-hint">首次 {{ stats.first }}</div>
+  </div>
+</div>
+
+{% if stats.errors %}
+<div class="hint mt4">失败构成：
+  {% for e in stats.errors %}<span class="chip">{{ e.label }} × {{ e.count }}</span>{% endfor %}
+</div>
+{% endif %}

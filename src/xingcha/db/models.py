@@ -144,6 +144,14 @@ class Agent(Base):
     name: Mapped[str] = mapped_column(sa.Text, nullable=False)
     description: Mapped[str | None] = mapped_column(sa.Text)
     is_active: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
+
+    #: 分组，只用于后台的归类展示。**不进 slug、不进 /v1/models**——分组是给人
+    #: 整理用的，一旦它能影响解析，改个分组就静默改变了调用方看到的 model id。
+    #:
+    #: NULL = 还没分过组。不给默认值是因为"没分过"和"被明确放进一个叫默认的组"
+    #: 是两件事，而前者才是历史行的真相。
+    group_name: Mapped[str | None] = mapped_column(sa.Text)
+
     current_version_id: Mapped[int | None] = mapped_column(sa.Integer)
     user_id: Mapped[int] = mapped_column(
         sa.Integer, sa.ForeignKey("user.id"), nullable=False, default=1
@@ -249,6 +257,15 @@ class Run(Base):
     status: Mapped[str] = mapped_column(sa.Text, nullable=False)
     #: 对应 contract.ErrorType 的值。
     error_type: Mapped[str | None] = mapped_column(sa.Text)
+
+    #: 请求从哪来。**key 泄漏时第一个要回答的问题是"它现在被谁在用"**，而
+    #: 只记 token_id 答不了——那只说明用的是哪把钥匙，不说明是谁在开门。
+    #:
+    #: 取自 X-Forwarded-For（仅在 trusted_proxies 允许时）或直连的 peer 地址。
+    #: 历史行是 NULL，如实表示"那时候没记"，不是 "unknown"。
+    client_ip: Mapped[str | None] = mapped_column(sa.Text)
+    #: User-Agent 原文，截断存。用来区分"业务代码"和"某人拿 curl 在试"。
+    user_agent: Mapped[str | None] = mapped_column(sa.Text)
 
     latency_ms: Mapped[int | None] = mapped_column(sa.Integer)
     started_at: Mapped[str] = mapped_column(sa.Text, nullable=False, default=utcnow)

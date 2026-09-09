@@ -178,6 +178,7 @@ async def save(
     retries: int,
     native_ok: bool,
     prompting: builder.Prompting | None = None,
+    group_name: str | None = None,
     changelog: str = "",
     user_id: int = 1,
 ) -> SaveResult:
@@ -226,6 +227,7 @@ async def save(
             description=description,
             is_active=True,
             user_id=user_id,
+            group_name=(group_name or "").strip() or None,
             created_at=utcnow(),
         )
         session.add(row)
@@ -233,6 +235,9 @@ async def save(
     else:
         row.name = name
         row.description = description
+        # 分组是**表单里的一项**，所以每次保存都按表单来（包括清空回默认组）。
+        # 只在非空时才写的话，"把它挪回默认组"这个动作就做不了。
+        row.group_name = (group_name or "").strip() or None
 
     next_version = (
         await session.execute(
@@ -305,6 +310,43 @@ async def set_active(session: AsyncSession, agent_id: int, active: bool) -> bool
         return False
     row.is_active = active
     return True
+
+
+#: 没分过组的 Agent 归到这个名字下**只在展示时**成立。
+#:
+#: 库里存的是 NULL，不是这四个字——"没分过组"和"被明确放进一个叫默认分组的组"
+#: 是两件事，而把展示用的名字写进库会让这两件事再也分不开。
+DEFAULT_GROUP = "默认分组"
+
+
+async def list_groups(session: AsyncSession) -> list[str]:
+    """已经用过的分组名，按名字排序。默认分组不在其中——它不是一个真实的分组。"""
+    rows = (
+        (
+            await session.execute(
+                select(Agent.group_name)
+                .where(Agent.group_name.is_not(None))
+                .distinct()
+                .order_by(Agent.group_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [r for r in rows if r]
+
+
+async def rename_group(session: AsyncSession, old: str, new: str) -> int:
+    """把一个分组下的 Agent 全部挪到另一个名字下。返回挪了几个。
+
+    新名字为空 = 挪回默认分组（写 NULL）。分组不是一张表，就是 Agent 上的一个
+    字符串——建表要维护"空分组还留着吗"，而一个没有成员的分组没有任何意义。
+    """
+    rows = (await session.execute(select(Agent).where(Agent.group_name == old))).scalars().all()
+    target = new.strip() or None
+    for row in rows:
+        row.group_name = target
+    return len(rows)
 
 
 async def slug_available(session: AsyncSession, slug: str) -> bool:

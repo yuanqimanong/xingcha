@@ -26,12 +26,15 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import case as sa_case
 from sqlalchemy import func, select
 
 from .. import __version__
 from .. import contract as C
+from ..core import builder as builder_mod
 from ..core.upstream import UpstreamConfig
 from ..core.urlguard import UnsafeUpstreamURL, check_upstream_url
+from ..db.models import Agent as AgentRow
 from ..db.models import Run, RunUsage
 from ..services import auth as auth_svc
 from ..services import setting as setting_svc
@@ -553,14 +556,11 @@ async def overview(request: Request) -> Response:
             return {"runs": row[0], "input": row[1], "output": row[2], "cost": total}
 
         d, w = await agg(day), await agg(week)
-        errors = (
-            await s.execute(
-                select(func.count(Run.id)).where(Run.started_at >= week, Run.status != "ok")
-            )
-        ).scalar_one()
+        # 全量口径的那组比率，与密钥详情、Agent 详情用同一份实现。
+        stats = await _run_stats(s)
         runs = await _recent_runs(s, limit=8)
 
-    stats = {
+    today = {
         "today_runs": d["runs"],
         "week_runs": w["runs"],
         "today_cost": _fmt_cost(str(d["cost"])),
@@ -568,17 +568,189 @@ async def overview(request: Request) -> Response:
         "today_tokens": d["input"] + d["output"],
         "today_input": d["input"],
         "today_output": d["output"],
-        "week_errors": errors,
-        "error_rate": round(errors / w["runs"] * 100, 1) if w["runs"] else 0,
     }
     return _render(
         request,
         "overview.html",
-        {"stats": stats, "runs": runs, "upstream_configured": state.upstream.configured},
+        {
+            "today": today,
+            "stats": stats,
+            "runs": runs,
+            "upstream_configured": state.upstream.configured,
+        },
     )
 
 
-async def _recent_runs(s, *, limit: int, model: str = "", status: str = "") -> list[Any]:
+#: 失败原因的中文标签。**照 contract.ErrorType 逐项写，不做兜底翻译。**
+#:
+#: 兜底翻译（比如把下划线换成空格）会让一个新增的 error type 看起来像是被支持的，
+#: 而实际上没人为它想过该说什么。缺的那一项直接显示原值，缺失一眼可见。
+_ERROR_LABELS: dict[str, str] = {
+    C.ErrorType.INVALID_API_KEY.value: "密钥无效",
+    C.ErrorType.QUOTA_EXCEEDED.value: "超出配额",
+    C.ErrorType.MODEL_NOT_FOUND.value: "模型不存在",
+    C.ErrorType.MODEL_INVALID.value: "请求不合法",
+    C.ErrorType.PARAM_UNSUPPORTED.value: "参数不支持",
+    C.ErrorType.STREAM_UNSUPPORTED.value: "该 Agent 不支持流式",
+    C.ErrorType.REQUEST_TOO_LARGE.value: "请求过大",
+    C.ErrorType.SCHEMA_VIOLATION.value: "输出不合 schema（重试已耗尽）",
+    C.ErrorType.AGENT_SPEC_INVALID.value: "Agent 定义不合法",
+    C.ErrorType.AGENT_BUILD_FAILED.value: "Agent 无法构造",
+    C.ErrorType.UPSTREAM_ERROR.value: "上游报错",
+    C.ErrorType.UPSTREAM_TIMEOUT.value: "上游超时",
+    C.ErrorType.REQUEST_TIMEOUT.value: "整轮超时",
+    C.ErrorType.INTERNAL_ERROR.value: "服务内部错误",
+}
+
+
+async def _run_stats(s, *, token_id: int | None = None, agent_id: int | None = None) -> Any:
+    """一组主体的调用统计。总览、单把密钥、单个 Agent **共用这一份**。
+
+    写三份的话，三处对"成功率"的定义迟早会分叉——而分叉之后没人知道该信哪个数。
+
+    这里挑的几个比率，每一个都对应一个会花钱或会骗人的具体现象：
+
+    * **成功率** —— 最直白的那个。
+    * **重试放大** = 上游请求数 / 调用数。结构化 Agent 一次调用最坏打 1+N 次上游，
+      而账单按整轮算。这个数从 1.0 涨上去，就是钱在往上走。
+    * **schema 违规率** —— 违规就是重试，重试就是钱。它比成功率更早预警：输出
+      质量在退化时，成功率还是 100%（重试兜住了），只有这个数会先动。
+    * **可定价率** —— 约三分之一的在售模型查不到价，对它们费用记的是 NULL。
+      不把这个数摆出来，"这个月花了 X" 就是一句**不知道漏了多少**的话。
+    * **缓存命中率** —— 只在上游报了 cached_tokens 时有意义，报了就是真省钱。
+    """
+    where = []
+    if token_id is not None:
+        where.append(Run.token_id == token_id)
+    if agent_id is not None:
+        where.append(Run.agent_id == agent_id)
+
+    row = (
+        await s.execute(
+            select(
+                func.count(Run.id),
+                func.sum(sa_case((Run.status == "ok", 1), else_=0)),
+                func.coalesce(func.sum(RunUsage.input_tokens), 0),
+                func.coalesce(func.sum(RunUsage.output_tokens), 0),
+                func.coalesce(func.sum(RunUsage.cache_read_tokens), 0),
+                func.coalesce(func.sum(RunUsage.requests), 0),
+                func.coalesce(func.sum(RunUsage.schema_violations), 0),
+                func.min(Run.started_at),
+                func.max(Run.started_at),
+                func.avg(Run.latency_ms),
+            )
+            .select_from(Run)
+            .outerjoin(RunUsage, RunUsage.run_id == Run.id)
+            .where(*where)
+        )
+    ).one()
+    total, ok, tin, tout, tcache, treq, tviol, first, last, avg_ms = row
+    ok = int(ok or 0)
+
+    # 费用与"能不能定价"必须一起取。只加总非 NULL 的话，得到的是一个看起来精确、
+    # 实际不知道漏了多少的数。
+    priced, unpriced, cost = 0, 0, Decimal(0)
+    rows = (
+        await s.execute(
+            select(RunUsage.cost_usd)
+            .select_from(Run)
+            .join(RunUsage, RunUsage.run_id == Run.id)
+            .where(*where)
+        )
+    ).scalars()
+    for raw in rows:
+        if raw is None:
+            unpriced += 1
+        else:
+            priced += 1
+            cost += Decimal(raw)
+
+    errors = (
+        await s.execute(
+            select(Run.error_type, func.count(Run.id))
+            .where(Run.status != "ok", *where)
+            .group_by(Run.error_type)
+            .order_by(func.count(Run.id).desc())
+        )
+    ).all()
+
+    def pct(n: int, d: int) -> str:
+        return f"{n * 100 / d:.1f}%" if d else "—"
+
+    return SimpleNamespace(
+        total=total,
+        ok=ok,
+        failed=total - ok,
+        ok_rate=pct(ok, total),
+        # 失败率单列一个数：把它算成 100% - 成功率 是在页面上做减法，
+        # 而两个数各自四舍五入之后加起来不一定是 100。
+        fail_rate=pct(total - ok, total),
+        amplification=f"{treq / total:.2f}×" if total and treq else "—",
+        violation_rate=pct(int(tviol or 0), total),
+        violations=int(tviol or 0),
+        priced_rate=pct(priced, priced + unpriced),
+        unpriced=unpriced,
+        cache_rate=pct(int(tcache or 0), int(tin or 0)),
+        input_tokens=int(tin or 0),
+        output_tokens=int(tout or 0),
+        cost=_fmt_cost(str(cost)) if priced else "—",
+        avg_ms=f"{int(avg_ms)} ms" if avg_ms else "—",
+        first=_fmt_time(first) if first else "—",
+        last=_fmt_time(last) if last else "—",
+        errors=[
+            SimpleNamespace(
+                type=t or "未记录", count=c, label=_ERROR_LABELS.get(t or "", t or "未记录")
+            )
+            for t, c in errors
+        ],
+    )
+
+
+async def _run_sources(s, *, token_id: int | None = None, limit: int = 20) -> list[Any]:
+    """按来源聚合。**key 泄漏时第一个要回答的问题是"它现在被谁在用"。**
+
+    只看调用记录一行行翻答不了——要的是"有几个来源、各调了多少、最近一次什么
+    时候"。一把本该只给一台服务器用的 key 上突然冒出第二个 IP，这张表一眼能看出来。
+    """
+    where = [Run.client_ip.is_not(None)]
+    if token_id is not None:
+        where.append(Run.token_id == token_id)
+    rows = (
+        await s.execute(
+            select(
+                Run.client_ip,
+                Run.user_agent,
+                func.count(Run.id),
+                func.max(Run.started_at),
+                func.sum(sa_case((Run.status == "ok", 1), else_=0)),
+            )
+            .where(*where)
+            .group_by(Run.client_ip, Run.user_agent)
+            .order_by(func.max(Run.started_at).desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        SimpleNamespace(
+            ip=ip,
+            agent=ua or "—",
+            count=n,
+            last=_fmt_time(last),
+            failed=n - int(ok or 0),
+        )
+        for ip, ua, n, last, ok in rows
+    ]
+
+
+async def _recent_runs(
+    s,
+    *,
+    limit: int,
+    model: str = "",
+    status: str = "",
+    token_id: int | None = None,
+    agent_id: int | None = None,
+) -> list[Any]:
     stmt = (
         select(Run, RunUsage)
         .outerjoin(RunUsage, RunUsage.run_id == Run.id)
@@ -591,6 +763,10 @@ async def _recent_runs(s, *, limit: int, model: str = "", status: str = "") -> l
         stmt = stmt.where(Run.status == "ok")
     elif status == "error":
         stmt = stmt.where(Run.status != "ok")
+    if token_id is not None:
+        stmt = stmt.where(Run.token_id == token_id)
+    if agent_id is not None:
+        stmt = stmt.where(Run.agent_id == agent_id)
 
     out = []
     for run, usage in (await s.execute(stmt)).all():
@@ -607,6 +783,8 @@ async def _recent_runs(s, *, limit: int, model: str = "", status: str = "") -> l
                 "cost_source": usage.cost_source if usage else "unknown",
                 "cost_hint": _COST_HINT.get(usage.cost_source if usage else "unknown", "来源未知"),
                 "latency_display": f"{run.latency_ms} ms" if run.latency_ms is not None else "—",
+                "client_ip": run.client_ip or "—",
+                "user_agent": run.user_agent or "",
             }
         )
     return out
@@ -653,6 +831,51 @@ async def keys_page(request: Request) -> Response:
             "tokens": tokens,
             "csrf": csrf.value,
             "issued": {"plaintext": issued, "name": name} if issued else None,
+        },
+    )
+    csrf.apply(resp)
+    return resp
+
+
+@router.get("/keys/{kid}")
+async def key_detail(kid: str, request: Request) -> Response:
+    """一把密钥的调用详情。
+
+    **key 泄漏时第一个要回答的问题是"它现在被谁在用"**，而密钥列表答不了：那里
+    只有"最后使用"一个时间点。这一页给的是来源、频次、失败构成和最近的调用行。
+    """
+    await require_admin(request)
+    state = request.app.state.xc
+    from ..db.models import Token
+
+    async with state.sessionmaker() as s:
+        token = (await s.execute(select(Token).where(Token.kid == kid))).scalar_one_or_none()
+        if token is None:
+            # 后台页的 404 就该是重定向回列表，不是一个错误 JSON：这里的读者是人。
+            return security_headers(RedirectResponse("/admin/keys", status_code=303))
+        stats = await _run_stats(s, token_id=token.id)
+        sources = await _run_sources(s, token_id=token.id)
+        runs = await _recent_runs(s, limit=100, token_id=token.id)
+
+    csrf = await _ensure_csrf_cookie(request)
+    resp = _render(
+        request,
+        "key_detail.html",
+        {
+            "token": SimpleNamespace(
+                name=token.name,
+                kid=token.kid,
+                display_prefix=token.display_prefix,
+                is_active=token.is_active,
+                expired=auth_svc.is_expired(token),
+                created=_fmt_time(token.created_at),
+                last_used=_fmt_time(token.last_used_at),
+                expires=_fmt_time(token.expires_at) if token.expires_at else "永不过期",
+            ),
+            "stats": stats,
+            "sources": sources,
+            "runs": runs,
+            "csrf": csrf.value,
         },
     )
     csrf.apply(resp)
@@ -1304,12 +1527,18 @@ async def agents_page(request: Request) -> Response:
 
     async with state.sessionmaker() as s:
         pairs = await agent_svc.list_all(s)
+        # 每个 Agent 一次统计。Agent 数量是个位数到几十，一页几十次小聚合可以接受；
+        # 换成一次 GROUP BY 的话，"没有任何调用"的那些就得靠 outer join 补零，
+        # 而补零的那份查询比这个循环难读得多。
+        stats = {row.id: await _run_stats(s, agent_id=row.id) for row, _ in pairs}
 
-    rows = []
+    groups: dict[str, list[Any]] = {}
     for row, ver in pairs:
         spec = json.loads(ver.spec_json) if ver else {}
         tier = ver.tier if ver else "—"
-        rows.append(
+        st = stats[row.id]
+        prompting = builder_mod.prompting_from_spec(spec)
+        groups.setdefault(row.group_name or agent_svc.DEFAULT_GROUP, []).append(
             SimpleNamespace(
                 slug=row.slug,
                 name=row.name,
@@ -1320,9 +1549,69 @@ async def agents_page(request: Request) -> Response:
                 tier=tier,
                 tier_desc=TIER_INFO.get(C.Tier(tier), {}).get("content", "") if ver else "",
                 structured=bool(ver and ver.out_schema),
+                examples=len(prompting.examples),
+                templated=bool(prompting.user_template),
+                total=st.total,
+                ok_rate=st.ok_rate,
+                failed=st.failed,
+                cost=st.cost,
+                last=st.last,
             )
         )
-    return _render(request, "agents.html", {"agents": rows})
+
+    # 默认分组排最后：它是"还没归类"的那堆，不该占着第一屏。
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0] == agent_svc.DEFAULT_GROUP, kv[0]))
+    csrf = await _ensure_csrf_cookie(request)
+    resp = _render(
+        request,
+        "agents.html",
+        {"groups": ordered, "csrf": csrf.value, "default_group": agent_svc.DEFAULT_GROUP},
+    )
+    csrf.apply(resp)
+    return resp
+
+
+@router.post("/agents/group/rename")
+async def rename_agent_group(
+    request: Request,
+    old: str = Form(...),
+    new: str = Form(default=""),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """给一个分组改名，或（``new`` 为空时）把它整组挪回默认分组。
+
+    没有"新建空分组"这个动作：分组不是一张表，就是 Agent 上的一个字符串，而一个
+    没有成员的分组没有任何意义。要新建就在某个 Agent 的表单里写一个新名字。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        await agent_svc.rename_group(s, old, new)
+        await s.commit()
+    return security_headers(RedirectResponse("/admin/agents", status_code=303))
+
+
+@router.post("/agents/{slug}/toggle")
+async def toggle_agent(request: Request, slug: str, csrf_token: str = Form(default="")) -> Response:
+    """启用 / 停用。
+
+    停用**不删**：调用方代码里写着这个 slug，删掉的话它们收到的是 model_not_found，
+    而停用之后 slug 仍然被占着、不会被别的 Agent 顶替——那才是可逆的。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        row = (await s.execute(select(AgentRow).where(AgentRow.slug == slug))).scalar_one_or_none()
+        if row is not None:
+            await agent_svc.set_active(s, row.id, not row.is_active)
+            await s.commit()
+    # 模型列表按 is_active 过滤，运行时缓存里可能还留着刚停用那个
+    state.runtimes.clear()
+    return security_headers(RedirectResponse("/admin/agents", status_code=303))
 
 
 def _empty_form() -> Any:
@@ -1335,6 +1624,7 @@ def _empty_form() -> Any:
         schema="",
         tier="T2",
         retries=2,
+        group="",
         **_settings_view({}),
     )
 
@@ -1351,16 +1641,20 @@ async def _form_shell(request: Request) -> dict[str, Any]:
     编辑页没有"，一种很晚才会被发现的不一致。
     """
     from ..core import builder
+    from ..services import agent as agent_svc
 
     state = request.app.state.xc
     models, native = await _model_choices(state)
     tracing = state.tracing
+    async with state.sessionmaker() as s:
+        groups = await agent_svc.list_groups(s)
     return {
         "models": models,
         "native_count": native,
         "tiers": _tier_options(),
         "model_settings": builder.model_settings_fields(),
         "capabilities": builder.form_capabilities(),
+        "groups": groups,
         # 可观测那一栏要知道地址配了没：没配就不该给一个勾了没用的开关
         "trace_endpoint": tracing.endpoint if tracing is not None else "",
         "trace_include_content": tracing.include_content if tracing is not None else False,
@@ -1439,6 +1733,8 @@ async def agent_edit(slug: str, request: Request) -> Response:
 
     async with state.sessionmaker() as s:
         resolved = await agent_svc.resolve(s, slug)
+        row = await s.get(AgentRow, resolved.agent_id)
+        group_name = row.group_name if row else None
         vers = await agent_svc.versions(s, resolved.agent_id)
         version_rows = [
             SimpleNamespace(
@@ -1462,6 +1758,7 @@ async def agent_edit(slug: str, request: Request) -> Response:
         else "",
         tier=resolved.tier.value if resolved.out_schema else "",
         retries=spec.get("retries", 2),
+        group=group_name or "",
         **_settings_view(spec),
     )
 
@@ -1498,6 +1795,7 @@ async def agent_save(
     output_schema: str = Form(default=""),
     tier: str = Form(default=""),
     retries: int = Form(default=2),
+    group: str = Form(default=""),
     csrf_token: str = Form(default=""),
 ) -> Response:
     await guard_mutation(request, csrf_token)
@@ -1537,6 +1835,7 @@ async def agent_save(
                 retries=max(0, min(5, retries)),
                 native_ok=native_ok,
                 prompting=prompting,
+                group_name=group,
             )
             await s.commit()
     except XingchaError as e:
@@ -1553,6 +1852,7 @@ async def agent_save(
             schema=output_schema,
             tier=tier,
             retries=retries,
+            group=group,
             settings=settings_raw,
             has_settings=bool(filled),
             settings_count=len(filled),

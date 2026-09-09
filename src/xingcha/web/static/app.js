@@ -181,6 +181,20 @@
     const drop = e.target.closest('[data-remove-example]');
     if (drop) drop.closest('.example')?.remove();
   });
+
+  // ------------------------------------------------------------------ 试运行
+  //
+  // Ctrl/⌘ + Enter 在测试输入框里直接跑。这一步会被反复做几十次（改一句提示词、
+  // 再跑一次），每次都去够鼠标是这一页最大的一处磨损。
+  //
+  // 只绑在那一个 textarea 上，不做全局快捷键：全局的会在别人写 schema 时误触发，
+  // 而那一次误触发是要花钱的。
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
+    if (e.target?.id !== 'test_input') return;
+    e.preventDefault();
+    document.getElementById('run-test')?.click();
+  });
   // bfcache：后退回来时 DOM 是缓存的，按钮还禁着
   window.addEventListener('pageshow', unlockAll);
 

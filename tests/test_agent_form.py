@@ -441,3 +441,132 @@ class TestPrompting:
         assert r.status_code == 200
         assert "没有占位符" in r.text, "填错的模板没有回填"
         assert "问" in r.text and "答" in r.text, "示例没有保留"
+
+
+# =============================================================================
+# 分组
+# =============================================================================
+
+
+class TestGroups:
+    """分组只是 Agent 上的一个字符串，**不影响任何解析**。
+
+    一旦它能影响 slug 或 /v1/models，改个分组就静默改变了调用方看到的 model id ——
+    而那是这个项目最不能发生的一类变化（"部署之后使用方式永不改变"）。
+    """
+
+    def _create(self, client: TestClient, slug: str, **extra):
+        client.get("/admin/agents/new")
+        return client.post(
+            "/admin/agents/save",
+            data={
+                "slug": slug,
+                "name": slug,
+                "instructions": "做事。",
+                "model": "openai/gpt-5",
+                "tier": "",
+                "retries": "2",
+                "csrf_token": csrf_of(client),
+                **extra,
+            },
+            follow_redirects=False,
+        )
+
+    def _group_of(self, settings: Settings, slug: str):
+        import sqlite3
+
+        with sqlite3.connect(settings.db_path) as c:
+            return c.execute("SELECT group_name FROM agent WHERE slug = ?", (slug,)).fetchone()[0]
+
+    def test_no_group_stays_null_not_a_literal_default(
+        self, logged_in: TestClient, settings: Settings
+    ):
+        """库里存 NULL，不是"默认分组"四个字。
+
+        存字面值的话，"没分过组"和"被明确放进一个叫默认分组的组"就再也分不开了。
+        """
+        assert self._create(logged_in, "ungrouped").status_code == 303
+        assert self._group_of(settings, "ungrouped") is None
+        assert "默认分组" in logged_in.get("/admin/agents").text
+
+    def test_a_group_lands_and_shows_up(self, logged_in: TestClient, settings: Settings):
+        assert self._create(logged_in, "billed", group="财务").status_code == 303
+        assert self._group_of(settings, "billed") == "财务"
+        assert "财务" in logged_in.get("/admin/agents").text
+
+    def test_the_group_never_reaches_the_model_list(
+        self, logged_in: TestClient, settings: Settings
+    ):
+        """分组不进 /v1/models。进了的话改分组 = 改 model id。"""
+        self._create(logged_in, "billed", group="财务")
+        spec = _spec_of(settings, "billed")
+        assert "财务" not in json.dumps(spec, ensure_ascii=False), "分组漏进 spec 了"
+
+    def test_clearing_the_group_moves_it_back(self, logged_in: TestClient, settings: Settings):
+        """保存时按表单来，包括清空。
+
+        只在非空时才写的话，"把它挪回默认组"这个动作根本做不了。
+        """
+        self._create(logged_in, "billed", group="财务")
+        self._create(logged_in, "billed", group="")
+        assert self._group_of(settings, "billed") is None
+
+    def test_renaming_moves_the_whole_group(self, logged_in: TestClient, settings: Settings):
+        self._create(logged_in, "a1", group="旧名")
+        self._create(logged_in, "a2", group="旧名")
+        logged_in.get("/admin/agents")
+        r = logged_in.post(
+            "/admin/agents/group/rename",
+            data={"csrf_token": csrf_of(logged_in), "old": "旧名", "new": "新名"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert self._group_of(settings, "a1") == "新名"
+        assert self._group_of(settings, "a2") == "新名"
+
+    def test_toggle_disables_without_deleting(self, logged_in: TestClient, settings: Settings):
+        """停用**不删**：调用方代码里写着这个 slug。
+
+        删掉的话它们收到 model_not_found，而且 slug 会被释放出去、可能被别的
+        Agent 顶替——那就不是可逆的了。
+        """
+        import sqlite3
+
+        self._create(logged_in, "pausable")
+        logged_in.get("/admin/agents")
+        r = logged_in.post(
+            "/admin/agents/pausable/toggle",
+            data={"csrf_token": csrf_of(logged_in)},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        with sqlite3.connect(settings.db_path) as c:
+            active = c.execute(
+                "SELECT is_active FROM agent WHERE slug = ?", ("pausable",)
+            ).fetchone()[0]
+        assert not active
+
+        # slug 仍然被占着——这才是"可逆"的含义
+        import asyncio
+
+        from xingcha.services import agent as agent_svc
+
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+
+        async def taken():
+            async with state.sessionmaker() as s:
+                return await agent_svc.slug_available(s, "pausable")
+
+        assert asyncio.run(taken()) is False, "停用把 slug 释放了，别的 Agent 能顶掉它"
+
+        # 而且能开回来
+        logged_in.get("/admin/agents")
+        logged_in.post(
+            "/admin/agents/pausable/toggle",
+            data={"csrf_token": csrf_of(logged_in)},
+            follow_redirects=False,
+        )
+        with sqlite3.connect(settings.db_path) as c:
+            assert c.execute(
+                "SELECT is_active FROM agent WHERE slug = ?", ("pausable",)
+            ).fetchone()[0]

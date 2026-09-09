@@ -398,6 +398,66 @@ class TestMultiTurn:
 
 
 # =============================================================================
+# 调用来源
+# =============================================================================
+
+
+class TestCallSource:
+    """**key 泄漏时第一个要回答的问题是"它现在被谁在用"。**
+
+    只记 token_id 答不了：那只说明用的是哪把钥匙，不说明是谁在开门。
+    """
+
+    def _runs(self, client: TestClient) -> list[tuple]:
+        import sqlite3
+
+        state = client.app.state.xc  # type: ignore[attr-defined]
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(state.usage.flush())
+        with sqlite3.connect(state.settings.db_path) as c:
+            return c.execute("SELECT client_ip, user_agent FROM run").fetchall()
+
+    def test_the_source_is_recorded(self, wired, upstream: FakeUpstream):
+        client, token = wired
+        r = client.post(
+            "/v1/chat/completions",
+            json={"model": "chat", "messages": [{"role": "user", "content": "hi"}]},
+            headers={**auth(token), "User-Agent": "xingcha-tests/1.0"},
+        )
+        assert r.status_code == 200
+        rows = self._runs(client)
+        assert rows and rows[0][0], f"来源 IP 没记下来：{rows}"
+        assert rows[0][1] == "xingcha-tests/1.0"
+
+    def test_a_forged_forwarded_header_is_not_believed(self, wired):
+        """**任何人都能伪造 X-Forwarded-For。**
+
+        在应用层自己读一遍那个头，就是把信任判定写第二遍——而写第二遍的那份必然
+        更宽松，于是调用记录里的来源变成"调用方说他是谁"。默认没配信任代理
+        （XINGCHA_TRUSTED_PROXIES），所以这个头必须被无视。
+        """
+        client, token = wired
+        client.post(
+            "/v1/chat/completions",
+            json={"model": "chat", "messages": [{"role": "user", "content": "hi"}]},
+            headers={**auth(token), "X-Forwarded-For": "203.0.113.99"},
+        )
+        ips = [r[0] for r in self._runs(client)]
+        assert ips, "一行 run 都没有"
+        assert "203.0.113.99" not in ips, "伪造的 X-Forwarded-For 被当成了真来源"
+
+    def test_a_long_user_agent_is_truncated(self, wired):
+        """UA 是调用方可控的任意长字符串。不设上限就是让它决定这一行有多大。"""
+        client, token = wired
+        client.post(
+            "/v1/chat/completions",
+            json={"model": "chat", "messages": [{"role": "user", "content": "hi"}]},
+            headers={**auth(token), "User-Agent": "A" * 5000},
+        )
+        rows = self._runs(client)
+        assert rows and len(rows[0][1]) <= 200, f"UA 没截断：{len(rows[0][1])}"
+
+
+# =============================================================================
 # 计量
 # =============================================================================
 

@@ -63,10 +63,21 @@
           </div>
         </div>
       </div>
-      <div class="field">
-        <label for="description">说明</label>
-        <input id="description" name="description" type="text" value="{{ form.description }}"
-               maxlength="200" placeholder="一句话说明它做什么，会出现在 /v1/models 里">
+      <div class="form-row">
+        <div class="field" style="flex:3 1 320px">
+          <label for="description">说明</label>
+          <input id="description" name="description" type="text" value="{{ form.description }}"
+                 maxlength="200" placeholder="一句话说明它做什么，会出现在 /v1/models 里">
+        </div>
+        <div class="field" style="flex:1 1 180px">
+          <label for="group">分组</label>
+          <input id="group" name="group" type="text" value="{{ form.group }}" maxlength="40"
+                 list="group-list" placeholder="留空 = 默认分组">
+          <datalist id="group-list">
+            {% for g in groups %}<option value="{{ g }}"></option>{% endfor %}
+          </datalist>
+          <div class="hint">只用于后台归类，<strong>不进 slug、不进 /v1/models</strong>。</div>
+        </div>
       </div>
     </div>
   </section>
@@ -279,30 +290,29 @@
   </div>
 
   {# -------------------------------------------------------------- 试运行 #}
-  <section class="card mb4">
+  <section class="card mb4" id="test">
     <div class="card-head">
       <h2>试运行</h2>
       <span class="small muted">按上面表单里此刻的内容跑，不保存、不落库、不占配额</span>
     </div>
     <div class="card-body">
       <div class="field">
-        <label for="test_input">测试输入</label>
-        <div class="control-row">
-          <textarea id="test_input" name="test_input" rows="2"
-                    placeholder="调用方会发来的那条 user 消息"></textarea>
-          <button type="button" class="btn" data-lock
-                  hx-post="/admin/agents/test" hx-include="closest form"
-                  hx-target="#test-result" hx-swap="innerHTML"
-                  hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
-            跑一次 <span class="htmx-indicator">…</span>
-          </button>
-        </div>
-        <div class="hint">
-          这会<strong>真的调一次上游、真的花钱</strong>。跑完显示上游实际收发的整条链路——
-          系统指令拼好之后长什么样、模板套在哪一层、校验退回时模型收到了什么。
-        </div>
+        <label for="test_input">测试输入 <span class="dim small">调用方会发来的那条 user 消息</span></label>
+        <textarea id="test_input" name="test_input" rows="4"
+                  placeholder="粘一段真实的输入进来。Ctrl/⌘ + Enter 直接跑。"></textarea>
       </div>
-      <div id="test-result"></div>
+      <div class="row">
+        <button type="button" class="btn primary" data-lock id="run-test"
+                hx-post="/admin/agents/test" hx-include="closest form"
+                hx-target="#test-result" hx-swap="innerHTML"
+                hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+          跑一次 <span class="htmx-indicator">…</span>
+        </button>
+        <span class="hint">
+          会<strong>真的调一次上游、真的花钱</strong>。跑完显示上游实际收发的整条链路。
+        </span>
+      </div>
+      <div id="test-result" class="mt4"></div>
     </div>
   </section>
 

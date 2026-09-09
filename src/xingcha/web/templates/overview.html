@@ -21,23 +21,41 @@
 <div class="stats">
   <div class="stat">
     <div class="stat-label">今日调用</div>
-    <div class="stat-value">{{ stats.today_runs }}</div>
-    <div class="stat-hint">近 7 天 {{ stats.week_runs }} 次</div>
+    <div class="stat-value">{{ today.today_runs }}</div>
+    <div class="stat-hint">近 7 天 {{ today.week_runs }} 次</div>
   </div>
   <div class="stat">
     <div class="stat-label">今日预估费用</div>
-    <div class="stat-value">{{ stats.today_cost }}<small>USD</small></div>
-    <div class="stat-hint">近 7 天 {{ stats.week_cost }} USD</div>
+    <div class="stat-value">{{ today.today_cost }}<small>USD</small></div>
+    <div class="stat-hint">近 7 天 {{ today.week_cost }} USD</div>
   </div>
   <div class="stat">
     <div class="stat-label">今日 token</div>
-    <div class="stat-value">{{ stats.today_tokens }}</div>
-    <div class="stat-hint">入 {{ stats.today_input }} / 出 {{ stats.today_output }}</div>
+    <div class="stat-value">{{ today.today_tokens }}</div>
+    <div class="stat-hint">入 {{ today.today_input }} / 出 {{ today.today_output }}</div>
   </div>
   <div class="stat">
-    <div class="stat-label">错误率（近 7 天）</div>
-    <div class="stat-value">{{ stats.error_rate }}<small>%</small></div>
-    <div class="stat-hint">{{ stats.week_errors }} 次失败</div>
+    <div class="stat-label">成功率（全部）</div>
+    <div class="stat-value {% if stats.failed %}warn-text{% endif %}">{{ stats.ok_rate }}</div>
+    <div class="stat-hint">失败 {{ stats.failed }} 次 / 共 {{ stats.total }} 次</div>
+  </div>
+</div>
+
+<div class="card mb5">
+  <div class="card-head">
+    <h2>全部调用的构成</h2>
+    <span class="small muted">建库以来累计</span>
+  </div>
+  <div class="card-body">
+    {% include "_run_stats.html" %}
+    <div class="hint mt4">
+      顶上那四个是"今天花了多少"，这一组是"整体健康度"。两个都要：
+      <strong>重试放大</strong>从 1.0 涨上去就是钱在往上走；
+      <strong>schema 违规率</strong>比成功率更早预警——输出质量退化时成功率还是
+      100%（重试兜住了），只有它会先动；
+      <strong>可定价率</strong>说明费用这个数漏了多少，不摆出来的话"这个月花了 X"
+      就是一句不知道有多少缺口的话。
+    </div>
   </div>
 </div>
 
