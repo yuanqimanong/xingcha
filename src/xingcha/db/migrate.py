@@ -14,7 +14,7 @@ import logging
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -191,3 +191,47 @@ def downgrade_to(db_path: Path, revision: str, backup_dir: Path | None = None) -
     if backup_dir is not None:
         backup(db_path, backup_dir, tag=f"pre-downgrade-{revision}")
     command.downgrade(make_alembic_config(db_path), revision)
+
+
+def prune_runs(db_path: Path, *, older_than_days: int, dry_run: bool = True) -> tuple[int, int]:
+    """删掉 ``older_than_days`` 天之前的调用记录。返回 ``(要删的行数, 剩下的行数)``。
+
+    ------------------------------------------------------------------------
+    为什么必须有这个，又为什么必须手动
+    ------------------------------------------------------------------------
+
+    ``run`` / ``run_usage`` 此前**永远不删**。一台无人值守跑着的星槎，这两张表
+    只增不减，代价是四处同时长：调用记录页越翻越慢、统计聚合越算越久、每次迁移
+    前的 ``VACUUM INTO`` 备份越拷越大、磁盘越占越多。而这四个症状没有一个会指向
+    "表太大了"。
+
+    但**不能自动删**：这是账单记录。"上个月到底花了多少"只有这张表答得出，而一个
+    自己会删账的系统，第一次被需要的时候正好是它已经删掉了的时候。所以是一条要
+    人显式敲的命令，默认还是 dry-run。
+
+    ``run_usage`` 靠外键 ``ON DELETE CASCADE`` 跟着走——引擎里 ``PRAGMA
+    foreign_keys=ON`` 是开着的（见 db/engine.py），所以不需要在这里删第二遍。
+    这里用裸 sqlite3 连接，得自己把那个 pragma 打开。
+    """
+    # **不能用 strftime("%Y")**：它对小于 1000 的年份不补零（931 而不是 0931），
+    # 而这里靠的是**字符串**比较——`"2020-01-01" < "931-01-01"` 是 True，于是一个
+    # 荒唐的 --older-than 值会把整张表删光，而且是静默的。日期比较依赖定宽，
+    # 那就把定宽写出来，别指望 strftime。
+    cut = datetime.now(UTC) - timedelta(days=older_than_days)
+    cutoff = (
+        f"{cut.year:04d}-{cut.month:02d}-{cut.day:02d}"
+        f"T{cut.hour:02d}:{cut.minute:02d}:{cut.second:02d}Z"
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        doomed = conn.execute(
+            "SELECT COUNT(*) FROM run WHERE started_at < ?", (cutoff,)
+        ).fetchone()[0]
+        if not dry_run and doomed:
+            conn.execute("DELETE FROM run WHERE started_at < ?", (cutoff,))
+            conn.commit()
+        kept = conn.execute("SELECT COUNT(*) FROM run").fetchone()[0]
+        return doomed, kept
+    finally:
+        conn.close()

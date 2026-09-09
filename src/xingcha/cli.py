@@ -779,6 +779,41 @@ def db_downgrade(
     _ok(f"已回退到 {revision}")
 
 
+@db_app.command("prune")
+def db_prune(
+    older_than: Annotated[int, typer.Option("--older-than", help="删掉这么多天之前的调用记录。")],
+    yes: Annotated[bool, typer.Option("--yes", help="真的删。不加就是只看会删多少。")] = False,
+) -> None:
+    """删掉旧的调用记录。**默认只预览，不删。**
+
+    run / run_usage 此前永远不删，一台长期跑着的星槎上它们只增不减——调用记录页
+    越翻越慢、统计越算越久、迁移前的备份越拷越大。
+
+    不自动删是因为这是**账单记录**："上个月到底花了多少"只有这张表答得出。一个
+    自己会删账的系统，第一次被需要的时候正好是它已经删掉了的时候。
+    """
+    settings = get_settings()
+    if older_than < 1:
+        _err("--older-than 至少是 1 天。")
+        raise typer.Exit(1)
+
+    doomed, kept = migrate.prune_runs(settings.db_path, older_than_days=older_than, dry_run=True)
+    if not doomed:
+        _ok(f"{older_than} 天之前没有调用记录，什么都不用删（当前共 {kept} 行）。")
+        return
+    if not yes:
+        typer.echo(
+            f"会删掉 {doomed} 行（{older_than} 天之前），保留 {kept - doomed} 行。"
+            "\n这是账单记录，删掉之后那段时间的费用就查不到了。"
+            "\n确认请加 --yes；建议先 `xingcha db backup`。"
+        )
+        return
+
+    migrate.backup(settings.db_path, settings.backup_dir, tag="pre-prune")
+    deleted, left = migrate.prune_runs(settings.db_path, older_than_days=older_than, dry_run=False)
+    _ok(f"已删除 {deleted} 行，剩余 {left} 行。删除前的备份在 {settings.backup_dir}。")
+
+
 @db_app.command("backup")
 def db_backup(
     tag: Annotated[str, typer.Option(help="备份文件名里的标记。")] = "",

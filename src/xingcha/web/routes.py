@@ -556,8 +556,9 @@ async def overview(request: Request) -> Response:
             return {"runs": row[0], "input": row[1], "output": row[2], "cost": total}
 
         d, w = await agg(day), await agg(week)
-        # 全量口径的那组比率，与密钥详情、Agent 详情用同一份实现。
-        stats = await _run_stats(s)
+        # **收在 30 天窗口里。** 全时段的成功率是个没人看的数：半年前坏过一周，
+        # 它就再也回不来了，看不出现在好不好。也是性能上的必需，见 _run_stats。
+        stats = await _run_stats(s, since=_since(30))
         runs = await _recent_runs(s, limit=8)
 
     today = {
@@ -579,6 +580,10 @@ async def overview(request: Request) -> Response:
             "upstream_configured": state.upstream.configured,
         },
     )
+
+
+#: 从来没被调用过的 Agent，列表页照样要显示——GROUP BY 里没有它的行。
+_NO_RUNS = SimpleNamespace(total=0, ok=0, failed=0, ok_rate="—", cost="—", unpriced=0, last="—")
 
 
 #: 失败原因的中文标签。**照 contract.ErrorType 逐项写，不做兜底翻译。**
@@ -603,8 +608,10 @@ _ERROR_LABELS: dict[str, str] = {
 }
 
 
-async def _run_stats(s, *, token_id: int | None = None, agent_id: int | None = None) -> Any:
-    """一组主体的调用统计。总览、单把密钥、单个 Agent **共用这一份**。
+async def _run_stats(
+    s, *, token_id: int | None = None, agent_id: int | None = None, since: str | None = None
+) -> Any:
+    """一组主体的调用统计。总览与单把密钥 **共用这一份**。
 
     写三份的话，三处对"成功率"的定义迟早会分叉——而分叉之后没人知道该信哪个数。
 
@@ -618,12 +625,22 @@ async def _run_stats(s, *, token_id: int | None = None, agent_id: int | None = N
     * **可定价率** —— 约三分之一的在售模型查不到价，对它们费用记的是 NULL。
       不把这个数摆出来，"这个月花了 X" 就是一句**不知道漏了多少**的话。
     * **缓存命中率** —— 只在上游报了 cached_tokens 时有意义，报了就是真省钱。
+
+    ``since`` 把口径收进一个时间窗。**总览要传它**：全时段的成功率是个没人看的
+    数——半年前坏过一周，这个数就再也回不来了，看不出现在好不好。它同时也是性能
+    上的必需，费用那一段是唯一按行进 Python 的（Decimal 不能交给 SQLite 的 SUM
+    去算，那会把它变成 float），实测 10 万行要 0.24 秒。
+
+    **不要按 Agent 循环调它。** 列表页用 :func:`_agent_summaries` 的一次 GROUP BY；
+    50 个 Agent 各跑一遍这个函数实测 1.7 秒，而列表页只需要其中四个数。
     """
     where = []
     if token_id is not None:
         where.append(Run.token_id == token_id)
     if agent_id is not None:
         where.append(Run.agent_id == agent_id)
+    if since is not None:
+        where.append(Run.started_at >= since)
 
     row = (
         await s.execute(
@@ -704,6 +721,49 @@ async def _run_stats(s, *, token_id: int | None = None, agent_id: int | None = N
             for t, c in errors
         ],
     )
+
+
+async def _agent_summaries(s) -> dict[int, Any]:
+    """所有 Agent 的四个摘要数，**一次查询**。
+
+    列表页只显示"调了多少次 / 成功率 / 花了多少 / 最近一次"。按 Agent 循环调
+    :func:`_run_stats` 能得到同样的数，但那是 3×N 次查询、其中一次还按行进 Python
+    ——实测 50 个 Agent × 10 万行 run 要 1.7 秒，而这一次 GROUP BY 是 0.06 秒。
+
+    费用在这里交给 SQL 的 ``SUM`` 算，也就是走 REAL。存储层坚持 TEXT 是因为
+    "float 存不住 Decimal"，那说的是**存**；这里是一个只用于展示的合计，量级在
+    1e-4 美元、有效数字六位，float 的累积误差落在显示精度之外好几个数量级。
+    要精确值的地方（配额结算）走的是内存计数器，不是这条路。
+    """
+    rows = (
+        await s.execute(
+            select(
+                Run.agent_id,
+                func.count(Run.id),
+                func.sum(sa_case((Run.status == "ok", 1), else_=0)),
+                func.max(Run.started_at),
+                func.sum(RunUsage.cost_usd),
+                func.sum(sa_case((RunUsage.cost_usd.is_(None), 1), else_=0)),
+            )
+            .select_from(Run)
+            .outerjoin(RunUsage, RunUsage.run_id == Run.id)
+            .where(Run.agent_id.is_not(None))
+            .group_by(Run.agent_id)
+        )
+    ).all()
+    out: dict[int, Any] = {}
+    for aid, total, ok, last, cost, unpriced in rows:
+        ok = int(ok or 0)
+        out[int(aid)] = SimpleNamespace(
+            total=total,
+            ok=ok,
+            failed=total - ok,
+            ok_rate=f"{ok * 100 / total:.1f}%" if total else "—",
+            cost=_fmt_cost(str(cost)) if cost else "—",
+            unpriced=int(unpriced or 0),
+            last=_fmt_time(last) if last else "—",
+        )
+    return out
 
 
 async def _run_sources(s, *, token_id: int | None = None, limit: int = 20) -> list[Any]:
@@ -1529,16 +1589,13 @@ async def agents_page(request: Request) -> Response:
 
     async with state.sessionmaker() as s:
         pairs = await agent_svc.list_all(s)
-        # 每个 Agent 一次统计。Agent 数量是个位数到几十，一页几十次小聚合可以接受；
-        # 换成一次 GROUP BY 的话，"没有任何调用"的那些就得靠 outer join 补零，
-        # 而补零的那份查询比这个循环难读得多。
-        stats = {row.id: await _run_stats(s, agent_id=row.id) for row, _ in pairs}
+        stats = await _agent_summaries(s)
 
     groups: dict[str, list[Any]] = {}
     for row, ver in pairs:
         spec = json.loads(ver.spec_json) if ver else {}
         tier = ver.tier if ver else "—"
-        st = stats[row.id]
+        st = stats.get(row.id) or _NO_RUNS
         prompting = builder_mod.prompting_from_spec(spec)
         groups.setdefault(row.group_name or agent_svc.DEFAULT_GROUP, []).append(
             SimpleNamespace(

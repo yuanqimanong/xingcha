@@ -35,7 +35,7 @@
     <div class="stat-hint">入 {{ today.today_input }} / 出 {{ today.today_output }}</div>
   </div>
   <div class="stat">
-    <div class="stat-label">成功率（全部）</div>
+    <div class="stat-label">成功率（近 30 天）</div>
     <div class="stat-value {% if stats.failed %}warn-text{% endif %}">{{ stats.ok_rate }}</div>
     <div class="stat-hint">失败 {{ stats.failed }} 次 / 共 {{ stats.total }} 次</div>
   </div>
@@ -43,13 +43,14 @@
 
 <div class="card mb5">
   <div class="card-head">
-    <h2>全部调用的构成</h2>
-    <span class="small muted">建库以来累计</span>
+    <h2>调用构成</h2>
+    <span class="small muted">近 30 天</span>
   </div>
   <div class="card-body">
     {% include "_run_stats.html" %}
     <div class="hint mt4">
-      顶上那四个是"今天花了多少"，这一组是"整体健康度"。两个都要：
+      顶上那四个是"今天花了多少"，这一组是"最近一个月健康不健康"。
+      不取全时段：半年前坏过一周，那个数就再也回不来了，看不出现在好不好。两个都要：
       <strong>重试放大</strong>从 1.0 涨上去就是钱在往上走；
       <strong>schema 违规率</strong>比成功率更早预警——输出质量退化时成功率还是
       100%（重试兜住了），只有它会先动；

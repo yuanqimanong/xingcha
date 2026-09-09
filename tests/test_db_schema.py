@@ -261,3 +261,56 @@ class TestBackupRestore:
         # 但这次库里有数据了，任何破坏性操作之前必须留下备份
         migrate.downgrade_to(p, "base", bdir)
         assert list(bdir.glob("*.db")), "downgrade 前没有备份"
+
+
+class TestPrune:
+    """调用记录此前永远不删。
+
+    一台长期跑着的星槎上 run / run_usage 只增不减，代价四处同时长：调用记录页
+    越翻越慢、统计越算越久、迁移前的 VACUUM INTO 备份越拷越大、磁盘越占越多——
+    而这四个症状没有一个会指向"表太大了"。
+    """
+
+    def _seed(self, db: Path) -> None:
+        import sqlite3
+
+        with sqlite3.connect(db) as c:
+            for i, day in enumerate(("2020-01-01", "2020-01-02", "2999-01-01")):
+                c.execute(
+                    "INSERT INTO run (id, kind, user_id, model, status, started_at)"
+                    " VALUES (?, 'agent', 1, 'm', 'ok', ?)",
+                    (f"r{i}", f"{day}T00:00:00Z"),
+                )
+                c.execute(
+                    "INSERT INTO run_usage (run_id, model, cost_source) VALUES (?, 'm', 'unknown')",
+                    (f"r{i}",),
+                )
+
+    def test_dry_run_deletes_nothing(self, db: Path):
+        """**默认只预览。** 这是账单记录，误删之后那段时间的费用就查不到了。"""
+        import sqlite3
+
+        self._seed(db)
+        doomed, kept = migrate.prune_runs(db, older_than_days=30, dry_run=True)
+        assert (doomed, kept) == (2, 3)
+        with sqlite3.connect(db) as c:
+            assert c.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 3
+
+    def test_it_actually_deletes_and_cascades(self, db: Path):
+        """run_usage 靠外键 ON DELETE CASCADE 跟着走。
+
+        不跟着走的话会留下一堆指向不存在 run 的用量行——那既占地方，又会让
+        "按 run join usage" 的统计悄悄多出来源不明的数。
+        """
+        import sqlite3
+
+        self._seed(db)
+        doomed, kept = migrate.prune_runs(db, older_than_days=30, dry_run=False)
+        assert (doomed, kept) == (2, 1)
+        with sqlite3.connect(db) as c:
+            assert c.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 1
+            assert c.execute("SELECT COUNT(*) FROM run_usage").fetchone()[0] == 1, "usage 没跟着删"
+
+    def test_nothing_old_enough_is_a_no_op(self, db: Path):
+        self._seed(db)
+        assert migrate.prune_runs(db, older_than_days=400_000, dry_run=False) == (0, 3)
