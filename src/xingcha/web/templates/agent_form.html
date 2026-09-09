@@ -47,7 +47,10 @@
 </div>
 {% endif %}
 
-<form method="post" action="{{ action }}">
+{# id 不是装饰：这一页里有好几个 form（页头的启用/停用、版本表里的回滚、
+   分组弹窗）。靠"main 里的第一个 submit"定位保存按钮是靠 DOM 顺序，而顺序会
+   因为在页头加一个按钮就变——那正是这条 id 要挡住的事，已经发生过一次。 #}
+<form id="agent-form" method="post" action="{{ action }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
 
   {# ---------------------------------------------------------------- 基本 #}

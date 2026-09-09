@@ -328,7 +328,7 @@ class TestAgents:
     def test_create_an_agent_end_to_end(self, site: LiveSite, page):
         login(page, site)
         self._fill_new(page, site, slug="extract")
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         assert "已保存" in page.inner_text("body")
@@ -342,7 +342,7 @@ class TestAgents:
         """
         login(page, site)
         self._fill_new(page, site, slug="extract")
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/keys", wait_until="networkidle")
@@ -390,7 +390,7 @@ class TestAgents:
             slug="redos",
             schema='{"type":"object","properties":{"x":{"type":"string","pattern":"(a+)+$"}}}',
         )
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
         body = page.inner_text("body")
         assert "pattern" in body
@@ -403,7 +403,7 @@ class TestAgents:
         """
         login(page, site)
         self._fill_new(page, site, slug="frozen")
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/agents/frozen", wait_until="networkidle")
@@ -425,12 +425,12 @@ class TestAgents:
         """
         login(page, site)
         self._fill_new(page, site, slug="versioned")
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/agents/versioned", wait_until="networkidle")
         page.fill("#instructions", "改过的提示词——第二版。")
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
         assert "v2" in page.inner_text("body")
 
@@ -460,7 +460,7 @@ class TestAgents:
         """导出是「低锁定」的兑现方式，按钮必须真的给出文件。"""
         login(page, site)
         self._fill_new(page, site, slug="exportme")
-        page.click("main form button[type=submit]")
+        page.click("#agent-form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/agents/exportme", wait_until="networkidle")
