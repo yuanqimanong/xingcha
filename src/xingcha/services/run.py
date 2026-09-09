@@ -28,7 +28,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, ClassVar, Final
 
-from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.exceptions import (
+    ModelAPIError,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+    UserError,
+)
 from pydantic_ai.usage import RunUsage
 
 from .. import contract as C
@@ -37,6 +42,7 @@ from ..core import builder, guarantee
 from ..core.builder import AgentRuntime, BuildOptions
 from ..core.guarantee import guard_counters
 from ..errors import (
+    AgentBuildFailed,
     ModelInvalid,
     QuotaExceeded,
     RequestTimeout,
@@ -472,6 +478,11 @@ def map_errors(rt: AgentRuntime, run_timeout: float, usage: Any = None) -> Itera
             guard_counters(rt.counters, tier=rt.tier)
             raise tag(SchemaViolation(rt.counters.last_error, rt.counters.retries)) from e
         raise tag(UpstreamError(502, log_detail=f"UnexpectedModelBehavior: {e}")) from e
+    except UserError as e:
+        # 上游在**请求时**才拒的配置问题：能力与这个 model / 这条 API 不兼容之类。
+        # 不接住的话它一路冒到最外层变成"服务内部错误"，而这类失败每次都发生、
+        # 原因还写得很具体（"WebSearchTool is not supported with OpenAIChatModel"）。
+        raise tag(AgentBuildFailed(f"UserError: {e}", reason=str(e))) from e
     except UsageLimitExceeded as e:
         # 与 schema 违规分开：混在一起的话，一个 request_limit 设小了的配置错误
         # 会伪装成"模型输出不合规"，查错方向完全反了。

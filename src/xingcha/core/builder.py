@@ -76,7 +76,44 @@ def validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
     # by_alias 不可省：json_schema_path 的 alias 是 `$schema` 且未开
     # populate_by_name，写全名会被静默丢弃，round-trip 会丢字段。
-    return parsed.model_dump(by_alias=True, exclude_none=True)
+    out = parsed.model_dump(by_alias=True, exclude_none=True)
+    return runnable_capabilities(out)
+
+
+def runnable_capabilities(spec: dict[str, Any]) -> dict[str, Any]:
+    """把 capability 改回 ``from_spec`` **收得下**的形状。
+
+    **上游自己的 round-trip 不自洽**（实测 pydantic-ai 2.35.3）：
+
+    * ``AgentSpec.model_dump()`` 把 ``["Thinking"]`` 规范化成 ``[{"name": "Thinking"}]``；
+    * 而 ``Agent.from_spec()`` **拒绝**那个形状，报
+      ``Capability 'name' is not in the provided custom_capability_types``
+      ——它把整个 dict 当成"能力名叫 name"。
+
+    星槎存的正是 dump 出来的那一份，于是：**保存成功，每次调用都 500。** 任何勾了
+    能力的 Agent 都建不起来，包括「可观测」那个勾（它就是 ``Instrumentation``
+    能力）。导出的 ``agent.yaml`` 同样带着这个坏形状。
+
+    ``from_spec`` 收 ``"Thinking"`` 与 ``{"Thinking": {args}}``；官方 schema 只认
+    ``"Thinking"`` 与 ``{"name": "Thinking"}``。**两个集合的交集只有裸字符串**，
+    所以这里一律降回字符串。带参数的能力现在没有表单入口；将来有了，得同时绕过
+    schema 校验与 from_spec 的这条分歧，那时候再说，别现在假装支持。
+
+    在 :func:`validate_spec`（写入）与 :func:`build`（读取）两处都做：前者修新存
+    的与导出的，后者让库里已有的坏行不需要迁移就能跑。幂等。
+    """
+    caps = spec.get("capabilities")
+    if not isinstance(caps, list):
+        return spec
+    fixed: list[Any] = []
+    for item in caps:
+        if isinstance(item, dict) and isinstance(item.get("name"), str) and len(item) == 1:
+            fixed.append(item["name"])
+        else:
+            fixed.append(item)
+    if fixed != caps:
+        spec = {**spec, "capabilities": fixed}
+    return spec
 
 
 def custom_capability_types() -> tuple[type, ...]:
@@ -505,6 +542,8 @@ def build(
     ``spec_json`` 原样来自数据库，这里是唯一解释它的地方。
     """
     spec = json.loads(spec_json) if isinstance(spec_json, str) else dict(spec_json)
+    # 库里可能存着 0.1 时期写下的、from_spec 收不下的 capability 形状。
+    spec = runnable_capabilities(spec)
     schema = json.loads(out_schema) if isinstance(out_schema, str) else out_schema
 
     model_id = spec.get("model")
@@ -521,7 +560,9 @@ def build(
     try:
         model = make_model(model_id, provider)
     except (UserError, ValueError) as e:
-        raise AgentBuildFailed(f"构造 model {model_id!r} 失败：{type(e).__name__}: {e}") from e
+        raise AgentBuildFailed(
+            f"构造 model {model_id!r} 失败：{type(e).__name__}: {e}", reason=str(e)
+        ) from e
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -548,7 +589,7 @@ def build(
     except (ValidationError, ValueError, UserError) as e:
         # 三类都可能出现：ValidationError 来自字段类型错，ValueError 来自未知
         # capability 名，UserError 来自 model 缺失或未知模型名。
-        raise AgentBuildFailed(f"{type(e).__name__}: {e}") from e
+        raise AgentBuildFailed(f"{type(e).__name__}: {e}", reason=str(e)) from e
 
     counters = attach_validator(agent, tier, schema) if schema is not None else GuaranteeCounters()
 
@@ -570,7 +611,9 @@ def build(
         try:
             reason_agent = Agent.from_spec(reason_spec, **reason_kwargs)
         except (ValidationError, ValueError, UserError) as e:
-            raise AgentBuildFailed(f"两阶段的推理 agent 构造失败：{type(e).__name__}: {e}") from e
+            raise AgentBuildFailed(
+                f"两阶段的推理 agent 构造失败：{type(e).__name__}: {e}", reason=str(e)
+            ) from e
 
     return AgentRuntime(
         reason_agent=reason_agent,

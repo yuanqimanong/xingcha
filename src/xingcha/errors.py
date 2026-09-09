@@ -188,16 +188,23 @@ class AgentSpecInvalid(XingchaError):
 
 
 class AgentBuildFailed(XingchaError):
-    """spec 无法构造 → 500，通常是上游版本变动，需管理员介入。
+    """spec 无法构造或无法执行 → 500，需管理员介入。
 
-    与 400 分开是因为处置路径完全不同：一个是让用户改表单，一个是让管理员看日志。
+    与 400 分开是因为处置路径完全不同：一个是让用户改表单，一个是让管理员改配置。
+
+    **原因要带出来。** 此前只回一句"请管理员查看日志"，而这一类失败**每次都发生**
+    （不是偶发），原因往往具体又可执行——实测拿到过
+    "WebSearchTool is not supported with OpenAIChatModel and model 'x'"。
+    只说"内部错误"等于让人去猜一个日志里明写着的答案。脱敏之后再带出去：
+    异常文本经常带完整 URL、偶尔带 header。
     """
 
     error_type = ErrorType.AGENT_BUILD_FAILED
 
-    def __init__(self, log_detail: str) -> None:
+    def __init__(self, log_detail: str, *, reason: str | None = None) -> None:
+        detail = redact((reason or "").strip())[:300]
         super().__init__(
-            "Agent 定义无法构造。通常是 pydantic-ai 版本变动导致的，请管理员查看日志。",
+            f"Agent 无法运行：{detail}" if detail else "Agent 定义无法构造，请管理员查看日志。",
             log_detail=log_detail,
         )
 

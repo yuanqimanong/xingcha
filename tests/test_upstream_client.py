@@ -192,4 +192,7 @@ class TestProviderChoice:
                 provider=provider,
                 options=builder.BuildOptions(),
             )
-        assert "no-vendor-prefix" in str(e.value.log_detail or e.value)
+        # 原因要出现在**给调用方看的那句话**里，不只是日志里。这类失败每次都发生，
+        # 只说"内部错误"等于让人去猜一个日志里明写着的答案。
+        assert "no-vendor-prefix" in e.value.message
+        assert "prefixed with the upstream provider" in e.value.message

@@ -161,6 +161,46 @@ class TestRoundTrip:
         """
         assert builder.capability_names(caps) == {"Thinking"}
 
+    def test_the_stored_shape_is_one_from_spec_accepts(self):
+        """**上游自己的 round-trip 不自洽**，这一条钉住我们绕过它的那一步。
+
+        ``AgentSpec.model_dump()`` 把 ``["Thinking"]`` 规范化成
+        ``[{"name": "Thinking"}]``，而 ``Agent.from_spec()`` **拒绝**那个形状
+        （"Capability 'name' is not in ..."）。星槎存的正是 dump 出来的那一份，
+        于是：保存成功，每次调用都 500——任何勾了能力的 Agent 都建不起来，
+        包括「可观测」那个勾（它就是 Instrumentation 能力）。实测踩到。
+
+        断言的是"存下来的东西能被 from_spec 收"，不是某个具体形状——形状将来变了
+        无所谓，能跑才是要求。
+        """
+        from pydantic_ai import Agent
+        from pydantic_ai.models.test import TestModel
+
+        spec = builder.validate_spec(
+            builder.spec_from_form(
+                name="x",
+                description=None,
+                instructions="i",
+                model="openai/gpt-5",
+                capabilities=["Thinking", builder.CAPABILITY_INSTRUMENTATION],
+            )
+        )
+        Agent.from_spec(spec, model=TestModel(), custom_capability_types=())
+
+    def test_a_legacy_broken_shape_still_builds(self):
+        """库里已经存着坏形状的行，不该需要一次迁移才能跑。"""
+        from pydantic_ai import Agent
+        from pydantic_ai.models.test import TestModel
+
+        legacy = {
+            "model": "openai/gpt-5",
+            "instructions": "i",
+            "capabilities": [{"name": "Thinking"}],
+        }
+        Agent.from_spec(
+            builder.runnable_capabilities(legacy), model=TestModel(), custom_capability_types=()
+        )
+
     def test_round_trip_through_validate_spec(self):
         """经过 ``validate_spec``（真实存库路径）之后仍然认得出来。
 
