@@ -532,3 +532,27 @@ class TestKeyringGuardIsShared:
             and "load_or_create" in f.read_text(encoding="utf-8")
         ]
         assert not offenders, f"这些模块绕过了共享守卫：{offenders}"
+
+
+def test_a_listen_address_in_public_url_is_called_out(caplog, tmp_path: Path):
+    """``XINGCHA_PUBLIC_URL`` 里出现 ``0.0.0.0`` 时启动日志要说一句。
+
+    那个值只用于**显示**——后台首页与调用记录空态里的 curl 示例直接用它拼。
+    填成监听地址的话，印出来的是 ``http://0.0.0.0:8720/v1/...``，照着敲必然失败，
+    而失败信息（连接被拒）完全指不到"这是个显示用的配置项填错了"。
+
+    只警告不纠正：正确的值只有部署者知道（IP 还是域名），这一层猜不出来。
+    """
+    import logging
+
+    from xingcha.app import _warn_unusable_public_url
+    from xingcha.config import Settings
+
+    with caplog.at_level(logging.WARNING, logger="xingcha.app"):
+        _warn_unusable_public_url(Settings(data_dir=tmp_path, public_url="http://0.0.0.0:8720"))
+    assert any("0.0.0.0" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="xingcha.app"):
+        _warn_unusable_public_url(Settings(data_dir=tmp_path, public_url="https://xc.example.com"))
+    assert not caplog.records, "正常地址不该有告警"

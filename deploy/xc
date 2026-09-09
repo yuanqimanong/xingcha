@@ -132,9 +132,27 @@ wait_healthy() {
   die "两分钟没等到 healthy（日志见上）"
 }
 
+# XINGCHA_WEB_HOST 只用于**显示**。填 0.0.0.0 / :: 是把监听地址错填到了这里——
+# 那两个是"绑在所有接口上"的意思，不是能在浏览器里敲的主机名。
+# 不静默接受：打印一个 https://0.0.0.0:8443 出来，人照着敲必然失败。
+display_host() {
+  local h
+  h=$(from_env XINGCHA_WEB_HOST)
+  case "$h" in
+    "" | 0.0.0.0 | ::| "[::]")
+      local guess
+      guess=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+      [ -n "$guess" ] || guess=localhost
+      [ -n "$h" ] && warn "XINGCHA_WEB_HOST=$h 是监听地址，不是能敲的主机名。下面按本机 IP 显示；请在 .env 里改成 $guess。"
+      printf '%s' "$guess"
+      ;;
+    *) printf '%s' "$h" ;;
+  esac
+}
+
 show_url() {
   local host port bind
-  host=$(from_env XINGCHA_WEB_HOST); [ -n "$host" ] || host=localhost
+  host=$(display_host)
 
   if [ -n "$GATEWAY" ]; then
     port=$(from_env XINGCHA_GATEWAY_PORT); [ -n "$port" ] || port=8443

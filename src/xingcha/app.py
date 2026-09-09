@@ -129,6 +129,27 @@ async def _log_password_source(state: AppState) -> None:
         )
 
 
+def _warn_unusable_public_url(settings: Any) -> None:
+    """``public_url`` 里出现监听地址时说一句。
+
+    后台首页与「调用记录」空态里印着一条 curl 示例，它直接用这个值拼出来。
+    填成 ``0.0.0.0`` / ``::`` 的话那条命令是 **`https://0.0.0.0:8443/v1/...`**——
+    照着敲必然失败，而失败信息（连接被拒）完全指不到"这是个显示用的配置项"。
+
+    只警告不纠正：正确的值只有部署者知道（可能是 IP、可能是域名），这一层猜不出来。
+    """
+    url = settings.public_url or ""
+    for bad in ("0.0.0.0", "[::]", "://::"):
+        if bad in url:
+            log.warning(
+                "XINGCHA_PUBLIC_URL 里出现了 %s —— 那是监听地址，不是能在浏览器里敲的"
+                "主机名。后台展示的 curl 示例会变成一条打不通的命令。"
+                "改 .env 里的 XINGCHA_WEB_HOST（填 IP 或域名）并重启。",
+                bad,
+            )
+            return
+
+
 async def load_tracing(state: AppState) -> None:
     """从 setting 表读 trace 配置并装配。
 
@@ -247,6 +268,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 后台密码的来源要在启动时说清楚。不说的话会出现一个很难查的状态：
     # 用户改了 .env 里的密码、重启、发现没变化——而原因是库里已经有密码、先立者为准。
     await _log_password_source(state)
+    _warn_unusable_public_url(state.settings)
 
     # 配额的计数在内存里，启动时从数据库把当前窗口的已用量读回来播种。
     # 不播种的话每次重启配额都会归零——而重启就是这个项目的升级方式。
