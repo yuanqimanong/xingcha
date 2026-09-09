@@ -122,6 +122,10 @@ async def import_env_once(
         )
         return False
     await set_(session, keyring, C.SETTING_KEY_OPENROUTER_API_KEY, env_key)
+    # **记下来源**。不记的话上游页只能显示"手动填写"——而它根本不是手填的，
+    # 是从 .env 导进来的。那句话会让人以为有人在页面上配过，于是去找一个不存在的
+    # 操作记录；更实际的后果是切走之后不知道该切回哪一个。
+    await set_(session, keyring, C.SETTING_KEY_UPSTREAM_ACTIVE_ENV, C.ENV_DEFAULT_API_KEY)
     log.warning(
         "已把环境变量 XINGCHA_API_KEY 导入数据库并加密保存。"
         "建议从 .env 里删掉它——环境变量会出现在 docker inspect 与 /proc/<pid>/environ。"

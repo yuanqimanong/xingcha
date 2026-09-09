@@ -39,7 +39,10 @@
     <div class="table-wrap">
       <table>
         <tbody>
-          <tr><th>来源</th><td class="mono">{{ active.ref or '手动填写' }}</td></tr>
+          {# 来源未知时说"未知"，不说"手动填写"——后者是一句猜测，而它会把人引向
+             一个不存在的操作记录。正常情况下不会走到这里：环境变量导入、列表切换、
+             添加供应商三条路径都会记下来源。 #}
+          <tr><th>来源</th><td class="mono">{{ active.ref or '未知（旧数据）' }}</td></tr>
           {# Base URL 在 API Key 之前：地址决定"打到哪家"，key 只是那家的凭据。
              读的时候也是先看地址对不对。 #}
           <tr><th>Base URL</th><td class="mono truncate">{{ active.base_url }}</td></tr>

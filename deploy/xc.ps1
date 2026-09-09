@@ -113,13 +113,12 @@ function Wait-Healthy {
 function Show-Url {
   $host_ = From-Env 'XINGCHA_WEB_HOST'; if (-not $host_) { $host_ = 'localhost' }
   Write-Host ''
+  $port = From-Env 'XINGCHA_WEB_PORT'; if (-not $port) { $port = '8720' }
   if ($Gateway) {
-    $port = From-Env 'XINGCHA_GATEWAY_PORT'; if (-not $port) { $port = '8443' }
     Write-Host "  https://${host_}:${port}" -ForegroundColor White
     Write-Host "  经共享网关（$Gateway）。xingcha 自己零宿主端口，没有别的入口。"
     Write-Host '  浏览器还拦的话，这台设备还没装网关根证书：cd ..\edge; .\edge trust'
   } else {
-    $port = From-Env 'XINGCHA_WEB_PORT'; if (-not $port) { $port = '8720' }
     Write-Host "  http://${host_}:${port}" -ForegroundColor White
     Write-Host '  **明文 HTTP**：密码与 sk-xc- 密钥在网络上是裸传的。'
     Write-Host '  想要 HTTPS：在 .env 里写 XINGCHA_GATEWAY=edge，见 deploy\CADDY.md。'

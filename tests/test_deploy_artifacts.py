@@ -143,15 +143,40 @@ class TestEnvVarContract:
         missing = [k for k, v in compose_vars(compose_raw).items() if v is None]
         assert not missing, f"这些变量没有默认值，会静默变成空串：{missing}"
 
+    #: compose 会读、但**用户不该设**的变量：由 deploy/xc 推导后导出。
+    #:
+    #: 它们不进 .env.example —— 列在那里等于邀请用户去设一个会被覆盖的值，
+    #: 而"我明明设了却不生效"是最费时的一类困惑。
+    DERIVED: ClassVar[frozenset[str]] = frozenset(
+        {
+            "XINGCHA_BIND_ADDR",  # 由 XINGCHA_WEB_HOST 推出来
+            "XINGCHA_PUBLIC_PORT",  # 走网关时从 ../edge/.env 读
+        }
+    )
+
     def test_env_example_documents_every_var_compose_reads(self, compose_raw: str):
         """compose 读的每个变量，``.env.example`` 里都要有（注释掉也算）。
 
         反向的漏项是最难发现的一类：变量有默认值所以一切正常，而用户永远不知道
         它可以调——比如"怎么开给局域网"。
+
+        派生的那几个是例外，见 :data:`DERIVED`。
         """
         text = ENV_EXAMPLE.read_text(encoding="utf-8")
-        for name in compose_vars(compose_raw):
+        for name in set(compose_vars(compose_raw)) - self.DERIVED:
             assert re.search(rf"^#?\s*{name}=", text, re.M), f".env.example 没提到 {name}"
+
+    def test_derived_vars_are_not_offered_to_the_user(self):
+        """派生变量**不能**出现在 .env.example 里。
+
+        列出来就是邀请人去设一个会被 deploy/xc 覆盖的值——"我明明设了却不生效"
+        是最费时的一类困惑，而这里没有任何提示能让人想到是被覆盖了。
+        """
+        text = ENV_EXAMPLE.read_text(encoding="utf-8")
+        for name in self.DERIVED:
+            assert not re.search(rf"^#?\s*{name}=", text, re.M), (
+                f"{name} 是派生值，不该出现在 .env.example 里"
+            )
 
 
 # =============================================================================

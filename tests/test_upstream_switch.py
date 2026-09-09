@@ -440,3 +440,42 @@ class TestPageDoesNotLeak:
             r = client.get("/admin/upstreams", follow_redirects=False)
         assert r.status_code in (302, 303, 307)
         assert "/admin/login" in (r.headers.get("location") or "")
+
+
+class TestEnvImportRecordsItsSource:
+    """从 ``.env`` 导入的默认上游要**记下来源**。
+
+    不记的话上游页显示"手动填写"——而它根本不是手填的。那句话会让人以为有人在页面
+    上配过，于是去找一个不存在的操作记录；更实际的后果是切走之后不知道该切回哪一个
+    （列表里那一行叫「.env 里的默认」，而「目前使用」说的是"手动填写"，对不上）。
+
+    用户清库重部署之后正好撞上这个。
+    """
+
+    def test_the_active_source_is_recorded(self, settings: Settings):
+        import asyncio
+
+        from xingcha import contract as C
+        from xingcha.crypto import Keyring
+        from xingcha.services import setting as setting_svc
+
+        settings.ensure_data_dir()
+        migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+        keyring = Keyring.load_or_create(settings.secret_path)
+        engine = make_engine(settings.db_path)
+        maker = make_sessionmaker(engine)
+
+        async def run() -> str | None:
+            async with maker() as s:
+                await setting_svc.import_env_once(
+                    s, keyring, "sk-from-env-000", "https://api.example.com/v1"
+                )
+                await s.commit()
+                return await setting_svc.get(s, keyring, C.SETTING_KEY_UPSTREAM_ACTIVE_ENV)
+
+        try:
+            got = asyncio.run(run())
+        finally:
+            asyncio.run(engine.dispose())
+
+        assert got == C.ENV_DEFAULT_API_KEY, f"来源没记下来，页面会显示成手动填写（实际 {got!r}）"

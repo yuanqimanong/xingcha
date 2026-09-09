@@ -820,10 +820,15 @@ ORCHESTRATION_ENV_NAMES: Final = frozenset(
         # 走不走共享网关。空 = 独立跑明文 HTTP；有值 = 那个 docker 网络的名字。
         # 它决定 deploy/xc 要不要叠 docker-compose.gateway.yml——是**拓扑**开关。
         "XINGCHA_GATEWAY",
-        "XINGCHA_GATEWAY_PORT",  # 网关上分给 xingcha 的端口，只用于拼展示地址
-        "XINGCHA_BIND_ADDR",  # 独立跑时宿主绑哪个地址（默认只绑回环）
-        "XINGCHA_WEB_HOST",  # 只用于拼 XINGCHA_PUBLIC_URL 与 xc 打印的访问地址
+        # 派生值，用户不该设：deploy/xc 从 XINGCHA_WEB_HOST 推出来后导出。
+        # 登记在这里是因为万一有人手动设了，它会经 env_file 进容器——
+        # 不登记就会被 warn_unknown_env 误报成"拼错了"。
+        "XINGCHA_BIND_ADDR",
+        "XINGCHA_WEB_HOST",
+        # 独立跑时这个容器发布的宿主端口。走网关时端口是网关的，
+        # 由 deploy/xc 从 ../edge/.env 读出来导出成 XINGCHA_PUBLIC_PORT。
         "XINGCHA_WEB_PORT",
+        "XINGCHA_PUBLIC_PORT",
         "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷（Windows 用后者）
     }
 )

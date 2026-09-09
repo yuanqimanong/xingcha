@@ -22,7 +22,12 @@ services:
     environment:
       # curl 示例要用**网关**的地址。写成容器自己的 http 地址，用户复制那条命令会
       # 直接连不上（那个端口根本没发布），而错误信息指不到"该走网关"。
-      XINGCHA_PUBLIC_URL: https://${XINGCHA_WEB_HOST:-localhost}:${XINGCHA_GATEWAY_PORT:-8443}
+      # 端口来自**网关自己的配置**（../edge/.env 的 PORT_XINGCHA），由 deploy/xc
+      # 读出来后导出成 XINGCHA_PUBLIC_PORT。
+      #
+      # 不让用户在两个 .env 里各写一遍：写两遍就会不一致，而不一致的症状是后台
+      # 印出一个打不开的地址、服务本身却好着——最难认的那类。
+      XINGCHA_PUBLIC_URL: https://${XINGCHA_WEB_HOST:-localhost}:${XINGCHA_PUBLIC_PORT:-8443}
 
       # 信任网关发来的 X-Forwarded-Proto，否则**会话 cookie 不带 Secure**。
       #

@@ -34,10 +34,15 @@ services:
     image: xingcha:local
     restart: unless-stopped
 
-    # 宿主上绑哪个地址，**默认只绑回环**。
+    # 宿主上绑哪个地址。**不是用户变量**——由 deploy/xc 从 XINGCHA_WEB_HOST 推出来
+    # 再导出（见那里的 derive_bind_addr）：localhost/127.0.0.1 → 只绑回环，
+    # 其它 → 0.0.0.0。
     #
-    # 这条默认值是安全属性：映射出去的端口走 Docker 的 DOCKER-USER 链，**绕过
-    # ufw**——你在防火墙里写的 deny 对它无效。所以"开给局域网"必须是一次显式选择。
+    # 合成一个变量是因为分开最容易出的错是二者对不上：显示局域网 IP、却只绑了回环，
+    # 于是别人打不开而页面上的地址看起来完全正确。
+    #
+    # 默认值 127.0.0.1 是安全属性：映射出去的端口走 Docker 的 DOCKER-USER 链、
+    # **绕过 ufw**，所以"开给局域网"必须是一次显式选择（把 WEB_HOST 填成真地址）。
     #
     # 挂网关时这一整条会被 docker-compose.gateway.yml 用 `!override` 清掉。
     ports:

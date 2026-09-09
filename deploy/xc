@@ -50,19 +50,85 @@ GATEWAY=$(from_env XINGCHA_GATEWAY)
 FILES=(-f deploy/docker-compose.yml)
 [ -n "$GATEWAY" ] && FILES+=(-f deploy/docker-compose.gateway.yml)
 
+# 绑定地址**由 XINGCHA_WEB_HOST 推出来**，不再是单独一个变量。
+#
+# 两个变量最容易出的错是它们对不上：显示 192.168.1.10、却只绑了回环，于是别人
+# 打不开而页面上的地址看起来完全正确。合成一个之后这一类错误不存在。
+#
+# 规则只有两条：
+#   localhost / 127.0.0.1  → 绑 127.0.0.1，只有本机能访问
+#   其它（IP 或域名）        → 绑 0.0.0.0
+#
+# 为什么不直接绑那个 IP：更精确，但 DHCP 换一次地址容器就起不来
+# （cannot assign requested address），而那个报错离"我改了个显示用的字段"很远。
+derive_bind_addr() {
+  case "$(from_env XINGCHA_WEB_HOST)" in
+    "" | localhost | 127.0.0.1) printf '127.0.0.1' ;;
+    *) printf '0.0.0.0' ;;
+  esac
+}
+export XINGCHA_BIND_ADDR="$(derive_bind_addr)"
+
+# 对外端口。**两种拓扑的来源不同，因为占端口的人不同。**
+#
+#   独立跑   这个容器自己发布，端口在本项目的 .env（XINGCHA_WEB_PORT）
+#   走网关   端口是**网关**的，源头在 ../edge/.env 的 PORT_XINGCHA
+#
+# 走网关时去源头读，而不是让用户在两个 .env 里各写一遍：写两遍就会不一致，
+# 而不一致的症状是后台印出一个打不开的地址，服务本身却好着——最难认的那类。
+#
+# 也正因为来源不同，两种模式的端口**可以不一样**，于是网关常驻时切回独立模式
+# 不会撞端口（网关默认 8443，独立默认 8720）。
+public_port() {
+  local p
+  if [ -n "$GATEWAY" ]; then
+    p=$(sed -n 's/^PORT_XINGCHA=\(.*\)/\1/p' ../edge/.env 2>/dev/null | head -1)
+    [ -n "$p" ] || p=8443
+  else
+    p=$(from_env XINGCHA_WEB_PORT)
+    [ -n "$p" ] || p=8720
+  fi
+  printf '%s' "$p"
+}
+export XINGCHA_PUBLIC_PORT="$(public_port)"
+
 c() { docker compose "${FILES[@]}" --env-file .env "$@"; }
 
 # 只在**配了网关**时检查它。没配就是独立跑，不该被一个不相干的容器挡住。
 #
 # 配了却没起的症状是"容器 healthy 却什么都打不开"——那种状态最难认，因为每一层
 # 单独看都正常。实际踩过一次（xingcha 没在 edge 网络里，网关一直 502）。
+# 独立模式下宿主端口被占，多半就是网关还跑着（它默认也用 8443）。
+# 不预检的话 docker 只会说 "port is already allocated"，而那句话不会告诉你
+# 占用者是谁、也不会说"你刚把 XINGCHA_GATEWAY 清空了"。
+require_free_port() {
+  [ -z "$GATEWAY" ] || return 0
+  local port
+  port=$(from_env XINGCHA_WEB_PORT); [ -n "$port" ] || port=8720
+  ss -tln 2>/dev/null | grep -q ":$port " || return 0
+  # 已经是我们自己占着就不算冲突（重启同一个容器）
+  docker port xingcha-xingcha-1 2>/dev/null | grep -q ":$port\$" && return 0
+  die "宿主端口 $port 已被占用。若是网关（它默认也用 $port）：
+  · 想走 HTTPS —— 在 .env 里写 XINGCHA_GATEWAY=edge
+  · 想走明文直连 —— 先停网关：cd ../edge && ./edge stop
+  · 或把 XINGCHA_WEB_PORT 换成别的端口"
+}
+
 require_gateway() {
   [ -n "$GATEWAY" ] || return 0
   docker network inspect "$GATEWAY" >/dev/null 2>&1 || die \
     "共享网络 $GATEWAY 不存在。先起网关：cd ../edge && ./edge start（见 deploy/CADDY.md）"
-  [ "$(docker inspect -f '{{.State.Running}}' edge-caddy-1 2>/dev/null)" = true ] || die \
-    "网关容器 edge-caddy-1 没在跑。先：cd ../edge && ./edge start"
-  ok "网关就绪（$GATEWAY / edge-caddy-1）"
+
+  # 按**网络里有没有别的容器**判断，不认死 edge-caddy-1 这个名字。
+  # XINGCHA_GATEWAY 的值是网络名，换一个网络就该换一个网关——把容器名写死的话，
+  # 换了网络之后这里仍然在查那个不相干的容器，检查通过而实际连不上。
+  local peers
+  peers=$(docker network inspect "$GATEWAY" \
+    -f '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | tr ' ' '\n' \
+    | grep -v '^xingcha-xingcha-1$' | grep -c . || true)
+  [ "${peers:-0}" -gt 0 ] || die \
+    "网络 $GATEWAY 里没有别的容器——网关没在跑。先：cd ../edge && ./edge start"
+  ok "网关就绪（网络 $GATEWAY）"
 }
 
 # up / down 一律带 --remove-orphans。
@@ -151,11 +217,12 @@ display_host() {
 }
 
 show_url() {
-  local host port bind
+  local host port
   host=$(display_host)
 
+  port="$XINGCHA_PUBLIC_PORT"
+
   if [ -n "$GATEWAY" ]; then
-    port=$(from_env XINGCHA_GATEWAY_PORT); [ -n "$port" ] || port=8443
     printf '\n\033[1m  https://%s:%s\033[0m\n' "$host" "$port"
     printf '  经共享网关（%s）。xingcha 自己零宿主端口，没有别的入口。\n' "$GATEWAY"
     printf '  浏览器还拦的话，说明这台设备还没装网关的根证书：\n'
@@ -163,11 +230,9 @@ show_url() {
     return
   fi
 
-  port=$(from_env XINGCHA_WEB_PORT); [ -n "$port" ] || port=8720
-  bind=$(from_env XINGCHA_BIND_ADDR); [ -n "$bind" ] || bind=127.0.0.1
   printf '\n\033[1m  http://%s:%s\033[0m\n' "$host" "$port"
   printf '  **明文 HTTP**：密码与 sk-xc- 密钥在网络上是裸传的。\n'
-  if [ "$bind" = 127.0.0.1 ]; then
+  if [ "$XINGCHA_BIND_ADDR" = 127.0.0.1 ]; then
     printf '  只绑在回环上，别的设备访问不到。要开给局域网：XINGCHA_BIND_ADDR=0.0.0.0\n'
     printf '  （那个端口走 DOCKER-USER 链，会绕过 ufw。）\n'
   fi
@@ -176,7 +241,7 @@ show_url() {
 
 case "${1:-}" in
   start)
-    need_env; require_gateway; ensure_data_owner
+    need_env; require_gateway; require_free_port; ensure_data_owner
     say "构建并启动（保留 data）"
     up
     wait_healthy; show_url
