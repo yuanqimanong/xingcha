@@ -96,7 +96,8 @@
             {% if a.total %}
             {{ a.total }} 次 ·
             <span class="{% if a.failed %}warn-text{% endif %}">成功 {{ a.ok_rate }}</span> ·
-            {{ a.cost }} USD
+            {{ a.cost }} USD{% if a.unpriced %}<span class="warn-text"
+              title="{{ a.unpriced }} 次调用查不到模型单价，这个金额不含它们">*</span>{% endif %}
             {% else %}<span class="dim">还没被调用过</span>{% endif %}
           </td>
         </tr>

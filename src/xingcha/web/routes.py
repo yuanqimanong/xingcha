@@ -1614,6 +1614,9 @@ async def agents_page(request: Request) -> Response:
                 ok_rate=st.ok_rate,
                 failed=st.failed,
                 cost=st.cost,
+                # 卡片上光写一个费用数字，而其中大半调用其实查不到价，那就是在
+                # 撒谎——这正是"可定价率"这个指标要挡住的事，卡片上也得挡住。
+                unpriced=st.unpriced,
                 last=st.last,
             )
         )
