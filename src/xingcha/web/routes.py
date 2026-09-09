@@ -629,9 +629,21 @@ async def logs_page(request: Request) -> Response:
 # =============================================================================
 
 
-@router.get("/settings")
-async def settings_page(request: Request) -> Response:
-    await require_admin(request)
+async def _settings_ctx(
+    request: Request,
+    *,
+    password_error: str | None = None,
+    trace_error: str | None = None,
+    trace_form: Any = None,
+) -> dict[str, Any]:
+    """设置页的模板上下文。
+
+    抽出来是为了让 POST 失败时能**就地回显**：密码填错的时候直接渲染这一页，
+    保留已经填好的地址与 public key，而不是跳到一个独立的错误页。
+
+    此前是后者，代价很具体：改可观测配置要填地址 + 两把 key + 密码，密码错一次
+    就全部重填一遍。而"密码错"恰恰是这个表单最常见的失败。
+    """
     state = request.app.state.xc
 
     async with state.sessionmaker() as s:
@@ -644,33 +656,43 @@ async def settings_page(request: Request) -> Response:
 
     from ..db import migrate
 
+    return {
+        "masked_key": setting_svc.mask(raw_key) if raw_key else "",
+        "base_url": base_url or C.OPENROUTER_DEFAULT_BASE_URL,
+        "catalog_count": len(state.catalog.all()),
+        "catalog_stale": state.catalog.is_stale,
+        "data_dir": str(state.settings.data_dir.resolve()),
+        "db_revision": migrate.current_revision(state.settings.db_path) or "—",
+        # 回显优先用刚提交的值：失败重渲染时用户不该看到自己刚填的东西被抹掉。
+        # **secret key 例外**——它从不回显，回显就是把它写进 HTML。
+        "trace_endpoint": (trace_form.endpoint if trace_form else None) or trace_endpoint or "",
+        "trace_public_key": (trace_form.public_key if trace_form else None) or trace_pk or "",
+        "trace_has_secret": bool(trace_sk),
+        "trace_on": state.tracing is not None,
+        "trace_include_content": state.settings.trace_include_content,
+        "password_error": password_error,
+        "trace_error": trace_error,
+        "env_managed": ws.env_password_in_effect(
+            "x" if has_db_password else None, state.settings.admin_password
+        ),
+        # 库里已有密码而环境变量也设了：那一项被忽略，必须说出来，
+        # 否则用户改了 .env、重启、发现没变化，而根因看不见。
+        "admin_password_env_ignored": bool(has_db_password and state.settings.admin_password),
+    }
+
+
+async def _render_settings(request: Request, **errors: Any) -> Response:
     csrf = await _ensure_csrf_cookie(request)
-    resp = _render(
-        request,
-        "settings.html",
-        {
-            "csrf": csrf.value,
-            "masked_key": setting_svc.mask(raw_key) if raw_key else "",
-            "base_url": base_url or C.OPENROUTER_DEFAULT_BASE_URL,
-            "catalog_count": len(state.catalog.all()),
-            "catalog_stale": state.catalog.is_stale,
-            "data_dir": str(state.settings.data_dir.resolve()),
-            "db_revision": migrate.current_revision(state.settings.db_path) or "—",
-            "trace_endpoint": trace_endpoint or "",
-            "trace_public_key": trace_pk or "",
-            "trace_has_secret": bool(trace_sk),
-            "trace_on": state.tracing is not None,
-            "trace_include_content": state.settings.trace_include_content,
-            "env_managed": ws.env_password_in_effect(
-                "x" if has_db_password else None, state.settings.admin_password
-            ),
-            # 库里已有密码而环境变量也设了：那一项被忽略，必须说出来，
-            # 否则用户改了 .env、重启、发现没变化，而根因看不见。
-            "admin_password_env_ignored": bool(has_db_password and state.settings.admin_password),
-        },
-    )
+    ctx = await _settings_ctx(request, **errors)
+    resp = _render(request, "settings.html", {"csrf": csrf.value, **ctx})
     csrf.apply(resp)
     return resp
+
+
+@router.get("/settings")
+async def settings_page(request: Request) -> Response:
+    await require_admin(request)
+    return await _render_settings(request)
 
 
 @router.post("/settings/upstream")
@@ -735,10 +757,16 @@ async def change_password(
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
 
+    # 校验失败一律**就地回显**，不跳独立错误页。这个表单三个字段都是密码，
+    # 跳走之后要全部重填，而"两次不一致"和"当前密码错"都是高频失误。
     if new_password != confirm:
-        raise Denied("两次输入的新密码不一致，未做任何修改。")
+        return await _render_settings(
+            request, password_error="两次输入的新密码不一致，未做任何修改。"
+        )
     if len(new_password) < C.MIN_ADMIN_PASSWORD_LEN:
-        raise Denied(f"新密码至少 {C.MIN_ADMIN_PASSWORD_LEN} 位，未做任何修改。")
+        return await _render_settings(
+            request, password_error=f"新密码至少 {C.MIN_ADMIN_PASSWORD_LEN} 位，未做任何修改。"
+        )
 
     async with state.sessionmaker() as s:
         admin = await ws.get_admin(s)
@@ -747,16 +775,21 @@ async def change_password(
         if ws.env_password_in_effect(admin.password_hash, state.settings.admin_password):
             # 改了也不生效（登录按环境变量校验），所以直接拒绝。
             # 假装成功是最坏的选择：用户以为换了密码，而旧的那个仍然能登。
-            raise Denied(
-                "密码由环境变量 XINGCHA_ADMIN_PASSWORD 托管，在这里改不生效。"
-                "请改 .env 里的那一项并重启服务。"
+            return await _render_settings(
+                request,
+                password_error=(
+                    "密码由环境变量 XINGCHA_ADMIN_PASSWORD 托管，在这里改不生效。"
+                    "请改 .env 里的那一项并重启服务。"
+                ),
             )
         if not ws.verify_admin_password(
             admin.password_hash, current, state.settings.admin_password
         ):
-            raise Denied("当前密码不正确，未做任何修改。")
+            return await _render_settings(request, password_error="当前密码不正确，未做任何修改。")
         if new_password == current:
-            raise Denied("新密码与当前密码相同，未做任何修改。")
+            return await _render_settings(
+                request, password_error="新密码与当前密码相同，未做任何修改。"
+            )
         admin.password_hash = ws.hash_password(new_password)
         await ws.revoke_all(s)
         await s.commit()
@@ -782,15 +815,23 @@ async def update_trace(
     外部地址**。这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本——
     后果与偷走 key 是同一个量级。
 
+    校验**全部在写库之前**：密码不对或地址被拒时，一个字节都不改，并且就地回显
+    这一页（保留已填的地址与 public key），而不是跳到独立的错误页——那样用户要把
+    地址与两把 key 全部重填一遍，而"密码错"正是这个表单最常见的失败。
+
     endpoint 过 SSRF 守卫：它是一个"服务端会主动去打"的地址，和上游地址同类。
     """
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
+    # 回显用：secret key 不在其中——回显它就是把它写进 HTML。
+    form = SimpleNamespace(endpoint=endpoint.strip(), public_key=public_key.strip())
 
     async with state.sessionmaker() as s:
         admin = await ws.get_admin(s)
         if admin is None or not ws.verify_password(admin.password_hash, password):
-            raise Denied("密码不正确，未做任何修改。")
+            return await _render_settings(
+                request, trace_error="当前密码不正确，未做任何修改。", trace_form=form
+            )
 
         cleaned = endpoint.strip()
         if cleaned:
@@ -801,7 +842,9 @@ async def update_trace(
                 # 链路本地（云元数据端点）仍然拒。
                 checked = check_upstream_url(cleaned, allow_private=True)
             except UnsafeUpstreamURL as e:
-                raise Denied(f"上报地址被拒绝：{e}") from e
+                return await _render_settings(
+                    request, trace_error=f"上报地址被拒绝：{e}", trace_form=form
+                )
             await setting_svc.set_(s, state.keyring, C.SETTING_KEY_TRACE_ENDPOINT, checked.url)
         else:
             # 清空 endpoint 就是关掉 trace。**凭据一起清掉**——留着一份用不上的

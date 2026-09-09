@@ -4,10 +4,8 @@
 <div class="page-head">
   <div>
     <h1>设置</h1>
-    <p>
-      上游 key、连接自检与运行状况搬到了<a href="/admin/upstreams">上游</a>页——
-      那一页专管"出口是哪一个"，配置、自检、切换在一起才说得通。
-    </p>
+    <p>跨全站的两件事：后台密码、调用追踪的上报地址。
+      出口（上游 key 与 <code>base_url</code>）在<a href="/admin/upstreams">上游</a>页。</p>
   </div>
 </div>
 
@@ -35,6 +33,9 @@
       要改用它，先在服务器上跑 <code>xingcha admin reset-password</code>。
     </div>
     {% endif %}
+    {% if password_error %}
+    <div class="alert danger mb4"><div>{{ password_error }}</div></div>
+    {% endif %}
     <form method="post" action="/admin/settings/password">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="form-row">
@@ -46,7 +47,7 @@
           <label for="new_password">新密码</label>
           <input id="new_password" name="new_password" type="password" autocomplete="new-password"
                  minlength="{{ min_password_len }}" required>
-          <div class="hint">至少 {{ min_password_len }} 位。这个后台能改写上游 base_url，别复用其它服务的密码。</div>
+          <div class="hint">至少 {{ min_password_len }} 位。这个后台能改写上游 <code>base_url</code>，别复用其它服务的密码。</div>
         </div>
         <div class="field">
           <label for="confirm_password">再输一次</label>
@@ -54,8 +55,13 @@
                  minlength="{{ min_password_len }}" required>
         </div>
       </div>
-      <button class="btn primary" type="submit">修改密码</button>
-      <span class="hint" style="margin-left:var(--s4)">改完其它设备上的登录会全部失效。</span>
+      {# 按钮**放在整行下面自己一行**，不塞进某个字段的控件行。
+         塞进去的话它会落在邻居那条说明文字的高度上，看起来像是属于那个字段的动作。
+         这一行有三个字段、且都是密码，"提交整份表单"本来就该是独立的一步。 #}
+      <div class="row mt4">
+        <button class="btn primary" type="submit">修改密码</button>
+        <span class="hint">改完所有设备上的登录会全部失效，包括当前这个。</span>
+      </div>
     </form>
     {% endif %}
     <div class="notice mt4">
@@ -68,54 +74,71 @@
 
 <div class="card mb5">
   <div class="card-head">
-    <h2>可观测（OTel / Langfuse）</h2>
+    <h2>调用追踪</h2>
     {% if trace_on %}<span class="badge ok">已开启</span>{% else %}<span class="badge">未开启</span>{% endif %}
   </div>
   <div class="card-body">
     <p class="muted small mb4">
-      管理面的运行列表回答「跑了几次、花了多少、有没有报错」。它回答不了
-      <strong>「模型到底看到了什么、又吐回了什么」</strong>——而调提示词的时间几乎全花在那个问题上。
-      接上 Langfuse 就能看到每次调用的完整消息、重试与耗时。
+      把每次调用的完整消息、重试与耗时按 OTLP 协议上报到一个追踪后端，用来看
+      <strong>模型实际收到了什么、又返回了什么</strong>。
+      <a href="/admin/logs">调用记录</a>页只有次数、费用与错误，没有消息内容。
     </p>
     <div class="notice mb4">
-      <strong>这里只配地址，开关在每个 Agent 上。</strong>
-      填好之后，Agent 编辑页的「可观测」分区就能逐个勾选——
-      一个跑客户合同的 Agent 与一个跑内部分类的 Agent，对"对话内容能不能离开这台
-      机器"的答案通常不一样，不该由一个全局开关统一。
+      <strong>这里只填地址，开关在每个 Agent 上。</strong>
+      填好之后到 Agent 编辑页的「可观测」分区逐个勾选——哪些 Agent 的对话内容可以
+      离开这台机器，通常不是一个全局答案。
     </div>
     {% if trace_include_content %}
     <div class="notice warn mb4">
-      <strong>开启后，提示词与模型输出会被发送到下面这个地址。</strong>
-      自建 Langfuse 关起门来看没问题；指向别人家的托管服务，就等于把对话内容交出去了。
-      不想带内容可以设 <code>XINGCHA_TRACE_INCLUDE_CONTENT=0</code>，但那样最主要的用处也就没了。
+      <strong>提示词与模型输出会被发送到下面这个地址。</strong>
+      不想带内容就设 <code>XINGCHA_TRACE_INCLUDE_CONTENT=0</code> 并重启，
+      那样只上报耗时与 token 数。
     </div>
+    {% endif %}
+    {% if trace_error %}
+    <div class="alert danger mb4"><div>{{ trace_error }}</div></div>
     {% endif %}
     <form method="post" action="/admin/settings/trace">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="field">
         <label for="trace_endpoint">OTLP traces 地址</label>
         <input id="trace_endpoint" name="endpoint" type="text" class="mono" value="{{ trace_endpoint }}"
-               placeholder="https://cloud.langfuse.com/api/public/otel/v1/traces">
+               placeholder="http://192.168.1.10:3000/api/public/otel/v1/traces">
         <div class="hint">
-          要给完整的 traces 入口（自建 Langfuse 是 <code>https://你的域名/api/public/otel/v1/traces</code>）。
-          <strong>留空即关闭</strong>，凭据也会一起清掉。
+          要填 <strong>OTLP/HTTP 的 traces 入口</strong>，不是后端的网页地址。
+          <strong>留空即关闭</strong>，两把 key 也会一起清掉。
+        </div>
+        <div class="hint mt2">
+          <table class="mini">
+            <tr><td>自建 Langfuse</td><td class="mono">http://&lt;主机:端口&gt;/api/public/otel/v1/traces</td></tr>
+            <tr><td>同一 docker 网络</td><td class="mono">http://langfuse-web:3000/api/public/otel/v1/traces</td></tr>
+            <tr><td>Langfuse 托管版</td><td class="mono">https://cloud.langfuse.com/api/public/otel/v1/traces</td></tr>
+            <tr><td>OTel Collector / Jaeger</td><td class="mono">http://&lt;主机&gt;:4318/v1/traces</td></tr>
+          </table>
+          自建的地址可以是内网 IP 或容器名（私有网段是放行的），但云元数据地址会被拒。
         </div>
       </div>
       <div class="field">
         <label for="trace_public_key">Langfuse public key</label>
         <input id="trace_public_key" name="public_key" type="text" class="mono" autocomplete="off"
                value="{{ trace_public_key }}" placeholder="pk-lf-...">
+        <div class="hint">
+          <strong>只有 Langfuse 需要这两把 key</strong>（它用 Basic 认证）。
+          填 OTel Collector / Jaeger 这类不校验身份的后端就留空。
+        </div>
       </div>
       <div class="field">
         <label for="trace_secret_key">Langfuse secret key</label>
         <input id="trace_secret_key" name="secret_key" type="password" class="mono" autocomplete="off"
                placeholder="{% if trace_has_secret %}已保存，留空表示不修改{% else %}sk-lf-...{% endif %}">
-        <div class="hint">和上游 key 一样加密存在本机数据库里。Basic 头由星槎自己拼，不用手算 base64。</div>
+        <div class="hint">加密存在本机数据库里，页面上不回显。Basic 头由星槎自己拼，不用手算 base64。</div>
       </div>
       <div class="field">
         <label for="trace_password">当前密码</label>
         <input id="trace_password" name="password" type="password" autocomplete="current-password" required>
-        <div class="hint">这个表单一旦被跨站提交，攻击者就得到了一份持续到达的对话副本——所以要二次确认身份。</div>
+        <div class="hint">
+          点「保存」时校验。<strong>不正确就什么都不改</strong>，已填的地址与 public key 会留在页面上。
+        </div>
       </div>
       <button class="btn primary" type="submit">保存</button>
     </form>

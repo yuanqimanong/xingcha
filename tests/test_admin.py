@@ -432,13 +432,43 @@ class TestTraceMutation:
         )
 
     def test_requires_password_confirmation(self, logged_in: TestClient):
+        """密码不对 → **什么都不改**，并且就地回显这一页。
+
+        断言的是"没改成任何东西 + 原因看得见"，不是状态码。此前是 403 + 一个独立的
+        错误页；现在是 200 + 页面内的错误条。两者在安全上等价（写库前就拒了），
+        但后者不会把用户填的地址与 key 一起丢掉——而"密码错"正是这个表单最常见的
+        失败，它要填地址 + 两把 key + 密码。
+        """
         r = self._post(
             logged_in,
             password="wrong-password",
             endpoint="http://10.0.0.5:3000/api/public/otel/v1/traces",
         )
-        assert r.status_code == 403
-        assert "密码不正确" in r.text
+        assert r.status_code == 200
+        assert "当前密码不正确" in r.text
+        assert 'action="/admin/settings/trace"' in r.text, "没有回到设置页，用户会丢掉已填内容"
+
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+        assert state.tracing is None, "密码不对却把 trace 打开了"
+
+    def test_a_rejected_attempt_keeps_what_was_typed_but_never_the_secret(
+        self, logged_in: TestClient
+    ):
+        """回显已填的地址与 public key，**但绝不回显 secret key**。
+
+        回显 secret 就是把它写进 HTML —— 那份 HTML 会进浏览器缓存、进截图、
+        进"把后台截图发到群里问问题"。
+        """
+        r = self._post(
+            logged_in,
+            password="wrong-password",
+            endpoint="http://10.0.0.5:3000/api/public/otel/v1/traces",
+            public_key="pk-lf-keepme",
+            secret_key="sk-lf-must-not-echo",
+        )
+        assert 'value="http://10.0.0.5:3000/api/public/otel/v1/traces"' in r.text
+        assert 'value="pk-lf-keepme"' in r.text
+        assert "sk-lf-must-not-echo" not in r.text
 
     def test_metadata_endpoint_is_still_blocked(self, logged_in: TestClient):
         """上报地址是"服务端会主动去打"的地址，云元数据端点一律拒。
@@ -446,8 +476,10 @@ class TestTraceMutation:
         不守的话，这个表单就是一个"让星槎去打云元数据端点"的原语。
         """
         r = self._post(logged_in, password=PASSWORD, endpoint="http://169.254.169.254/v1/traces")
-        assert r.status_code == 403
+        assert r.status_code == 200
         assert "元数据" in r.text
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+        assert state.tracing is None
 
     def test_a_self_hosted_langfuse_on_a_private_network_is_allowed(self, logged_in: TestClient):
         """**自建 Langfuse 基本就在内网**，这条不能被 SSRF 守卫挡死。
@@ -475,6 +507,18 @@ class TestTraceMutation:
         body = logged_in.get("/admin/settings").text
         assert "已开启" in body
         assert "sk-lf-2" not in body, "secret key 绝不能回显到页面上"
+
+    def test_an_endpoint_without_keys_is_enough(self, logged_in: TestClient):
+        """**只填地址、不填 key 也要能用。**
+
+        Langfuse 用 Basic 认证所以需要两把 key，而 OTel Collector / Jaeger 这类
+        后端通常不校验身份。页面上照这个写的（"只有 Langfuse 需要这两把 key"），
+        所以它必须真的成立——否则那句话就是错的引导。
+        """
+        r = self._post(logged_in, password=PASSWORD, endpoint="http://10.0.0.5:4318/v1/traces")
+        assert r.status_code == 303
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+        assert state.tracing is not None, "不填 key 就开不起来，而页面说可以"
 
     def test_clearing_the_endpoint_also_wipes_the_credentials(self, logged_in: TestClient):
         """关掉 trace 时凭据一起清掉。
@@ -506,6 +550,87 @@ class TestTraceMutation:
                 ]
 
         assert asyncio.run(read()) == [None, None, None]
+
+
+class TestPasswordFormErrors:
+    """改密码的失败也要就地回显。
+
+    这个表单三个字段全是密码，跳到独立错误页之后要全部重填——而"两次不一致"
+    与"当前密码错"都是高频失误。
+    """
+
+    def _post(self, client: TestClient, **data):
+        client.get("/admin/settings")
+        return client.post(
+            "/admin/settings/password",
+            data={"csrf_token": csrf_of(client), **data},
+            follow_redirects=False,
+        )
+
+    def test_mismatch_renders_inline(self, logged_in: TestClient):
+        r = self._post(
+            logged_in, current=PASSWORD, new_password="a-new-password-1", confirm="something-else-1"
+        )
+        assert r.status_code == 200
+        assert "两次输入的新密码不一致" in r.text
+        assert 'action="/admin/settings/password"' in r.text
+
+    def test_wrong_current_password_renders_inline_and_changes_nothing(self, logged_in: TestClient):
+        new = "a-new-password-1"
+        r = self._post(logged_in, current="wrong-password", new_password=new, confirm=new)
+        assert r.status_code == 200
+        assert "当前密码不正确" in r.text
+        # 旧密码仍然有效 —— 也就是真的什么都没改
+        logged_in.get("/admin/logout")
+        assert (
+            logged_in.post(
+                "/admin/login", data={"password": PASSWORD}, follow_redirects=False
+            ).status_code
+            == 303
+        )
+
+    def test_too_short_renders_inline(self, logged_in: TestClient):
+        r = self._post(logged_in, current=PASSWORD, new_password="short", confirm="short")
+        assert r.status_code == 200
+        assert str(C.MIN_ADMIN_PASSWORD_LEN) in r.text
+
+
+class TestSettingsCopy:
+    """页面文案要**指导填写**，而不是记录实现过程。
+
+    这一层不是风格洁癖：设置页曾经用整段话解释"上游 key 为什么搬去了上游页"、
+    "运行列表回答不了什么问题"。那些句子对着屏幕的人一个决定都帮不上——他要知道的
+    是这一格填什么、填错会怎样。而且它们会过期：读到的人无从判断"搬"是昨天还是
+    半年前的事。
+    """
+
+    def test_no_changelog_prose(self, logged_in: TestClient):
+        body = logged_in.get("/admin/settings").text
+        for phrase in ("搬到了", "才说得通", "实现过程"):
+            assert phrase not in body, f"设置页出现了叙述实现过程的文案：{phrase}"
+
+    def test_the_otlp_hint_answers_how_to_fill_it_for_a_self_hosted_backend(
+        self, logged_in: TestClient
+    ):
+        """自部署是主要场景，页面必须直接给出可照抄的形态。
+
+        用户实际问过这一条：占位符只有 cloud.langfuse.com，自建的该怎么填。
+        """
+        body = logged_in.get("/admin/settings").text
+        assert "/api/public/otel/v1/traces" in body, "没给 Langfuse 的 traces 路径"
+        assert "4318" in body, "没给 OTLP/HTTP 的默认端口（Collector / Jaeger）"
+        assert "OTLP/HTTP" in body, "没说清要填的是 OTLP 入口而不是后端的网页地址"
+
+    def test_the_page_says_the_keys_are_langfuse_only(self, logged_in: TestClient):
+        """与 load_tracing 的实际行为对齐：两把 key 都为空时不发 Basic 头。"""
+        body = logged_in.get("/admin/settings").text
+        assert "只有 Langfuse 需要这两把 key" in body
+
+    def test_the_password_field_says_when_it_is_checked(self, logged_in: TestClient):
+        """用户问过"这个当前密码是不是只是验证用、为什么不等保存时再验"——
+        答案是保存时才验，那就得写在字段上。"""
+        body = logged_in.get("/admin/settings").text
+        assert "点「保存」时校验" in body
 
 
 # =============================================================================

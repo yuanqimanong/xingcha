@@ -150,7 +150,9 @@ class TestEnvOnly:
             },
             follow_redirects=False,
         )
-        assert r.status_code == 403
+        # 200 而不是 403：拒绝是**就地回显**在设置页上，而不是跳一个独立错误页。
+        # 断言的是实质——原因看得见、且真的什么都没改。
+        assert r.status_code == 200
         assert "环境变量" in r.text
         # 旧密码仍然有效——说明真的没改
         env_only.cookies.clear()
