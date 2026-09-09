@@ -51,8 +51,16 @@ function Up   { Compose up -d --build --remove-orphans }
 function Down { Compose down --remove-orphans }
 
 function Need-Env {
+  # 与 bash 版一致：没有 .env 就生成一份并停下来，而不是让人先去读文档。
+  # （此前这里让用户去填 XINGCHA_DOMAIN —— 那一项随 Caddy 一起删掉了，
+  #   照着做只会得到一个没有效果的配置项。）
   if (-not (Test-Path '.env')) {
-    Die ".env 不存在。先 Copy-Item .env.example .env 并填 XINGCHA_DOMAIN。"
+    Say '.env 不存在，从模板生成一份'
+    Copy-Item 'deploy/.env.example' '.env'
+    Ok '已生成 .env'
+    Write-Host '  Windows 上必须加一行 XINGCHA_DATA_MOUNT=xingcha_data（见文件头的说明）。'
+    Write-Host '  默认只绑回环；要开给局域网就把 XINGCHA_BIND_ADDR 改成 0.0.0.0。'
+    exit 0
   }
 }
 

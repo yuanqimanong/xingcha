@@ -457,3 +457,66 @@ class TestEdgeOverlay:
         assert edge["services"]["xingcha"]["environment"]["XINGCHA_PUBLIC_URL"].startswith(
             "https://"
         )
+
+
+# =============================================================================
+# 编排变量与应用设置的对齐
+# =============================================================================
+
+
+class TestEnvNameAlignment:
+    """``.env`` 里每个 ``XINGCHA_*`` 都必须被应用**认识**。
+
+    ``env_file`` 把整份 ``.env`` 注进容器，而应用会对不认识的 ``XINGCHA_*``
+    告警"拼错了？"。于是编排层自己的变量（端口、绑定地址、挂载点）会被误报——
+    用户配得完全正确却被告知拼错。
+
+    这条假警报的真正代价是**它会训练人忽略这类警告**，而那条警告存在的理由恰恰是
+    "你以为设了 XINGCHA_MAX_CONCURENCY（少一个 R），实际跑的是默认值"。
+    误报一次，真报就没人看了。
+
+    实际发生过：收敛部署时新增了 XINGCHA_BIND_ADDR / WEB_PORT / WEB_HOST，
+    于是每次启动打三条"拼错了？"。
+    """
+
+    @staticmethod
+    def _referenced() -> set[str]:
+        """部署产物里出现的所有 ``XINGCHA_*`` 名字（只看可执行部分）。"""
+        names: set[str] = set()
+        for name in ("docker-compose.yml", "docker-compose.edge.yml", "xc", "xc.ps1"):
+            text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
+            code = "\n".join(
+                ln for ln in text.splitlines() if not ln.lstrip().startswith(("#", "//", "<#"))
+            )
+            names.update(re.findall(r"\bXINGCHA_[A-Z_]+\b", code))
+        return names
+
+    def test_every_referenced_var_is_known_to_the_app(self):
+        from xingcha.config import _KNOWN_ENV_NAMES
+
+        unknown = sorted(self._referenced() - _KNOWN_ENV_NAMES)
+        assert not unknown, (
+            f"这些变量会在每次启动时被误报成「拼错了？」：{unknown}。"
+            "要么它是应用设置（加到 Settings），要么是编排层的"
+            "（登记到 contract.ORCHESTRATION_ENV_NAMES）。"
+        )
+
+    def test_the_orchestration_set_has_no_dead_entries(self):
+        """登记了却没人用的名字要清掉——否则它会掩盖真正的拼写错误。"""
+        referenced = self._referenced()
+        dead = sorted(n for n in C.ORCHESTRATION_ENV_NAMES if n not in referenced)
+        assert not dead, f"ORCHESTRATION_ENV_NAMES 里这些已经没人引用：{dead}"
+
+    def test_a_real_typo_is_still_reported(self):
+        """放行编排变量**不能**顺手把真错误也放过。"""
+        from xingcha.config import _KNOWN_ENV_NAMES
+
+        assert "XINGCHA_MAX_CONCURENCY" not in _KNOWN_ENV_NAMES
+
+    def test_the_env_example_only_documents_known_names(self):
+        text = (ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
+        from xingcha.config import _KNOWN_ENV_NAMES
+
+        documented = set(re.findall(r"^#?\s*(XINGCHA_[A-Z_]+)=", text, re.M))
+        unknown = sorted(documented - _KNOWN_ENV_NAMES)
+        assert not unknown, f".env.example 里这些名字应用不认识：{unknown}"

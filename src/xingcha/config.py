@@ -215,8 +215,32 @@ class Settings(BaseSettings):
                 log.warning("无法收紧 %s 的权限（%s）。请手动 chmod %o", d, e, C.DIR_MODE)
 
 
-#: 已知的配置项名（不含前缀），用于识别拼错的环境变量。
-_KNOWN_ENV_NAMES = {f"{ENV_PREFIX}{name.upper()}" for name in Settings.model_fields}
+def _known_env_names() -> set[str]:
+    """所有**合法**的 ``XINGCHA_*`` 变量名。
+
+    三个来源，少任何一个都会产生假警报：
+
+    1. 字段名本身；
+    2. 字段上的 ``AliasChoices``——``XINGCHA_OPENROUTER_API_KEY`` 是 v0 留下的
+       兼容名，只看字段名的话它会被判成拼错；
+    3. :data:`contract.ORCHESTRATION_ENV_NAMES`——编排层的变量（端口、绑定地址、
+       挂载点）。它们不是应用设置，但 ``env_file`` 会把整份 ``.env`` 注进容器。
+
+    假警报比漏报更伤：用户配得完全正确却被告知拼错，于是学会忽略这类警告，
+    而**真的拼错时也就没人看了**。
+    """
+    names = {f"{ENV_PREFIX}{name.upper()}" for name in Settings.model_fields}
+    for field in Settings.model_fields.values():
+        alias = field.validation_alias
+        if isinstance(alias, AliasChoices):
+            names.update(str(a) for a in alias.choices if isinstance(a, str))
+        elif isinstance(alias, str):
+            names.add(alias)
+    return names | set(C.ORCHESTRATION_ENV_NAMES)
+
+
+#: 已知的配置项名，用于识别拼错的环境变量。
+_KNOWN_ENV_NAMES = _known_env_names()
 
 
 def warn_unknown_env() -> list[str]:

@@ -782,6 +782,26 @@ UPSTREAM_ENV_WITHOUT_CATALOG: Final[frozenset[str]] = frozenset({"PERPLEXITY_API
 #:
 #: 旧名 ``XINGCHA_OPENROUTER_API_KEY`` 仍然认（见 config.Settings）——改配置名是
 #: 破坏性变更，而"升级对用户无感"是这个项目的头号承诺。
+#: 只属于**编排层**的 ``XINGCHA_*`` 变量名。
+#:
+#: 它们出现在 ``.env`` 里，供 compose 插值端口/地址/挂载点，或供 ``deploy/xc``
+#: 选择拓扑。应用本身不认识它们，而 ``env_file`` 会把整份 ``.env`` 注进容器——
+#: 所以必须在这里登记，否则 :func:`config.warn_unknown_env` 每次启动都会说
+#: 「未知的配置项 XINGCHA_WEB_PORT 被忽略（拼错了？）」。
+#:
+#: 那条假警报的代价很具体：用户配得完全正确，却被告知拼错了，于是要么去改对的
+#: 东西，要么学会忽略这类警告——而忽略之后，**真的拼错时也不会有人看**。
+ORCHESTRATION_ENV_NAMES: Final = frozenset(
+    {
+        "XINGCHA_BIND_ADDR",  # 宿主绑哪个地址（compose 的 ports）
+        "XINGCHA_WEB_PORT",  # 宿主端口（compose 的 ports）
+        "XINGCHA_WEB_HOST",  # 只用于拼 XINGCHA_PUBLIC_URL 与 xc 打印的地址
+        "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷（Windows 用后者）
+        "XINGCHA_EDGE",  # deploy/xc 的拓扑开关，等价于 --edge
+    }
+)
+
+
 ENV_DEFAULT_API_KEY: Final = "XINGCHA_API_KEY"
 ENV_DEFAULT_BASE_URL: Final = "XINGCHA_BASE_URL"
 
