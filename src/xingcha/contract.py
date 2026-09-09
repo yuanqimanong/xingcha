@@ -977,3 +977,14 @@ class RunStatus(StrEnum):
 #: 另：``supported_parameters`` 为空 list 的模型语义是「未声明」而不是「全支持」，
 #: 必须保守判成 T2/T3。
 CATALOG_NATIVE_SCHEMA_PARAM: Final = "structured_outputs"
+
+#: 目录里代表「这个模型会推理」的参数名。**两个都要认。**
+#:
+#: 实测当前这份目录：``reasoning`` 与 ``include_reasoning`` 各 304 个、成对出现；
+#: ``reasoning_effort``（思考力度可调）只有 165 个，是前者的子集。只认后者会把
+#: 一半会推理的模型误判成不会。
+CATALOG_REASONING_PARAMS: Final[frozenset[str]] = frozenset({"reasoning", "include_reasoning"})
+
+#: 目录里代表「能调工具」的参数名。T2 的**工具通道**依赖它——模型不支持 tools 时，
+#: 那条通道每次都 400（DeepSeek 思考模式就是这样），得改走提示词通道。
+CATALOG_TOOLS_PARAM: Final = "tools"

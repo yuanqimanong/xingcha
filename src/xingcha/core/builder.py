@@ -469,6 +469,84 @@ def native_ok(model_id: str, provider: Provider, *, catalog_says: bool) -> bool:
     return bool(profile.get("supports_json_schema_output", False))
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilityCheck:
+    """一条"这个模型能不能干这个"的结论。
+
+    ``state`` 三态而不是布尔：**"声明了不支持"与"没有信息"必须分开**。厂商直连的
+    ``/models`` 常常只回 id（实测 DeepSeek），那时候对着一个明明会推理的模型打叉
+    是在撒谎——不知道就说不知道。
+    """
+
+    key: str
+    label: str
+    state: str  # yes | no | unknown
+    detail: str
+
+
+def model_report(model_id: str, provider: Provider, info: Any) -> list[CapabilityCheck]:
+    """选定模型之后，这个模型到底能干什么。
+
+    这一份是给**保存之前**看的。此前所有这类判定都只在调用那一刻生效：判档降级
+    在保存后才提示，能力不支持要等第一次真调用才报错，T2 的通道选错了同样如此。
+    而这些信息**在选完模型的那一刻就全都知道了**——分别来自模型目录与 pydantic-ai
+    的 model profile。
+
+    ``info`` 是 :class:`ModelInfo` 或 ``None``（目录里没有这个 id）。
+    """
+    known = info is not None and info.declares_capabilities
+    profile: Any = {}
+    try:
+        profile = make_model(model_id, provider).profile
+    except Exception:  # 模型名不被 provider 接受——那是另一条错误路径，这里不掺和
+        profile = {}
+
+    def tri(ok: bool | None) -> str:
+        return "unknown" if ok is None else ("yes" if ok else "no")
+
+    checks = [
+        CapabilityCheck(
+            "reasoning",
+            "深度思考",
+            tri(info.supports_reasoning if known else None),
+            "目录里有 reasoning 参数才算。没有的模型勾了「深度思考」也不会真的想。",
+        ),
+        CapabilityCheck(
+            "web_search",
+            "联网搜索",
+            # **问 profile，不问目录。** 目录里的 web_search_options 只有 17 个模型
+            # 有，而实测 glm-5.3-flash 经 OpenRouter 能搜——OpenRouter 自己有一层
+            # 通用的搜索插件，与模型声明无关。这里的判据必须是那道真闸。
+            tri(bool(profile.get("openai_chat_supports_web_search", False))),
+            "由上游去搜。OpenRouter 这类上游整体放行，厂商直连一律不放行。",
+        ),
+        CapabilityCheck(
+            "native_schema",
+            "原生结构化输出（T1）",
+            tri(
+                native_ok(model_id, provider, catalog_says=info.supports_native_schema)
+                if known
+                else None
+            ),
+            "目录与 pydantic-ai 的 profile 都点头才算。不点头会自动降级到 T2。",
+        ),
+        CapabilityCheck(
+            "tools",
+            "工具调用（T2 的工具通道）",
+            tri(info.supports_tools if known else None),
+            "不支持时 T2 请把「schema 送达方式」改成提示词通道，否则每次都 400。",
+        ),
+        CapabilityCheck(
+            "multimodal",
+            "图片 / 文件输入",
+            tri(bool(info.input_modalities - {"text"}) if known else None),
+            "**即使模型支持，星槎现在也只发文本**——收到非文本 content part 会明确报错，"
+            "而不是静默丢掉。这一栏是给你选模型时参考的。",
+        ),
+    ]
+    return checks
+
+
 def make_model(model_id: str, provider: Provider) -> OpenAIChatModel:
     """构造 model。
 

@@ -1711,3 +1711,42 @@ textarea {
   margin-top: auto;
   padding-top: var(--s3);
 }
+
+/* --- 选定模型的能力速览 --- */
+.model-report {
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  background: var(--surface-2);
+}
+.model-report-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  font-size: 12px;
+  margin-bottom: var(--s2);
+}
+.caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+}
+.cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  /* 有 title 才提示可悬停——每一条的理由都在 title 里 */
+  cursor: help;
+}
+.cap-mark {
+  font-weight: 700;
+  width: 1em;
+  text-align: center;
+}
+.cap.yes .cap-mark { color: var(--ok); }
+.cap.no .cap-mark { color: var(--danger); }
+.cap.unknown .cap-mark { color: var(--ink-3); }
+.cap.no .cap-label,
+.cap.unknown .cap-label { color: var(--ink-3); }

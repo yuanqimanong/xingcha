@@ -86,6 +86,12 @@
               模型目录还没拉到——先到<a href="/admin/upstreams">上游</a>页配好 key。
             {% endif %}
           </div>
+          {# 选完模型就报它能干什么，不用等到第一次真调用。
+             绑 change 而不是 keyup：这个输入框带 datalist，边打字边请求会为每一个
+             中间态发一次，而中间态没有一个是真模型名。 #}
+          <div id="model-report"
+               hx-get="/admin/agents/model-report" hx-trigger="change from:#model, load"
+               hx-include="#model" hx-target="#model-report" hx-swap="innerHTML"></div>
         </div>
       </div>
       <div class="form-row">

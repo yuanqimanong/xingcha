@@ -778,3 +778,85 @@ class TestTryRun:
             ("assistant", "负面"),
             ("user", "请判断情绪：你好"),
         ], sent
+
+
+# =============================================================================
+# 选定模型的能力速览
+# =============================================================================
+
+
+class TestModelReport:
+    """**选完模型就该知道它能干什么，不用等第一次真调用。**
+
+    此前每一条这类判定都只在调用那一刻生效：判档降级要保存之后才提示、能力不支持
+    要真调用才报错、T2 的通道选错了同样如此。而这些信息在选完模型那一刻就全知道
+    ——一半来自模型目录，一半来自 pydantic-ai 的 model profile。
+    """
+
+    def _report(self, client: TestClient, model: str) -> str:
+        return client.get("/admin/agents/model-report", params={"model": model}).text
+
+    def test_it_renders_for_a_known_model(self, logged_in: TestClient):
+        body = self._report(logged_in, "openai/gpt-5")
+        for label in ("深度思考", "联网搜索", "原生结构化输出", "工具调用", "图片 / 文件输入"):
+            assert label in body, f"少了「{label}」"
+
+    def test_an_empty_model_renders_nothing(self, logged_in: TestClient):
+        assert self._report(logged_in, "").strip() == ""
+
+    def test_the_literal_route_is_not_eaten_by_the_slug_route(self, logged_in: TestClient):
+        """**字面路由必须注册在 ``/agents/{slug}`` 之前。**
+
+        被通配吞掉是静默的：请求落进 agent_edit，报一句"未知的 Agent：model-report"
+        ——而那句话指向一个根本不存在的问题。踩过一次。
+        """
+        r = logged_in.get("/admin/agents/model-report", params={"model": "openai/gpt-5"})
+        assert r.status_code == 200
+        assert "model_not_found" not in r.text
+
+    def test_no_catalog_info_says_unknown_not_no(self):
+        """**"声明了不支持"与"没有信息"必须分开。**
+
+        厂商直连的 /models 常常只回 {id, object, owned_by}（实测 DeepSeek 就是），
+        那时候 supported_parameters 是空的。把空当成"什么都不支持"，页面就会对着
+        一个明明会推理的模型打叉——而那是错的。
+        """
+        from xingcha.core.models_catalog import ModelInfo, parse_models
+
+        bare = parse_models({"data": [{"id": "deepseek-v4-flash", "object": "model"}]})
+        assert bare["deepseek-v4-flash"].declares_capabilities is False
+
+        rich = ModelInfo(id="x", name=None, created=None, supported=frozenset({"tools"}))
+        assert rich.declares_capabilities is True
+
+    def test_reasoning_reads_both_parameter_names(self):
+        """``reasoning`` 与 ``include_reasoning`` 成对出现，只认一个会漏掉一半。
+
+        实测当前目录：两者各 304 个，而 ``reasoning_effort`` 只有 165——那是子集。
+        """
+        from xingcha.core.models_catalog import ModelInfo
+
+        for param in ("reasoning", "include_reasoning"):
+            info = ModelInfo(id="x", name=None, created=None, supported=frozenset({param}))
+            assert info.supports_reasoning, param
+        assert not ModelInfo(
+            id="x", name=None, created=None, supported=frozenset({"temperature"})
+        ).supports_reasoning
+
+    def test_modalities_and_context_survive_parsing(self):
+        """多模态与上下文长度此前被解析器丢掉了。"""
+        from xingcha.core.models_catalog import parse_models
+
+        got = parse_models(
+            {
+                "data": [
+                    {
+                        "id": "m",
+                        "context_length": 128000,
+                        "architecture": {"input_modalities": ["text", "image", "file"]},
+                    }
+                ]
+            }
+        )["m"]
+        assert got.context_length == 128000
+        assert got.input_modalities == frozenset({"text", "image", "file"})

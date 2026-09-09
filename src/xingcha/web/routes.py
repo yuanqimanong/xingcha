@@ -1754,6 +1754,46 @@ def _settings_view(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _model_report_ctx(request: Request, model: str) -> dict[str, Any]:
+    from ..core import builder
+
+    state = request.app.state.xc
+    model = model.strip()
+    if not model:
+        return {"model": "", "checks": [], "info": None, "no_catalog": False}
+    info = state.catalog.get(model)
+    known = info is not None and info.declares_capabilities
+    return {
+        "model": model,
+        "info": info,
+        # 目录里根本没有能力信息（厂商直连的 /models 常常只回 id）——那时候满屏
+        # 打叉是在撒谎。这一位让模板改说"不知道"。
+        "no_catalog": not known,
+        "checks": builder.model_report(model, state.provider, info)
+        if state.provider is not None
+        else [],
+    }
+
+
+@router.get("/agents/model-report")
+async def agent_model_report(request: Request) -> Response:
+    """选完模型就告诉你它能干什么，**不用等到第一次真调用**。
+
+    **这条必须注册在 ``/agents/{slug}`` 之前。** FastAPI 按注册顺序匹配，字面路由
+    被通配路由吞掉是静默的——请求落进 agent_edit，然后报一句"未知的 Agent：
+    model-report"，而那句话指向一个根本不存在的问题。踩过一次。
+
+    此前所有这类判定都只在调用那一刻生效：判档降级在保存后才提示、能力不支持要等
+    真调用才报错、T2 的通道选错了同样如此。而这些信息在选完模型的那一刻就全都知道
+    ——一半来自模型目录，一半来自 pydantic-ai 的 model profile。
+    """
+    await require_admin(request)
+    model = request.query_params.get("model", "")
+    return security_headers(
+        _render(request, "_model_report.html", _model_report_ctx(request, model))
+    )
+
+
 @router.get("/agents/new")
 async def agent_new(request: Request) -> Response:
     await require_admin(request)

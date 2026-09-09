@@ -1,0 +1,31 @@
+{% if model %}
+<div class="model-report">
+  <div class="model-report-head">
+    <span class="mono">{{ model }}</span>
+    {% if info and info.context_length %}
+    <span class="dim small">上下文 {{ '{:,}'.format(info.context_length) }} token</span>
+    {% endif %}
+  </div>
+
+  {% if no_catalog %}
+  <div class="hint">
+    这个上游的模型目录**没有能力信息**（厂商直连的 <code>/models</code> 常常只回一个 id）。
+    下面一律显示"不确定"——不知道就说不知道，比对着一个明明会推理的模型打叉强。
+    要确认就用下面的「试运行」跑一次。
+  </div>
+  {% endif %}
+
+  <div class="caps">
+    {% for c in checks %}
+    <div class="cap {{ c.state }}" title="{{ c.detail }}">
+      <span class="cap-mark">{% if c.state == 'yes' %}✓{% elif c.state == 'no' %}✕{% else %}?{% endif %}</span>
+      <span class="cap-label">{{ c.label }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% for c in checks %}{% if c.state == 'no' %}
+  <div class="hint mt2"><strong>{{ c.label }}</strong>：{{ c.detail }}</div>
+  {% endif %}{% endfor %}
+</div>
+{% endif %}

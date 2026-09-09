@@ -42,6 +42,30 @@ class ModelInfo:
     cache_read_price: Decimal | None = None
     cache_write_price: Decimal | None = None
 
+    #: ``architecture.input_modalities``。实测取值有 text / image / file / audio / video。
+    input_modalities: frozenset[str] = field(default_factory=frozenset)
+    #: ``context_length``。展示用——一个 8k 上下文的模型配上长提示词会在运行时才炸。
+    context_length: int | None = None
+
+    @property
+    def declares_capabilities(self) -> bool:
+        """这条记录**有没有**能力信息。
+
+        与"声明了不支持"必须分开。厂商直连的 ``/models`` 常常只回
+        ``{id, object, owned_by}``（实测 DeepSeek 就是），那时候
+        ``supported_parameters`` 是空的——把它当成"什么都不支持"会在页面上对着
+        一个明明能推理的模型打叉。没有信息就说没有信息。
+        """
+        return bool(self.supported or self.input_modalities or self.context_length)
+
+    @property
+    def supports_reasoning(self) -> bool:
+        return bool(self.supported & C.CATALOG_REASONING_PARAMS)
+
+    @property
+    def supports_tools(self) -> bool:
+        return C.CATALOG_TOOLS_PARAM in self.supported
+
     @property
     def supports_native_schema(self) -> bool:
         """是否支持原生结构化输出。
@@ -84,6 +108,10 @@ def parse_models(payload: dict) -> dict[str, ModelInfo]:
             name=m.get("name"),
             created=m.get("created") if isinstance(m.get("created"), int) else None,
             supported=frozenset(m.get("supported_parameters") or []),
+            input_modalities=frozenset((m.get("architecture") or {}).get("input_modalities") or []),
+            context_length=m.get("context_length")
+            if isinstance(m.get("context_length"), int)
+            else None,
             prompt_price=_dec(pricing.get("prompt")),
             completion_price=_dec(pricing.get("completion")),
             cache_read_price=_dec(pricing.get("input_cache_read")),
