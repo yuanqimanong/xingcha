@@ -782,6 +782,18 @@ UPSTREAM_ENV_WITHOUT_CATALOG: Final[frozenset[str]] = frozenset({"PERPLEXITY_API
 #:
 #: 旧名 ``XINGCHA_OPENROUTER_API_KEY`` 仍然认（见 config.Settings）——改配置名是
 #: 破坏性变更，而"升级对用户无感"是这个项目的头号承诺。
+#: 主题 cookie 的名字。
+#:
+#: 用 cookie 而不是 localStorage：**服务端渲染时就得知道选了哪个**，否则
+#: `data-theme` 要靠 JS 在首屏之后补上，用户会看到一次闪白/闪黑。而内联 script
+#: 又被 CSP（``script-src 'self'``）挡着，加不进 <head>。
+THEME_COOKIE: Final = "xc_theme"
+
+#: 三态主题的闭集。``system`` 表示不写 ``data-theme``，交给 CSS 的
+#: ``prefers-color-scheme`` 决定——这是默认，也是唯一"跟着系统变"的取值。
+THEMES: Final = frozenset({"system", "light", "dark"})
+
+
 #: 只属于**编排层**的 ``XINGCHA_*`` 变量名。
 #:
 #: 它们出现在 ``.env`` 里，供 compose 插值端口/地址/挂载点，或供 ``deploy/xc``

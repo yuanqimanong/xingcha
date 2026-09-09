@@ -633,6 +633,84 @@ class TestSettingsCopy:
         assert "点「保存」时校验" in body
 
 
+class TestThemeSwitch:
+    """三态主题：跟随系统 / 亮 / 暗。
+
+    用 cookie 而不是 localStorage：**服务端渲染时就得知道选了哪个**，否则
+    `data-theme` 要靠 JS 在首屏之后补，用户会看到一次闪白/闪黑。而内联 script 又被
+    CSP（``script-src 'self'``）挡着，加不进 <head>。
+
+    此前 `data-theme` 一直是空串、也没有任何切换入口——两套配色都写了，用户却选不了。
+    """
+
+    def _post(self, client: TestClient, **data):
+        client.get("/admin")
+        return client.post(
+            "/admin/theme",
+            data={"csrf_token": csrf_of(client), **data},
+            follow_redirects=False,
+        )
+
+    @staticmethod
+    def _attr(html: str) -> str:
+        m = re.search(r'<html[^>]*data-theme="([^"]*)"', html)
+        assert m, "根元素上没有 data-theme"
+        return m.group(1)
+
+    def test_default_follows_the_system(self, logged_in: TestClient):
+        """默认不写 data-theme，交给 CSS 的 prefers-color-scheme。
+
+        写死一个值就等于替用户的系统设置做决定，而那个决定在深夜会很刺眼。
+        """
+        assert self._attr(logged_in.get("/admin").text) == ""
+
+    def test_switching_sticks_and_returns_to_where_you_were(self, logged_in: TestClient):
+        r = self._post(logged_in, value="light", back="/admin/logs")
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/logs"
+        assert self._attr(logged_in.get("/admin/logs").text) == "light"
+
+    def test_an_off_site_back_is_refused(self, logged_in: TestClient):
+        """不校验 ``back`` 的话这就是一个**开放重定向**。
+
+        ``/admin/theme`` 带上 ``back=https://坏人.com`` 就能把已登录的管理员送出去，
+        而链接看起来完全是自己站里的。
+        """
+        for hostile in ("https://evil.example.com/", "//evil.example.com/", "/etc/passwd"):
+            r = self._post(logged_in, value="dark", back=hostile)
+            assert r.headers["location"] == "/admin", f"{hostile} 没被挡住"
+
+    def test_an_unknown_value_is_refused(self, logged_in: TestClient):
+        assert self._post(logged_in, value="neon").status_code == 403
+
+    def test_a_hostile_cookie_never_reaches_the_attribute(self, logged_in: TestClient):
+        """cookie 是用户可写的，不能直接塞进 HTML 属性。
+
+        闭集之外的值一律当作"没设"——这样 ``xc_theme='"><script>`` 只是被忽略，
+        而不是被写进 ``<html data-theme="...">``。
+        """
+        logged_in.cookies.set("xc_theme", '"><script>alert(1)</script>')
+        body = logged_in.get("/admin").text
+        assert self._attr(body) == ""
+        assert "<script>alert(1)</script>" not in body
+
+    def test_the_login_page_is_always_dark(self, client: TestClient):
+        """**登录页不跟随主题。**
+
+        银河是夜景——"亮色银河"是个矛盾：白底上的星点不像星，像页面没渲染干净。
+        与其做一套注定难看的亮色，不如让这一页只有一种样子。
+        """
+        client.cookies.set("xc_theme", "light")
+        assert self._attr(client.get("/admin/login").text) == "dark"
+
+    def test_the_switch_is_actually_on_the_page(self, logged_in: TestClient):
+        """两套配色写了却没有入口，等于没做。"""
+        body = logged_in.get("/admin").text
+        assert 'action="/admin/theme"' in body
+        for value in C.THEMES:
+            assert f'value="{value}"' in body, f"切换器缺 {value}"
+
+
 # =============================================================================
 # 密钥页
 # =============================================================================
@@ -859,3 +937,99 @@ class TestAgentExport:
     def test_export_needs_login(self, client: TestClient):
         r = client.get("/admin/agents/extract/export", follow_redirects=False)
         assert r.status_code == 303
+
+
+class TestCsrfCookieLifetime:
+    """CSRF cookie 必须和会话 cookie **同寿**。
+
+    此前它没有 max_age，也就是浏览器会话级：关掉浏览器再打开，``xc_session``
+    还在（7 天），``xc_csrf`` 已经没了。后果不是"要重新登录"——那反而好懂；
+    而是那些**从 cookie 里取令牌**的表单静默 403，同一页里自己签发令牌的表单
+    照常工作。症状是"只有某几个按钮不好使"，而两者的区别在模板里看不出来。
+
+    侧栏的主题切换器正是前一类（它在每一页上，没有自己的渲染入口）。
+    """
+
+    @staticmethod
+    def _max_age(raw: str) -> int | None:
+        m = re.search(r"Max-Age=(\d+)", raw, re.I)
+        return int(m.group(1)) if m else None
+
+    def test_both_cookies_share_a_lifetime(self, client: TestClient):
+        r = client.post(
+            "/admin/login",
+            data={"password": PASSWORD, "confirm": PASSWORD},
+            follow_redirects=False,
+        )
+        # `headers.items()` 会把多个 Set-Cookie 合成一条（httpx 的行为），
+        # 于是只有第一个 cookie 能被匹配到 —— 必须用 get_list。
+        ages = {
+            name: self._max_age(v)
+            for v in r.headers.get_list("set-cookie")
+            for name in ("xc_session", "xc_csrf")
+            if v.startswith(f"{name}=")
+        }
+        assert ages.keys() == {"xc_session", "xc_csrf"}, f"少签了 cookie：{ages}"
+        assert ages["xc_csrf"] is not None, "xc_csrf 没有 Max-Age —— 关掉浏览器就没了"
+        assert ages["xc_csrf"] == ages["xc_session"], f"两个 cookie 寿命不一致：{ages}"
+
+    def test_a_page_issued_token_also_carries_a_lifetime(self, logged_in: TestClient):
+        """页面自己签发令牌那条路径（首次访问、cookie 不存在时）也要带 Max-Age。"""
+        logged_in.cookies.delete("xc_csrf")
+        r = logged_in.get("/admin/keys")
+        raw = next((v for v in r.headers.get_list("set-cookie") if v.startswith("xc_csrf=")), "")
+        assert raw, "没有重新签发 xc_csrf"
+        assert self._max_age(raw), f"重新签发的 xc_csrf 没有 Max-Age：{raw}"
+
+
+class TestThemeTokensStayInSync:
+    """两个暗色 token 块必须声明**完全相同**的变量名。
+
+    重复是 CSS 逼出来的：一份在 ``@media (prefers-color-scheme: dark)`` 里（跟随
+    系统），一份在 ``:root[data-theme="dark"]`` 里（用户显式选暗色，以及登录页强制
+    暗色）。没有办法在纯 CSS 里让一个声明块同时挂在这两个上下文上。
+
+    既然重复不可避免，就必须让**漏一个**这件事变红。漏了的后果实测过：登录页强制
+    ``data-theme="dark"``，而 ``--star-opacity`` 只在 @media 那份里定义，于是回落到
+    ``:root`` 的 0 —— **星星全没了，页面一片黑**，而系统本来就是暗色的人完全看不出
+    问题（对他们两个块都命中）。
+    """
+
+    @staticmethod
+    def _names(block: str) -> set[str]:
+        return set(re.findall(r"(--[a-z0-9-]+)\s*:", block))
+
+    @pytest.fixture(scope="class")
+    def css(self) -> str:
+        return (
+            Path(__file__).resolve().parent.parent / "src/xingcha/web/static/style.css"
+        ).read_text(encoding="utf-8")
+
+    def test_both_dark_blocks_declare_the_same_tokens(self, css: str):
+        media = css[css.index('  :root:not([data-theme="light"]) {') :]
+        media = media[: media.index("\n  }")]
+        explicit = css[css.index(':root[data-theme="dark"] {') :]
+        explicit = explicit[: explicit.index("\n}")]
+
+        only_media = self._names(media) - self._names(explicit)
+        only_explicit = self._names(explicit) - self._names(media)
+        assert not only_media, f"只在 @media 里定义了：{sorted(only_media)}"
+        assert not only_explicit, f"只在 [data-theme=dark] 里定义了：{sorted(only_explicit)}"
+
+    def test_the_galaxy_needs_its_tokens_in_both(self, css: str):
+        """点名银河那几个：它们是最容易漏的——只有登录页用，而登录页恒为
+        ``data-theme="dark"``，也就是**只走显式那一块**。"""
+        explicit = css[css.index(':root[data-theme="dark"] {') :]
+        explicit = explicit[: explicit.index("\n}")]
+        for token in ("--star-opacity", "--star-rgb", "--milk-core", "--milk-spine"):
+            assert token in explicit, f"[data-theme=dark] 里缺 {token}，登录页会一片黑"
+
+    def test_stars_are_visible_in_the_dark_palette(self, css: str):
+        """``--star-opacity`` 在暗色里必须是 1。
+
+        亮色里它是 0（白底上的星点像脏点），所以这一格写错的表现不是"难看"，
+        而是"星星完全消失"，且不报任何错。
+        """
+        explicit = css[css.index(':root[data-theme="dark"] {') :]
+        explicit = explicit[: explicit.index("\n}")]
+        assert re.search(r"--star-opacity:\s*1\s*;", explicit)

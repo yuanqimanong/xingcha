@@ -25,6 +25,22 @@
       {{ navlink('/admin/logs', '调用记录', '<path d="M3 3h10v10H3z"/><path d="M5.5 6.5h5M5.5 9.5h3"/>') }}
       {{ navlink('/admin/settings', '设置', '<circle cx="8" cy="8" r="2"/><path d="M8 1.5v1.8M8 12.7v1.8M14.5 8h-1.8M3.3 8H1.5M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3M12.6 12.6l-1.3-1.3M4.7 4.7 3.4 3.4"/>') }}
     </nav>
+    {# 主题切换。三个提交按钮，**不用 JS**：一个 select 要自动提交就得挂 change
+       事件，而这一页的 JS 全部走外部 app.js（CSP 挡内联脚本）——为一个显示偏好
+       多一处脚本依赖不值得。当前选中的那个按钮 disabled，点了也没意义。 #}
+    <form class="theme-switch" method="post" action="/admin/theme">
+      <input type="hidden" name="csrf_token" value="{{ csrf_theme }}">
+      <input type="hidden" name="back" value="{{ current }}">
+      {% for value, label, title in [
+        ('system', '自动', '跟随系统'),
+        ('light', '亮', '亮色'),
+        ('dark', '暗', '暗色')
+      ] %}
+      <button type="submit" name="value" value="{{ value }}" title="{{ title }}"
+              class="{% if theme_choice == value %}on{% endif %}"
+              {% if theme_choice == value %}disabled{% endif %}>{{ label }}</button>
+      {% endfor %}
+    </form>
     <div class="sidebar-foot">
       <span>v{{ version }} · 契约 v{{ contract }}</span>
       <a href="/admin/logout" class="btn ghost sm" title="退出登录">退出</a>

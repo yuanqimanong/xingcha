@@ -29,6 +29,13 @@ from conftest_web import ADMIN_PASSWORD, LiveSite, login
 
 pytestmark = pytest.mark.browser
 
+# 点"页面里那个提交按钮"必须限定到 main。
+#
+# 侧栏底部有主题切换器（三个 type=submit），而它在 DOM 里**先于** main——裸写
+# `form button[type=submit]` 会命中 4 个，第一个还是 disabled 的"自动"，于是
+# playwright 等满 30 秒超时。报错说的是"元素不可点击"，离根因（选择器撞了一个
+# 全站都有的表单）很远。
+
 #: 在页面上下文里拿一把 key 去打 /v1，返回状态码。
 #: 抽成常量是为了让两处用法一致——写两遍迟早有一处漏掉 Bearer 前缀。
 #: 同上，但取回 /v1/models 的 JSON。
@@ -321,7 +328,7 @@ class TestAgents:
     def test_create_an_agent_end_to_end(self, site: LiveSite, page):
         login(page, site)
         self._fill_new(page, site, slug="extract")
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         assert "已保存" in page.inner_text("body")
@@ -335,7 +342,7 @@ class TestAgents:
         """
         login(page, site)
         self._fill_new(page, site, slug="extract")
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/keys", wait_until="networkidle")
@@ -383,7 +390,7 @@ class TestAgents:
             slug="redos",
             schema='{"type":"object","properties":{"x":{"type":"string","pattern":"(a+)+$"}}}',
         )
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
         body = page.inner_text("body")
         assert "pattern" in body
@@ -396,7 +403,7 @@ class TestAgents:
         """
         login(page, site)
         self._fill_new(page, site, slug="frozen")
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/agents/frozen", wait_until="networkidle")
@@ -418,12 +425,12 @@ class TestAgents:
         """
         login(page, site)
         self._fill_new(page, site, slug="versioned")
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/agents/versioned", wait_until="networkidle")
         page.fill("#instructions", "改过的提示词——第二版。")
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
         assert "v2" in page.inner_text("body")
 
@@ -453,7 +460,7 @@ class TestAgents:
         """导出是「低锁定」的兑现方式，按钮必须真的给出文件。"""
         login(page, site)
         self._fill_new(page, site, slug="exportme")
-        page.click("form button[type=submit]")
+        page.click("main form button[type=submit]")
         page.wait_for_load_state("networkidle")
 
         page.goto(f"{site.base_url}/admin/agents/exportme", wait_until="networkidle")

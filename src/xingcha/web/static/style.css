@@ -61,14 +61,10 @@
   --auth-card-bg: rgba(255, 255, 255, 0.86);
   --auth-card-rule: var(--rule);
   --auth-card-sheen: rgba(255, 255, 255, 0.9);
-  /* 亮色主题不画银河：白底上的星点只会像脏点。带与星都压到几乎不可见，
-     留一层极淡的水墨渐层。 */
-  --star-opacity: 0;
-  --star-rgb: 14, 110, 110;
-  --milk-core: rgba(14, 110, 110, 0.06);
-  --milk-halo: rgba(14, 110, 110, 0.035);
-  --milk-spine: rgba(14, 110, 110, 0.05);
-  --milk-dust: rgba(255, 255, 255, 0.6);
+  /* 银河的 token 只在暗色里定义——**登录页恒为暗色**（见 routes.login_page）。
+     亮色不画银河不是"简化"，是因为白底上的星点不像星、像页面没渲染干净；
+     与其做一套注定难看的亮色，不如让那一页只有一种样子。
+     这里留的只是兜底：万一有人手动给登录页强制亮色，至少还有底色。 */
   --s7: 48px;
   --s8: 64px;
 
@@ -118,11 +114,6 @@
     --auth-card-bg: rgba(22, 29, 36, 0.78);
     --auth-card-rule: rgba(120, 205, 196, 0.16);
     --auth-card-sheen: rgba(255, 255, 255, 0.06);
-  /* 银河：星点近白微偏青；核心是主色调亮之后的一层薄雾。 */
-  --star-rgb: 232, 244, 242;
-  --milk-core: rgba(150, 214, 205, 0.16);
-  --milk-halo: rgba(96, 165, 175, 0.1);
-  --milk-dust: rgba(6, 10, 13, 0.5);
     /* 银河：星点近白微偏青；核心是主色调亮之后的一层薄雾。 */
     --star-opacity: 1;
     --star-rgb: 232, 244, 242;
@@ -166,6 +157,18 @@
   --auth-card-bg: rgba(22, 29, 36, 0.78);
   --auth-card-rule: rgba(120, 205, 196, 0.16);
   --auth-card-sheen: rgba(255, 255, 255, 0.06);
+  /* 银河：星点近白微偏青；核心是主色调亮之后的一层薄雾。
+     **这一套必须与上面 @media 那份逐字一致**——两处是 CSS 逼出来的重复
+     （一个在 @media 里，没法合并），所以由 tests/test_admin.py 的
+     TestThemeTokensStayInSync 断言两边的 token 名字集合相同。
+     漏一个的后果实测过：登录页强制 data-theme="dark"，而 --star-opacity 只在
+     @media 那份里定义 → 回落到 :root 的 0 → **星星全没了，页面一片黑**。 */
+  --star-opacity: 1;
+  --star-rgb: 232, 244, 242;
+  --milk-core: rgba(178, 226, 218, 0.4);
+  --milk-halo: rgba(104, 168, 180, 0.22);
+  --milk-spine: rgba(226, 244, 240, 0.3);
+  --milk-dust: rgba(4, 8, 11, 0.72);
 }
 
 /* ==========================================================================
@@ -257,6 +260,18 @@ kbd {
 @media (max-width: 860px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* 折叠成顶栏之后，切换器不该横跨整行——它是配置，不是导航。
+     收成一小块靠右，和"退出"同一层级。
+     `align-self` 而不是 `margin-left: auto`：这时 .sidebar 是 column 方向的
+     flex 容器，auto 边距在交叉轴上不起作用，写了也还是贴左。 */
+  .theme-switch {
+    align-self: flex-end;
+    width: max-content;
+    margin: 0 var(--s4) var(--s3);
+  }
+  .theme-switch button {
+    padding: 4px var(--s3);
   }
 }
 
@@ -918,6 +933,42 @@ textarea {
 }
 .reveal button:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+/* 主题切换。三个小按钮挤在侧栏底部，是配置而不是导航——所以刻意做得比导航弱。 */
+.theme-switch {
+  display: flex;
+  gap: 1px;
+  margin: 0 var(--s4) var(--s2);
+  padding: 2px;
+  border-radius: var(--r2);
+  background: var(--recess);
+}
+.theme-switch button {
+  flex: 1;
+  padding: 4px 0;
+  /* 不许折行。"自动"两个字被挤成两行的时候，整个切换器的高度会跳一下，
+     而它就在侧栏底部——看起来像布局坏了。 */
+  white-space: nowrap;
+  border: 0;
+  border-radius: calc(var(--r2) - 2px);
+  background: transparent;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.theme-switch button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+/* 当前选中的那个：既高亮又 disabled——点它没有任何效果，不该看起来可点。 */
+.theme-switch button.on {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+  cursor: default;
 }
 
 /* --- 登录页 --- */

@@ -200,12 +200,27 @@ def _render(request: Request, template: str, ctx: dict[str, Any]) -> HTMLRespons
         "public_url": state.settings.public_url
         or f"http://{state.settings.host}:{state.settings.port}",
         "flash": None,
-        "theme": "",
+        # 空串 = 不写 data-theme，交给 CSS 的 prefers-color-scheme。
+        # 从 cookie 读，所以首屏渲染出来就是对的，不会闪一下再换。
+        "theme": read_theme(request),
+        # 切换器要高亮"当前选的是哪个"，而 theme 把 system 折叠成了空串——
+        # 那个折叠是给 data-theme 用的，不能拿来做 UI 状态。
+        "theme_choice": request.cookies.get(C.THEME_COOKIE, "system"),
+        # 切换表单的 CSRF。占位，下面按"这一页自己有没有 csrf"决定实际取值。
+        "csrf_theme": "",
         # 密码长度下限：前端 minlength 与后端校验必须是同一个值，否则用户会被一个
         # 说不清的错误挡住（前端放过、后端拒绝）。
         "min_password_len": C.MIN_ADMIN_PASSWORD_LEN,
     }
-    resp = templates.TemplateResponse(request, template, {**base, **ctx})
+    merged = {**base, **ctx}
+    # 侧栏那个主题表单的令牌：**优先用这一页自己签发的**，回落到请求里的 cookie。
+    #
+    # 只读 cookie 是不够的，而且会真的坏：xc_csrf 没有 max_age（浏览器会话级），
+    # 而 xc_session 有 7 天——重启浏览器之后会话还在、CSRF cookie 已经没了，
+    # 于是侧栏表单拿到空串，点主题直接 403。而同一页里那些自己传了 csrf 的表单
+    # 照常工作，所以症状是"只有切主题不好使"。
+    merged["csrf_theme"] = merged.get("csrf") or request.cookies.get("xc_csrf", "")
+    resp = templates.TemplateResponse(request, template, merged)
     return security_headers(resp)  # type: ignore[return-value]
 
 
@@ -272,10 +287,26 @@ async def login_page(request: Request) -> Response:
             "action": "/admin/login",
             "error": None,
             "csrf": csrf.value,
+            # **登录页永远是暗色**，不跟随主题。银河是夜景——"亮色银河"是个矛盾：
+            # 白底上的星点不像星，像页面没渲染干净。与其做一套注定难看的亮色，
+            # 不如让这一页只有一种样子。后台各页照旧跟随用户的选择。
+            "theme": "dark",
         },
     )
     csrf.apply(resp)
     return resp
+
+
+def read_theme(request: Request) -> str:
+    """当前主题，用于 ``<html data-theme="...">``。
+
+    返回 ``""``（跟随系统）、``"light"`` 或 ``"dark"``。cookie 里是别的值就当没设——
+    那一格是用户可写的，不能直接塞进 HTML 属性。
+    """
+    value = request.cookies.get(C.THEME_COOKIE, "system")
+    if value not in C.THEMES or value == "system":
+        return ""
+    return value
 
 
 def cookie_secure(request: Request) -> bool:
@@ -304,6 +335,7 @@ class _Csrf:
     value: str
     fresh: bool
     secure: bool = True
+    max_age: int = 0
 
     def apply(self, resp: Response) -> None:
         if self.fresh:
@@ -314,6 +346,11 @@ class _Csrf:
                 samesite="strict",
                 secure=self.secure,
                 path="/admin",
+                # **必须和会话同寿**。此前没有 max_age，也就是浏览器会话级：
+                # 关掉浏览器再打开，xc_session 还在（它有 7 天），xc_csrf 已经没了。
+                # 于是任何"从 cookie 里取令牌"的表单都会 403，而同一页里自己签发
+                # 令牌的表单照常工作——症状是"只有某几个按钮不好使"。
+                max_age=self.max_age or None,
             )
 
 
@@ -323,7 +360,12 @@ async def _ensure_csrf_cookie(request: Request) -> _Csrf:
         return _Csrf(existing, fresh=False)
     import secrets
 
-    return _Csrf(secrets.token_urlsafe(32), fresh=True, secure=cookie_secure(request))
+    return _Csrf(
+        secrets.token_urlsafe(32),
+        fresh=True,
+        secure=cookie_secure(request),
+        max_age=request.app.state.xc.settings.session_ttl_hours * 3600,
+    )
 
 
 @router.post("/login")
@@ -385,7 +427,14 @@ async def login(
         max_age=state.settings.session_ttl_hours * 3600,
     )
     resp.set_cookie(
-        "xc_csrf", new.csrf, httponly=False, samesite="strict", secure=secure, path="/admin"
+        "xc_csrf",
+        new.csrf,
+        httponly=False,
+        samesite="strict",
+        secure=secure,
+        path="/admin",
+        # 与上面的会话 cookie 同寿，理由见 _Csrf.apply
+        max_age=state.settings.session_ttl_hours * 3600,
     )
     return security_headers(resp)
 
@@ -403,8 +452,43 @@ def _login_error(request: Request, message: str, *, setup: bool = False) -> Resp
             "action": "/admin/login",
             "error": message,
             "csrf": "",
+            "theme": "dark",  # 与登录页一致，见 login_page
         },
     )
+
+
+@router.post("/theme")
+async def set_theme(
+    request: Request,
+    value: str = Form(...),
+    back: str = Form(default="/admin"),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """切换主题。
+
+    POST 而不是 GET：它改状态。改的只是一个显示偏好，但"改状态的 GET"会被浏览器
+    预取、被历史记录重放，而且会让 CSRF 那套纪律出现一个例外——例外比这个功能贵。
+
+    ``back`` 必须是站内路径。不校验的话这就是一个开放重定向：
+    ``/admin/theme`` 带上 ``back=https://坏人.com`` 就能把已登录的管理员送出去，
+    而链接看起来完全是自己站里的。
+    """
+    await guard_mutation(request, csrf_token)
+    if value not in C.THEMES:
+        raise Denied(f"未知的主题：{value}")
+
+    target = back if back.startswith("/admin") and "//" not in back else "/admin"
+    resp = security_headers(RedirectResponse(target, status_code=303))
+    resp.set_cookie(
+        C.THEME_COOKIE,
+        value,
+        httponly=False,  # 不是凭证，只是一个显示偏好
+        samesite="strict",
+        secure=cookie_secure(request),
+        path="/admin",
+        max_age=400 * 24 * 3600,
+    )
+    return resp
 
 
 @router.get("/logout")
