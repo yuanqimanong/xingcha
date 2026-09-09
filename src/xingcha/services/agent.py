@@ -57,14 +57,25 @@ class SlugTaken(ValueError):
         )
 
 
-async def resolve(session: AsyncSession, slug: str) -> ResolvedAgent:
+async def resolve(
+    session: AsyncSession, slug: str, *, include_inactive: bool = False
+) -> ResolvedAgent:
     """按 slug 取当前版本。找不到抛 :class:`ModelNotFound`。
 
     也查别名表：slug 发布后不可改名，改名的唯一出路是新建 Agent 并把旧 slug
     登记成别名，让老调用方继续能用。
+
+    ``include_inactive`` 分开**运行时**与**管理面**两种读法，这不是可选的方便：
+
+    * 运行时（``/v1``）必须只看启用的——停用的 slug 就该回 model_not_found，
+      那正是"停用"的含义。
+    * 管理面必须看得见停用的。否则停用之后编辑页 404：**改不了、看不了、连它
+      为什么被停都查不到**，只剩列表页上一个开关。停用本该是可逆的，而一个进去
+      就出不来的状态不叫可逆。实测踩到——把 Agent 全停之后整页的「编辑」全是死链。
     """
+    active_only = [] if include_inactive else [Agent.is_active.is_(True)]
     row = (
-        await session.execute(select(Agent).where(Agent.slug == slug, Agent.is_active.is_(True)))
+        await session.execute(select(Agent).where(Agent.slug == slug, *active_only))
     ).scalar_one_or_none()
 
     if row is None:
@@ -73,9 +84,7 @@ async def resolve(session: AsyncSession, slug: str) -> ResolvedAgent:
         ).scalar_one_or_none()
         if alias is not None:
             row = (
-                await session.execute(
-                    select(Agent).where(Agent.id == alias.agent_id, Agent.is_active.is_(True))
-                )
+                await session.execute(select(Agent).where(Agent.id == alias.agent_id, *active_only))
             ).scalar_one_or_none()
 
     if row is None or row.current_version_id is None:

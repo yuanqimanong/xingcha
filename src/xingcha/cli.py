@@ -626,7 +626,7 @@ def agent_show(
             from .services import agent as agent_svc
 
             async with session_scope(maker) as s:  # type: ignore[arg-type]
-                return await agent_svc.resolve(s, slug)
+                return await agent_svc.resolve(s, slug, include_inactive=True)
         finally:
             await engine.dispose()  # type: ignore[attr-defined]
 
@@ -719,7 +719,7 @@ def agent_export(
                 from .core import exporter
                 from .services import agent as agent_svc
 
-                a = await agent_svc.resolve(s, slug)
+                a = await agent_svc.resolve(s, slug, include_inactive=True)
                 return exporter.export(
                     slug=a.slug,
                     name=a.name,

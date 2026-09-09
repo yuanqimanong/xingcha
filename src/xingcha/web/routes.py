@@ -1737,7 +1737,7 @@ async def agent_edit(slug: str, request: Request) -> Response:
     from ..services import agent as agent_svc
 
     async with state.sessionmaker() as s:
-        resolved = await agent_svc.resolve(s, slug)
+        resolved = await agent_svc.resolve(s, slug, include_inactive=True)
         row = await s.get(AgentRow, resolved.agent_id)
         group_name = row.group_name if row else None
         vers = await agent_svc.versions(s, resolved.agent_id)
@@ -1774,6 +1774,9 @@ async def agent_edit(slug: str, request: Request) -> Response:
         {
             "is_new": False,
             "agent": resolved,
+            # 停用的也进得来（include_inactive），所以页面上得看得出它现在是什么
+            # 状态、并且能就地开回去——否则落在这一页的人只能再退回列表。
+            "is_active": bool(row and row.is_active),
             "form": form,
             "action": "/admin/agents/save",
             "csrf": csrf.value,
@@ -1917,7 +1920,7 @@ async def agent_rollback(
     from ..services import agent as agent_svc
 
     async with state.sessionmaker() as s:
-        resolved = await agent_svc.resolve(s, slug)
+        resolved = await agent_svc.resolve(s, slug, include_inactive=True)
         await agent_svc.rollback(s, resolved.agent_id, version)
         await s.commit()
     return security_headers(RedirectResponse(f"/admin/agents/{slug}", status_code=303))
@@ -2143,7 +2146,7 @@ async def agent_export(slug: str, request: Request) -> Response:
     from ..services import agent as agent_svc
 
     async with state.sessionmaker() as s:
-        a = await agent_svc.resolve(s, slug)
+        a = await agent_svc.resolve(s, slug, include_inactive=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         bundle = exporter.export(

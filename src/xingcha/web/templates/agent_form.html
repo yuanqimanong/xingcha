@@ -8,11 +8,33 @@
     <p>Agent 就是一段被固定下来的提示词 + 一份输出约定。建好之后业务代码把
       <code>model</code> 换成它的标识即可，不改别的。</p>
     {% else %}
-    <p>标识 <code>{{ agent.slug }}</code> · 当前 v{{ agent.version }}。
+    <p>标识 <code>{{ agent.slug }}</code> · 当前 v{{ agent.version }}
+      {% if is_active %}<span class="badge ok">启用</span>
+      {% else %}<span class="badge neutral">已停用</span>{% endif %}。
       <strong>标识发布后不能改</strong>——调用方的代码里写着它。</p>
     {% endif %}
   </div>
+  {% if not is_new %}
+  <form method="post" action="/admin/agents/{{ agent.slug }}/toggle"
+        {% if is_active %}data-confirm="停用「{{ agent.slug }}」？调用方拿它当 model 调用会开始收到 model_not_found。slug 仍然被占着，随时能开回来。"{% endif %}>
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button class="btn {% if not is_active %}primary{% endif %}" type="submit">
+      {{ '停用' if is_active else '启用' }}
+    </button>
+  </form>
+  {% endif %}
 </div>
+
+{% if not is_new and not is_active %}
+<div class="alert warn">
+  <div>
+    <div class="alert-title">这个 Agent 已停用</div>
+    <div>调用方拿 <code>{{ agent.slug }}</code> 当 <code>model</code> 调用会收到
+      <code>model_not_found</code>，它也不出现在 <code>/v1/models</code> 里。
+      slug 仍然被占着，别的 Agent 顶不掉它——点右上角就能开回来。</div>
+  </div>
+</div>
+{% endif %}
 
 {% if error %}
 <div class="alert danger">

@@ -564,6 +564,52 @@ class TestGroups:
         assert self._group_of(settings, "a1") == "新名"
         assert self._group_of(settings, "a2") == "新名"
 
+    def test_a_disabled_agent_is_still_editable(self, logged_in: TestClient):
+        """**停用之后必须还进得去。**
+
+        ``resolve()`` 默认只看启用的——那对 ``/v1`` 是对的（停用的 slug 就该回
+        model_not_found）。但管理面用的是同一个函数，于是停用之后编辑页 404：
+        改不了、看不了、连它为什么被停都查不到，只剩列表页上一个开关。
+
+        一个进去就出不来的状态不叫可逆。实测踩到过——把 Agent 全停之后整页的
+        「编辑」全成了死链。
+        """
+        self._create(logged_in, "pausable")
+        logged_in.get("/admin/agents")
+        logged_in.post(
+            "/admin/agents/pausable/toggle",
+            data={"csrf_token": csrf_of(logged_in)},
+            follow_redirects=False,
+        )
+        r = logged_in.get("/admin/agents/pausable")
+        assert r.status_code == 200, "停用之后编辑页打不开"
+        assert "已停用" in r.text
+        # 而且能就地开回去，不用退回列表
+        assert 'action="/admin/agents/pausable/toggle"' in r.text
+
+    def test_a_disabled_agent_is_gone_from_the_api(self, logged_in: TestClient):
+        """管理面看得见，``/v1`` 必须看不见——这正是"停用"的含义。"""
+        self._create(logged_in, "pausable")
+        logged_in.get("/admin/agents")
+        logged_in.post(
+            "/admin/agents/pausable/toggle",
+            data={"csrf_token": csrf_of(logged_in)},
+            follow_redirects=False,
+        )
+        import asyncio
+
+        from xingcha.errors import ModelNotFound
+        from xingcha.services import agent as agent_svc
+
+        state = logged_in.app.state.xc  # type: ignore[attr-defined]
+
+        async def runtime_lookup():
+            async with state.sessionmaker() as s:
+                return await agent_svc.resolve(s, "pausable")
+
+        with pytest.raises(ModelNotFound):
+            asyncio.run(runtime_lookup())
+
     def test_toggle_disables_without_deleting(self, logged_in: TestClient, settings: Settings):
         """停用**不删**：调用方代码里写着这个 slug。
 
