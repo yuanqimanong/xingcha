@@ -253,9 +253,12 @@
                 <label for="tier">保证档位</label>
                 <select id="tier" name="tier">
                   <option value="">纯文本（不定义 schema）</option>
+                  {# 下拉里先说"什么时候选它"。原来写的是"形状保证强/内容保证低/
+                     成本两倍"，读者得自己在三个维度之间换算才知道该点哪个——而那
+                     正是他打开这个下拉时唯一想知道的事。细节挪到下面的对照表。 #}
                   {% for t in tiers %}
                   <option value="{{ t.value }}" {% if form.tier == t.value %}selected{% endif %}>
-                    {{ t.value }} · {{ t.name }} —— 形状保证{{ t.shape }}，{{ t.content }}
+                    {{ t.name }} —— {{ t.pick }}
                   </option>
                   {% endfor %}
                 </select>
@@ -279,11 +282,24 @@
               用工具通道每次都 400。换成提示词通道即可；代价是模型对提示词里的 schema
               遵守度略低，而那正是校验+重试要兜的东西。
             </div>
-            <div class="hint" style="margin-top:calc(-1 * var(--s2))">
-              档位的代价摆在这里由你选，而不是替你选最强的。<strong>T2</strong> 输出不合规时
-              自动重试（最坏调 <strong>1+{{ form.retries }}</strong> 次模型，token 按整轮计费）；
-              <strong>T3</strong> 只把 schema 当提示，不做任何校验。
-            </div>
+            {# 四档摊开对照。代价摆在这里由你选，而不是替你选最强的。
+               每一档写三件事：怎么做的、什么时候选、代价是什么。 #}
+            <details class="mt2">
+              <summary class="small muted">四档分别是怎么做的</summary>
+              <div class="tiers mt2">
+                {% for t in tiers %}
+                <div class="tier-def">
+                  <div class="tier-name">{{ t.value }} · {{ t.name }}</div>
+                  <div class="tier-what">{{ t.pick }}</div>
+                  <p>{{ t.how }}<br><strong>代价</strong>：{{ t.catch }}</p>
+                </div>
+                {% endfor %}
+              </div>
+              <div class="hint mt2">
+                需要原生支持的档（T1 / T1+），碰上不支持的模型会<strong>自动降级到 T2</strong>，
+                保存时会明说降了。上面那块「模型能力速览」里就能先看出来。
+              </div>
+            </details>
             <div class="field mt4">
               <label for="output_schema">输出 JSON Schema</label>
               <textarea id="output_schema" name="output_schema" rows="16" class="mono"
