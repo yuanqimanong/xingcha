@@ -1,47 +1,57 @@
 # 部署
 
-**一个容器，对外只有一条路：共享网关上的 HTTPS。**
+**网关只有一套：`deploy/edge/` 里的 Caddy 单文件**（一个可执行文件 + 一份 Caddyfile，
+没有 docker）。它和星槎在同一台机器上，反代 `127.0.0.1:8720`，对外只开 8443。
+星槎自己则按这台机器有没有 docker 分两条路：
 
-顺序是固定的——**先起网关，再部署 xingcha**：
+| 这台机器 | 星槎怎么跑 | `.env` 里 |
+|---|---|---|
+| 有 docker | `./deploy/linux/xc start`（容器，端口只绑回环） | `XINGCHA_GATEWAY=edge` |
+| 没有 docker | 双击 `deploy\windows\xc.bat`，或 `uv run xingcha serve` | 最后一节那两项 |
+
+顺序是固定的——**先起网关，再起星槎**：
 
 ```bash
-# 1-2. 起网关 + 装根证书 —— 全部见 deploy/CADDY.md
-#      （网关是独立项目，fin / pyp 共用同一台）
+# 1. 网关：下载 + 起来 + 装根证书（一次性，三条命令都在 deploy/edge/CADDY.md）
 
-# 3. xingcha
-cd ~/Desktop/my-project/xingcha && ./deploy/linux/xc start
+# 2. 星槎：.env 里写 XINGCHA_GATEWAY=edge，然后
+cd ~/Desktop/my-projects/xingcha && ./deploy/linux/xc start
 ```
 
 首次会从 `deploy/.env.example` 生成一份 `.env` 并停下来。
 
-**Windows 是另一条路：不走 docker，双击 `deploy\windows\xc.bat`。** 见下面
-[Windows](#windows不走-docker) 一节。
+没有 docker 的那条见下面「不走 docker」一节，网关是同一个，data 位置与备份方式也一样。
 
 ---
 
-## 为什么只有一条路
+## 为什么 TLS 要在同一台机器上终止
 
-曾经有两条：直连明文 HTTP（宿主端口 8720）与经网关的 HTTPS。去掉直连不是为了少一个
-选项，而是因为**两条路的安全性质不同，而人只会记住能打开的那一个**：
+Caddy 与星槎在同一台机器上，两者之间那一跳走**宿主回环**，不出这台机器。把 Caddy
+放到另一台去反代的话，浏览器那半段仍然是 HTTPS，而「Caddy → 星槎」那半段变成跨网络
+的明文——最容易被误当成端到端加密的一种拓扑；顺带还让网关变成硬依赖：星槎那台好着、
+网关那台挂了，服务就打不开。所以那条去掉了。
 
-- 直连那条上，后台密码与 `sk-xc-` 密钥在网络上**裸传**；
-- 而那个宿主端口走 Docker 的 `DOCKER-USER` 链，**绕过 ufw**——你在防火墙里写的
-  deny 对它无效。
-
-现在 xingcha **一个宿主端口都不发布**（compose 里只有 `expose`），唯一入口是
-`edge` 网络里的网关。代价必须说清楚：
+挂上网关时星槎那个端口**被强制只绑 `127.0.0.1`**（`xc` 的 `derive_bind_addr`，
+不受 `XINGCHA_WEB_HOST` 影响），局域网上根本连不到，唯一进得来的就是本机那个 Caddy。
+代价必须说清楚：
 
 > **网关是硬依赖。** 它没起，后台就完全进不去——包括进去修东西。
-> `./deploy/linux/xc start` 会在启动前检查它，缺了就给出可执行的提示，
-> 而不是让你看到"容器 healthy 却什么都打不开"。
+> `./deploy/linux/xc start` 会在启动前检查 8443 上有没有人听，没有就给出可执行的
+> 提示，而不是让你看到"容器 healthy 却什么都打不开"。
+
+不挂网关时（`XINGCHA_GATEWAY` 留空）那个端口是明文 HTTP：后台密码与 `sk-xc-` 密钥
+在网络上**裸传**；把 `XINGCHA_WEB_HOST` 填成 IP 还会让它绑到 `0.0.0.0`，而 docker
+发布的端口走 `DOCKER-USER` 链、**绕过 ufw**——你在防火墙里写的 deny 对它无效。
+所以"开给局域网"必须是一次显式选择。
 
 反代后面还有一件必须做对的事：应用得**信任网关发来的 `X-Forwarded-Proto`**
-（compose 里的 `XINGCHA_TRUSTED_PROXIES=*`）。不信任的话应用以为自己在 http 上，
+（叠加层里的 `XINGCHA_TRUSTED_PROXIES=*`）。不信任的话应用以为自己在 http 上，
 **会话 cookie 不带 `Secure`**——浏览器那半段明明是 HTTPS，却少了一层保护，
-而功能完全正常，没人会注意到。敢用 `*` 的前提就是上面那条：零宿主端口。
+而功能完全正常，没人会注意到。敢用 `*` 的前提就是上面那条：端口只绑回环，
+唯一能发这个头的就是本机那个 Caddy。
 
-网关自己怎么部署、根证书怎么装、按端口怎么分流——**全在
-[CADDY.md](CADDY.md)**，这里不重复。
+网关自己怎么起、根证书怎么装、Caddyfile 里每一行为什么少不了——**全在
+[CADDY.md](edge/CADDY.md)**，这里不重复。
 
 ---
 
@@ -82,26 +92,31 @@ docker compose -f deploy/linux/docker-compose.yml --env-file .env up -d --build
 
 ## `.env`
 
-完整注释见 [`.env.example`](.env.example)。三项最常动的：
+完整注释见 [`.env.example`](.env.example)。四项最常动的：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `XINGCHA_WEB_HOST` | `localhost` | 你在浏览器里敲的主机名或 IP（**网关**的） |
-| `XINGCHA_WEB_PORT` | `8443` | 网关上分给 xingcha 的端口（`edge/.env` 的 `PORT_XINGCHA`） |
+| `XINGCHA_GATEWAY` | 空 | 空 = 自己发布端口、明文 HTTP；`edge` = 挂到本机那个 Caddy 上 |
+| `XINGCHA_WEB_HOST` | `localhost` | 你在浏览器里敲的主机名或 IP |
+| `XINGCHA_WEB_PORT` | `8720` | **独立跑时**发布的宿主端口；走网关时端口是网关的 8443 |
 | `XINGCHA_ADMIN_PASSWORD` | 空 | 留空 = 没设置，首次访问 `/admin` 引导设定 |
 
-前两项**只用于拼后台里展示的 curl 示例**，不影响监听——容器根本不监听宿主端口。
-填错的后果是用户复制那条 curl 命令连不上，而错误信息指不到"该走网关"。
+`XINGCHA_WEB_HOST` 同时决定绑哪个接口（`localhost` → 只绑回环，其它 → `0.0.0.0`）。
+合成一个变量是因为分成两个最容易出的错是二者对不上：页面上显示局域网 IP、实际只绑了
+回环，于是别人打不开而那个地址看起来完全正确。
 
 ---
 
-## Windows（不走 docker）
+## 不走 docker（Windows，或没装 docker 的 Linux）
 
-**双击 `deploy\windows\xc.bat`。** 它做四件事：确认有 `uv` → 没有 `.env` 就从**同一份**
-模板生成 → `uv sync --frozen --no-dev` → `uv run xingcha serve`。窗口开着就是跑着，
-关掉就是停止；data 在仓库根的 `data\` 下，和 Linux 版同一个位置。
+**Windows 双击 `deploy\windows\xc.bat`。** 它做四件事：确认有 `uv` → 没有 `.env` 就从
+**同一份**模板生成 → `uv sync --frozen --no-dev` → `uv run xingcha serve`。窗口开着就是
+跑着，关掉就是停止；data 在仓库根的 `data\` 下，和 docker 那条同一个位置。
 
-Linux 那套一个字都没动。这里换掉的只是**怎么把进程跑起来**。
+没装 docker 的 Linux 是同样两条命令，只是没有那个批处理包装：`uv sync --frozen --no-dev`
+然后 `uv run xingcha serve`。
+
+这条路换掉的只是**怎么把进程跑起来**，配置来源、data 位置、备份方式都不变。
 
 ### 为什么这台不打镜像
 
@@ -115,32 +130,29 @@ Linux 那套一个字都没动。这里换掉的只是**怎么把进程跑起来
 进容器做。本地直跑没有这一条——`data\` 就是 NTFS 上的普通目录，WAL 是正常的，
 备份就是几个能直接拷走的文件。
 
-### HTTPS 仍然是 Linux 那台 Caddy 给的
+### HTTPS：网关是同一个
 
-**docker 网络不跨主机**，所以这台机器加入不了 `edge`。做法是它自己把 8720 开在
-局域网上，网关按「IP:端口」反代过来——浏览器里出现的始终是网关地址、网关的证书，
-根证书还是只在每台设备装那一次。网关侧要加什么见
-[CADDY.md 的「跨机器接入」](CADDY.md#跨机器接入比如-windows-那台)。
+和 docker 那条**用的是同一套** `deploy/edge/`：下载一次可执行文件，起起来，
+它反代的正是 `127.0.0.1:8720`。Windows 双击 `deploy\edge\edge.bat`，Linux
+`./deploy/edge/edge start`。装根证书、日常命令、每一行配置为什么少不了——
+全部见 [CADDY.md](edge/CADDY.md)。
 
-Windows 侧则要放开 `.env` 最后一节的三项（模板里有完整注释）：
+差别只在星槎这边：这条路没有 `XINGCHA_GATEWAY` 那个开关（那是给 compose 看的），
+所以 `.env` 最后一节的两项要手写（模板里有完整注释）：
 
 | 变量 | 填什么 | 不填会怎样 |
 |---|---|---|
-| `XINGCHA_HOST` | `0.0.0.0` | 只绑回环，网关一直 502 而本机完全正常 |
-| `XINGCHA_PUBLIC_URL` | `https://<Linux 的 IP>:8443` | 后台印出 `http://127.0.0.1:8720`，复制走的 curl 必然连不上 |
-| `XINGCHA_TRUSTED_PROXIES` | `<Linux 的 IP>` | 会话 cookie 不带 `Secure`，而功能完全正常，没人会注意到 |
+| `XINGCHA_TRUSTED_PROXIES` | `127.0.0.1` | 会话 cookie 不带 `Secure`，而功能完全正常，没人会注意到 |
+| `XINGCHA_PUBLIC_URL` | `https://<本机内网 IP>:8443` | 后台印出 `http://127.0.0.1:8720`，复制走的 curl 到别的机器上必然连不上 |
 
-最后一项**不能照抄容器那边的 `*`**：容器敢信任所有来源，前提是零宿主端口、唯一
-入口就是网关；Windows 这边端口是真的开在局域网上的，谁都能连，填 `*` 等于让任何人
-伪造 `X-Forwarded-Proto`。
-
-代价也说清楚：**Caddy 到这台机器这一跳是跨网络的明文**，不是端到端 TLS。
+**`XINGCHA_HOST` 不用动。** Caddy 就在同一台机器上，走回环就够了；改成 `0.0.0.0`
+等于在局域网上多开一条绕过 TLS 的明文入口，谁都能直连。
 
 ### 两个会卡住人的地方
 
-- **Windows 防火墙。** 绑 0.0.0.0 之后第一次启动会弹窗问要不要放行 `python.exe`
-  ——**要允许，而且要勾「专用网络」**。点了取消的话本机一切正常，网关那边一直
-  502，而那个现象指不到防火墙。
+- **Windows 防火墙。** 弹窗问要不要放行的是 `caddy.exe`（它要监听 8443）——**要允许，
+  而且要勾「专用网络」**。点了取消的话本机 `https://127.0.0.1:8443` 完全正常，而别的
+  机器一直连不上，那个现象指不到防火墙。
 - **`uv` 装完要重开窗口。** PATH 是进程启动时读的，装 uv 的那个窗口里
   `where uv` 仍然找不到。
 
@@ -292,7 +304,9 @@ $DC exec xingcha xingcha db verify
 
 ## 安全注意
 
-- **零宿主端口，对外只经网关。** 别给这个服务加 `ports:` —— 那既绕过 ufw 又绕过 TLS。
+- **端口只绑 `127.0.0.1`，对外只经网关。** 别把它绑到 `0.0.0.0` —— 那既绕过 ufw
+  （docker 发布的端口走 `DOCKER-USER` 链）又绕过 TLS，而且两条入口并存时人只会
+  记住能打开的那一个。
 - **网关的根证书要装到每台设备上。** 只有 `tls internal` 而继续点"继续前往"，
   只防被动嗅听：主动中间人递一张自签证书你同样会点过去。
 - **`data/` 目录不要放网络存储。** SQLite 的 WAL 在上面会静默降级，症状是零星的
@@ -312,13 +326,13 @@ $DC exec xingcha xingcha db verify
 |---|---|
 | 容器起不来 | `./deploy/linux/xc logs`。启动时的断言（WAL、密钥环、迁移）失败都会打印明确原因 |
 | 重启循环 + `PermissionError: /data/backups` | `data/` 属主不对。`./deploy/linux/xc start` 会自动 chown（要 sudo） |
-| 什么都打不开 | 网关没起。`cd ../edge && ./edge start` |
-| 网关能开但回 502 | xingcha 不在 `edge` 网络里，或没起来。`./deploy/linux/xc status` |
-| 浏览器一直拦证书 | 这台设备还没装根证书。`cd ../edge && ./edge ca` |
+| 什么都打不开 | 网关没起。`./deploy/edge/edge status`，然后 `edge start` |
+| 网关能开但回 502 | 星槎没起来，或没绑在 `127.0.0.1:8720` 上。`./deploy/linux/xc status` |
+| 浏览器一直拦证书 | 这台设备还没装根证书，见 [CADDY.md](edge/CADDY.md) |
 | 密码输对却一直跳回登录页 | cookie 带了 `Secure` 而你走的是 http。CI 有一条断言守这个，正常不该发生 |
 | `/v1` 返回 503 | 还没配上游 key。后台「上游」页（当场生效） |
 | 想看整体状况 | `./deploy/linux/xc status`，或 `xingcha doctor` |
-| **Windows**：网关 502 而本机能开 | 要么没绑 0.0.0.0（`XINGCHA_HOST`），要么防火墙没放行 `python.exe` |
+| **Windows**：本机能开、别的机器连不上 | 防火墙没放行 `caddy.exe`（它监听 8443），或 Caddy 没在跑 |
 | **Windows**：双击一闪就没 | 从 cmd 里跑一次 `deploy\windows\xc.bat` 看报错；失败路径都会 `pause`，正常不该一闪 |
 | 磁盘水位 | `curl -sk https://<网关地址>:8443/readyz`，低于 10% 会标 `degraded` |
 

@@ -7,3 +7,4 @@
 *.bat      text eol=crlf
 *.sh       text eol=lf
 deploy/linux/xc  text eol=lf
+deploy/edge/edge text eol=lf

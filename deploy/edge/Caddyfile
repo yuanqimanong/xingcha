@@ -1,0 +1,51 @@
+# 这台机器的网关。**一个可执行文件 + 这一份配置**，没有 docker、没有容器网络。
+#
+# 起它：./deploy/edge/edge start（Windows 双击 edge.bat）。怎么起、怎么装根证书、
+# 别的项目怎么加进来——**同目录的 CADDY.md**。
+# 那两个脚本负责三件事：找到 caddy 二进制、从仓库根的 .env 读出 EDGE_HOST、
+# 把这份配置交给它。**EDGE_HOST 必须由脚本传进来**——{$VAR} 读的是进程的环境变量，
+# 空的话站点地址会退化成 https://:8443，证书签不出来而报错离根因很远。
+#
+# 端口分工：
+#   8443   这台机器对外的唯一 HTTPS 入口
+#   8720   星槎自己的明文端口，**只绑 127.0.0.1**（docker 那条也一样，见
+#          deploy/linux/docker-compose.yml 的 ports）
+#
+# 下面每一行都不是装饰，少一行各有各的坑法——表在 CADDY.md。
+
+{
+	# 按 IP 访问时客户端**不发 SNI**（RFC 6066 不允许 IP 出现在 SNI 里），没有这一行
+	# Caddy 一张证书都选不出来，TLS 直接回 alert internal error（curl exit 35 /
+	# 浏览器"无法建立安全连接"）。**整份配置里最关键的一行。**
+	#
+	# 它是**全局选项**——写成 tls 的子指令会报 unknown subdirective。
+	default_sni {$EDGE_HOST}
+}
+
+https://{$EDGE_HOST}:8443 {
+	# 地址里的 IP 只用来签证书与匹配，真正监听交给这一行。少了它 Caddy 会绑到那个
+	# 字面 IP 上，DHCP 换一次地址就起不来（cannot assign requested address）。
+	bind 0.0.0.0
+
+	# 内网只有 IP、没有公网域名，公网 CA 不给私网 IP 签，所以用 Caddy 自己的内部 CA。
+	# 代价是根证书要在每台设备上装一次：./deploy/edge/edge trust（本机）、edge ca（别的设备）。
+	tls internal
+
+	# flush_interval -1：少了它 SSE 会被缓冲，症状是**回答要等全部生成完才一次性蹦
+	# 出来**，而接口本身完全正常，压根不像是反代的问题。
+	reverse_proxy 127.0.0.1:8720 {
+		flush_interval -1
+	}
+}
+
+# 这台机器上的**别的项目**：照抄一段、换个端口就行，证书与 CA 是同一份，所以根证书
+# 仍然只在每台设备装一次。按端口分流而不是主机名：内网往往没有 DNS，而 TLS 的 SNI
+# 也不允许装 IP。还没起来的站点回 502，不影响别的项目。
+#
+# https://{$EDGE_HOST}:9443 {
+# 	bind 0.0.0.0
+# 	tls internal
+# 	reverse_proxy 127.0.0.1:8000 {
+# 		flush_interval -1
+# 	}
+# }

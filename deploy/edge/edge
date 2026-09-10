@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# 网关（Caddy 单文件）。**一个可执行文件 + 一份 Caddyfile，没有 docker。**
+#
+#   ./deploy/edge/edge get      下载 caddy 到这个目录（一次就够）
+#   ./deploy/edge/edge start    后台起来
+#   ./deploy/edge/edge trust    把根证书装进**本机**信任库（会问密码）
+#   ./deploy/edge/edge ca       导出根证书 + 印出别的设备怎么装
+#   ./deploy/edge/edge reload   零中断重载配置
+#   ./deploy/edge/edge stop / status / run
+#
+# 这个脚本几乎不做事——真正的活是 caddy 自己的子命令干的。它只负责三件**忘了就
+# 出问题、而症状指不到这里**的事：
+#
+#   ① 找到二进制。本目录的 ./caddy 优先于 PATH 里的：两个版本同时存在时，
+#      "我明明升级了"却跑着旧的那个，是最费时的一类困惑。
+#   ② 把 EDGE_HOST 传进去。Caddyfile 里的 {$VAR} 读的是**进程的环境变量**，
+#      空的话站点地址退化成 https://:8443，证书签不出来而报错离根因很远。
+#      来源是仓库根 .env 的 XINGCHA_WEB_HOST——**不再单独设一个变量**，
+#      两个来源必然有一天不一致，而那时页面上印的地址和证书上的名字对不上。
+#   ③ 认准这一份 Caddyfile（cd 到脚本自己的目录），而不是"你在哪儿敲命令"。
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")"
+ROOT=$(cd ../.. && pwd)
+
+die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+say()  { printf '\033[36m→\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
+
+# --- 二进制 ---------------------------------------------------------------
+# 官方下载端点按 os/arch 直接给一个可执行文件。arch 名字要翻译：uname 说 x86_64 /
+# aarch64，Caddy 那边叫 amd64 / arm64——照抄 uname 的结果会得到 404。
+dl_url() {
+  local arch
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=amd64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    armv7l) arch=armv7 ;;
+    *) die "不认识的 CPU 架构 $(uname -m)。到 https://caddyserver.com/download 手动挑一个，放成 $PWD/caddy" ;;
+  esac
+  printf 'https://caddyserver.com/api/download?os=linux&arch=%s' "$arch"
+}
+
+caddy_bin() {
+  if [ -x ./caddy ]; then printf './caddy'
+  elif command -v caddy >/dev/null 2>&1; then printf 'caddy'
+  else
+    die "找不到 caddy。下载一次就够（约 45 MB，不进版本库）：
+
+    ./deploy/edge/edge get
+
+  或自己拿：$(dl_url) —— 存成 $PWD/caddy 并 chmod +x"
+  fi
+}
+
+# --- 浏览器里敲的那个地址 --------------------------------------------------
+# 它同时是证书上的名字与 default_sni 的值，所以填错的症状是"证书警告点不过去"，
+# 而不是"打不开"。
+edge_host() {
+  local h
+  h=$(sed -n 's/^XINGCHA_WEB_HOST=\(.*\)/\1/p' "$ROOT/.env" 2>/dev/null | head -1)
+  case "$h" in
+    "" | localhost | 127.0.0.1)
+      # 回环也能用（本机自己访问），但别的设备打不开，而那时一切"看起来正常"。
+      [ -n "$h" ] || warn "$ROOT/.env 里没有 XINGCHA_WEB_HOST，按 localhost 签证书——别的设备打不开"
+      printf 'localhost'
+      ;;
+    0.0.0.0 | :: | "[::]")
+      die "XINGCHA_WEB_HOST=$h 是监听地址，不是能敲的主机名。在 $ROOT/.env 里改成这台机器的内网 IP"
+      ;;
+    *) printf '%s' "$h" ;;
+  esac
+}
+
+# --- 根证书 ---------------------------------------------------------------
+# 单文件版的 CA 私钥在这里。**别删也别外传**：删了会生成一个新 CA，你装过的所有
+# 设备会一起开始报证书错误。root.crt 是公钥，随便传。
+ca_dir() { printf '%s/caddy/pki/authorities/local' "${XDG_DATA_HOME:-$HOME/.local/share}"; }
+
+main() {
+  local bin verb
+  verb=${1:-run}
+
+  case "$verb" in
+    get)
+      [ -x ./caddy ] && { ok "已经有了：$PWD/caddy（要换版本先删掉它）"; exit 0; }
+      say "下载 caddy"
+      curl -fsSL "$(dl_url)" -o caddy || die "下载失败。到 https://caddyserver.com/download 手动拿一个放成 $PWD/caddy"
+      chmod +x caddy
+      ok "$PWD/caddy（$(./caddy version | head -1)）"
+      printf '  接着：./deploy/edge/edge start\n'
+      exit 0
+      ;;
+  esac
+
+  bin=$(caddy_bin)
+  EDGE_HOST=$(edge_host)
+  export EDGE_HOST
+
+  case "$verb" in
+    # 前台跑。窗口开着就是跑着，Ctrl-C 停止——想看日志时用这个。
+    run) exec "$bin" run --config Caddyfile ;;
+
+    # 后台跑。caddy 自己 fork 一个进程并**先验一遍配置**，验不过不会起来。
+    start)
+      "$bin" start --config Caddyfile
+      ok "https://$EDGE_HOST:8443 → 127.0.0.1:8720"
+      printf '  根证书还没装的话浏览器会拦：./deploy/edge/edge trust\n'
+      ;;
+
+    stop) "$bin" stop && ok "已停止" ;;
+
+    # 零中断重载：配置验不过会**保留旧配置**，不会让所有项目一起躺下。
+    reload) "$bin" reload --config Caddyfile && ok "已重载" ;;
+
+    # 装进本机信任库。**不要在这里包 sudo**：caddy 会自己在需要时提权，而用 sudo
+    # 跑整条命令会让它去看 root 的数据目录——那里是另一个 CA（或者空的），
+    # 于是"装成功了"却装的是一张不相干的证书。
+    trust)
+      "$bin" trust
+      ok "已装进本机信任库。**要重启浏览器。**"
+      printf '  Chrome / Chromium 用的是另一套信任库（NSS）。没生效的话：\n'
+      printf '    sudo apt install -y libnss3-tools\n'
+      printf '  装上再跑一次这条命令——caddy 会连 NSS 那处一起装。\n'
+      ;;
+
+    # 别的设备（手机 / Windows / 另一台 Linux）怎么装。
+    ca)
+      local crt="$(ca_dir)/root.crt"
+      [ -f "$crt" ] || die "还没有根证书——先起一次网关：./deploy/edge/edge start"
+      cp "$crt" ./root.crt
+      ok "已导出 $PWD/root.crt（公钥，随便传）"
+      printf '\n  Linux（curl / wget）：\n'
+      printf '    sudo cp root.crt /usr/local/share/ca-certificates/edge-root.crt\n'
+      printf '    sudo update-ca-certificates\n'
+      printf '\n  Linux 上的 Chrome / Chromium 另有一套信任库：\n'
+      printf '    sudo apt install -y libnss3-tools\n'
+      printf '    certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n edge-root -i root.crt\n'
+      printf '\n  Windows（管理员）：\n'
+      printf '    certutil -addstore -f ROOT root.crt\n'
+      printf '\n  装完**要重启浏览器**。指纹：\n'
+      openssl x509 -in ./root.crt -noout -fingerprint -sha256 2>/dev/null | sed 's/^/    /' || true
+      ;;
+
+    status)
+      if ss -tln 2>/dev/null | grep -q ':8443 '; then
+        ok "网关在跑：https://$EDGE_HOST:8443"
+      else
+        warn "8443 没人听——网关没起。./deploy/edge/edge start"
+      fi
+      ;;
+
+    *) die "不认识的动作：$verb（get / start / run / stop / reload / trust / ca / status）" ;;
+  esac
+}
+
+main "$@"

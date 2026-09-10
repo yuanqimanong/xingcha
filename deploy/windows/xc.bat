@@ -19,10 +19,12 @@ rem
 rem   本地直跑没有这两条：data 就是仓库根下的 data\，NTFS 上 WAL 是正常的，
 rem   备份就是几个能直接拷走的文件。
 rem
-rem HTTPS 仍然复用 Linux 那台 Caddy —— 它按「IP:端口」反代到这台机器的 8720，
-rem 浏览器里出现的始终是网关地址、网关的证书，根证书还是只装那一次。
-rem 怎么配见 deploy\CADDY.md 的「跨机器接入」。**代价必须说清楚**：Caddy 到这里
-rem 这一跳变成了跨网络的明文，别以为 TLS 是端到端的。
+rem 要 HTTPS 的话，在**这台机器上**放一个 Caddy 单文件（一个 exe，没有别的依赖），
+rem 让它反代 127.0.0.1:8720 —— 见 deploy\edge\CADDY.md。这样 TLS 在本机终止，
+rem 「Caddy 到应用」那一跳走回环、不出这台机器。
+rem
+rem 此前是让另一台机器上的 Caddy 按「IP:端口」反代过来，已经去掉：那会把这一跳
+rem 变成跨网络的明文，而浏览器里看着是 HTTPS —— 最容易被误当成端到端加密的拓扑。
 rem
 rem 别的动作没有包装，因为它们本来就不长、也没有坑：
 rem
@@ -71,12 +73,12 @@ if not exist ".env" (
     if errorlevel 1 goto :fail
     echo ✓ 已生成 .env
     echo.
-    echo   一项都不改也能起来，但**只绑回环**：只有这台机器自己能打开。
-    echo   要让 Linux 那台 Caddy 反代过来，翻到 .env 最后一节，把这三行放开：
+    echo   一项都不改也能起来，但**明文 HTTP 且只绑回环**：只有这台机器能打开。
+    echo   要 HTTPS：在这台机器上放一个 Caddy 单文件反代 127.0.0.1:8720
+    echo   （见 deploy\edge\CADDY.md），然后翻到 .env 最后一节把这两行放开：
     echo.
-    echo         XINGCHA_HOST=0.0.0.0
-    echo         XINGCHA_PUBLIC_URL=https://那台Linux的IP:8443
-    echo         XINGCHA_TRUSTED_PROXIES=那台Linux的IP
+    echo         XINGCHA_TRUSTED_PROXIES=127.0.0.1
+    echo         XINGCHA_PUBLIC_URL=https://本机内网IP:8443
     echo.
 )
 
@@ -113,20 +115,23 @@ for /f "usebackq eol=# tokens=1,* delims==" %%a in (".env") do (
 echo.
 if defined XC_PUBLIC (
     echo   %XC_PUBLIC%
-    echo   经 Linux 那台 Caddy 反代过来。浏览器还拦证书的话，是这台设备还没装
-    echo   网关的根证书 —— 在 Linux 那台跑 .\edge ca，它会印出 Windows 的装法。
+    echo   经本机那个 Caddy。**它得在跑着**，否则这个地址打不开而 127.0.0.1:%XC_PORT% 正常。
+    echo   浏览器还拦证书的话，是这台设备还没装根证书 —— 见 deploy\edge\CADDY.md。
 ) else (
     echo   http://127.0.0.1:%XC_PORT%
     echo   **明文 HTTP，且只绑回环**：只有这台机器能打开。
-    echo   想让别人也能用、并且走 HTTPS：见 .env 最后一节与 deploy\CADDY.md。
+    echo   想让别人也能用、并且走 HTTPS：放一个 Caddy 单文件在这台机器上，
+    echo   见 deploy\edge\CADDY.md 与 .env 最后一节。
 )
 
 if not "%XC_BIND%"=="127.0.0.1" (
     echo.
-    echo   ! 绑在 %XC_BIND% 上，端口是真的开在局域网里的。
-    echo     第一次跑 Windows 防火墙会弹窗问要不要放行 python.exe：
-    echo     **必须点允许，而且要勾上「专用网络」**。点了取消的话，这台机器自己
-    echo     完全正常，而 Caddy 那边一直 502 —— 那个现象指不到防火墙。
+    echo   ! 绑在 %XC_BIND% 上，端口是真的开在局域网里的：那是一条**明文**入口，
+    echo     谁都能直连，绕过 Caddy 那层 TLS。要 HTTPS 的话不用改这一项 ——
+    echo     Caddy 就在本机，走回环连 127.0.0.1:%XC_PORT% 就够了。
+    echo     另外第一次跑 Windows 防火墙会弹窗问要不要放行 python.exe：
+    echo     **必须点允许，而且要勾上「专用网络」**，否则别的机器一直连不上，
+    echo     而这台机器自己完全正常 —— 那个现象指不到防火墙。
 )
 
 echo.

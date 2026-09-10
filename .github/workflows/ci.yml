@@ -154,29 +154,35 @@ jobs:
           done
           test -f src/xingcha/web/static/style.css
 
-      - name: compose 配置合法，且一个宿主端口都不发布
-        # 零宿主端口是一条**安全属性**：映射出去的端口走 Docker 的 DOCKER-USER 链、
-        # 绕过 ufw，而直连那条路又是明文 HTTP。对外只经共享网关（独立项目 ../edge）。
+      - name: compose 配置合法，且端口只绑回环
+        # **只绑 127.0.0.1 是一条安全属性。** 绑到 0.0.0.0 的话那个端口走 Docker 的
+        # DOCKER-USER 链、绕过 ufw，而它那一头是明文 HTTP——于是 TLS 旁边多出一条谁
+        # 都能连的入口，而两条并存时人只会记住能打开的那一个。
+        #
+        # 网关（deploy/edge 的 Caddy 单文件）是**宿主进程**，不在编排里，所以这一步
+        # 不需要它在场：验的是"容器这一侧把自己关在回环上"。
         run: |
-          : > .env
-          docker network create edge || true
-          docker compose -f deploy/linux/docker-compose.yml --env-file .env config > /tmp/cfg.yml
-          grep -q 'published:' /tmp/cfg.yml \
-            && { echo "::error::编排里出现了发布端口"; cat /tmp/cfg.yml; exit 1; }
-          grep -q 'name: edge' /tmp/cfg.yml || { echo "::error::没加入共享网络 edge"; exit 1; }
-          echo "  零宿主端口 + 加入 edge 网络 ok"
+          printf 'XINGCHA_GATEWAY=edge\n' > .env
+          docker compose -f deploy/linux/docker-compose.yml \
+            -f deploy/linux/docker-compose.gateway.yml --env-file .env config > /tmp/cfg.yml
+          grep -q 'host_ip: 127.0.0.1' /tmp/cfg.yml \
+            || { echo "::error::端口没绑在回环上"; cat /tmp/cfg.yml; exit 1; }
+          grep -q 'host_ip: 0.0.0.0' /tmp/cfg.yml \
+            && { echo "::error::端口绑到了 0.0.0.0"; cat /tmp/cfg.yml; exit 1; }
+          echo "  端口只绑 127.0.0.1 ok"
 
       - name: 整栈真的起得来
-        # 容器不发布端口，所以探测从**容器内部**做（镜像里有 curl，healthcheck 用的
-        # 就是它）。这一步的意义不变：此前两个 blocker 都只在真 up 时才暴露。
+        # 探测从**容器内部**做（镜像里有 curl，healthcheck 用的就是它）：宿主那一侧
+        # 只绑回环，而 runner 上没有网关。这一步的意义不变：此前两个 blocker 都只在
+        # 真 up 时才暴露。
         run: |
-          : > .env
+          printf 'XINGCHA_GATEWAY=edge\n' > .env
           mkdir -p data
           # chmod 必须在 chown **之前**：换过属主之后 runner 用户就不是 owner 了，
           # 再 chmod 直接 Operation not permitted。这一步曾是 CI 唯一的红点。
           chmod 700 data
           sudo chown -R 10001:10001 data
-          DC="docker compose -f deploy/linux/docker-compose.yml --env-file .env"
+          DC="docker compose -f deploy/linux/docker-compose.yml -f deploy/linux/docker-compose.gateway.yml --env-file .env"
           $DC up -d
           for i in $(seq 1 45); do
             [ "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1 2>/dev/null)" = healthy ] && break
@@ -184,7 +190,11 @@ jobs:
           done
           $DC ps
           test "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1)" = healthy
-          test -z "$(docker port xingcha-xingcha-1)" || { echo "::error::发布了宿主端口"; exit 1; }
+          docker port xingcha-xingcha-1
+          docker port xingcha-xingcha-1 | grep -q '127.0.0.1:' \
+            || { echo "::error::端口没绑在回环上"; exit 1; }
+          docker port xingcha-xingcha-1 | grep -q '0.0.0.0:' \
+            && { echo "::error::端口绑到了 0.0.0.0"; exit 1; }
 
           x() { docker exec xingcha-xingcha-1 curl -sS "$@"; }
           x http://127.0.0.1:8720/healthz | grep -q '"status":"ok"'
@@ -196,7 +206,7 @@ jobs:
           #
           # 网关到应用这一跳是 http，所以应用自己看到的 scheme 是 http。要让会话
           # cookie 带上 Secure，必须信任网关发来的 X-Forwarded-Proto —— 而这里
-          # 直接用那个头模拟网关，不需要真起一个 Caddy（网关是独立项目）。
+          # 直接用那个头模拟网关，不需要真起一个 Caddy（它不属于这个仓库）。
           #
           # 两个方向都要断言，因为两边错的症状都是"看起来完全正常"：
           #   · 该带没带 → HTTPS 那半段少一层保护，没人会注意到；
@@ -214,4 +224,3 @@ jobs:
         if: always()
         run: |
           docker compose -f deploy/linux/docker-compose.yml --env-file .env down -v --remove-orphans || true
-          docker network rm edge || true

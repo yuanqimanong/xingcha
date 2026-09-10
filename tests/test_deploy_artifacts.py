@@ -15,10 +15,11 @@ Dockerfile / docker-compose.yml / .env.example / xc / xc.bat / drill.sh 之间�
 镜像里 ``import xingcha`` 直接失败。
 
 编排此前是三个 compose 文件（生产 / 局域网 / Windows）加两份 Caddyfile，现在收敛成
-**一个 compose 文件、一个容器、明文 HTTP**。差异全部变成 ``.env`` 里的变量。
-这些断言也跟着换成守新形状的。
+**一个 compose 文件、一个容器**，外加一个可选的拓扑叠加层（挂不挂本机那个 Caddy）。
+其余差异全部变成 ``.env`` 里的变量，这些断言也跟着换成守新形状的。
 
-Windows 走的是**另一条路**：不打镜像，``deploy/windows/xc.bat`` 用 uv 在宿主直接起进程
+没装 docker 的机器（Windows，或干净的 Linux）走的是**另一条路**：不打镜像，
+``deploy/windows/xc.bat`` 用 uv 在宿主直接起进程
 （理由见 deploy/README.md——Docker Desktop 那条路上 data 不能放宿主目录，SQLite 的
 WAL 会静默降级）。两条路共用同一份 ``.env.example`` 与同一个 ``data/`` 位置，
 所以这里也要守住"别悄悄变成两套配置"。
@@ -39,12 +40,16 @@ import yaml
 from xingcha import contract as C
 
 ROOT = Path(__file__).resolve().parent.parent
-#: deploy/ 按系统分成两个目录：linux/ 是 docker 那条路（编排 + xc + drill），
-#: windows/ 是 uv 本地直跑那条（只有 xc.bat）。**共用的留在 deploy/ 顶层**
-#: ——.env.example 一份、CADDY.md 一份、README.md 一份，那正是它们不该分家的理由。
+#: deploy/ 按角色分三个目录：linux/ 是 docker 那条路（编排 + xc + drill），
+#: windows/ 是 uv 本地直跑那条（只有 xc.bat），edge/ 是网关（Caddy 单文件，
+#: 两条路共用同一份 Caddyfile）。**两条路共用的留在 deploy/ 顶层**——.env.example
+#: 一份、README.md 一份，那正是它们不该分家的理由；而网关那份说明跟着网关走
+#: （deploy/edge/CADDY.md），它说的就是那个目录里的东西。
 DEPLOY = ROOT / "deploy"
 LINUX = DEPLOY / "linux"
 WINDOWS = DEPLOY / "windows"
+
+EDGE = DEPLOY / "edge"
 
 COMPOSE = LINUX / "docker-compose.yml"
 GATEWAY_COMPOSE = LINUX / "docker-compose.gateway.yml"
@@ -53,6 +58,9 @@ ENV_EXAMPLE = DEPLOY / ".env.example"
 DRILL_SH = LINUX / "drill.sh"
 XC = LINUX / "xc"
 XC_BAT = WINDOWS / "xc.bat"
+CADDYFILE = EDGE / "Caddyfile"
+EDGE_SH = EDGE / "edge"
+EDGE_BAT = EDGE / "edge.bat"
 
 
 @pytest.fixture(scope="module")
@@ -91,12 +99,9 @@ class TestSingleFile:
     #: 历史上到过三份（生产/局域网/Windows）。那三份的差异全是**参数**（端口、
     #: 地址、数据位置），参数该做成变量，所以收敛掉了。
     #:
-    #: 留下的这个叠加层是**拓扑**：独立跑（发布宿主端口、明文 HTTP）与挂在共享网关
-    #: 后面（零宿主端口、HTTPS）——`ports` 要整条去掉、`networks` 要凭空出现，
-    #: 这两件事都没法用 ${} 表达。
-    #:
-    #: 关键是二者**互斥**：叠加层用 `!override` 把宿主端口清掉。两条入口同时存在
-    #: 才是真问题——它们的安全性质不同，而人只会记住能打开的那一个。
+    #: 留下的这个叠加层是**拓扑**：独立跑（明文 HTTP，端口可以开给局域网）与挂在
+    #: 本机那个网关后面（端口强制只绑回环、对外 HTTPS）。它改的两项要么全有要么
+    #: 全无，而 ${} 表达不了"成套出现"——只改一项的后果是安静的。
     ALLOWED: ClassVar[list[str]] = [
         "deploy/linux/docker-compose.gateway.yml",
         "deploy/linux/docker-compose.yml",
@@ -110,22 +115,25 @@ class TestSingleFile:
         )
         assert found == self.ALLOWED, f"编排文件与闭集不符：{found}"
 
-    def test_this_repo_owns_no_reverse_proxy_of_its_own(self):
-        """**本仓库不含任何 Caddy 配置或服务。**
+    def test_the_gateway_is_a_host_process_not_a_service(self):
+        """网关**不进编排**：它是宿主上的一个进程（Caddy 单文件），不是容器。
 
-        反代确实回来了，但它是一个**独立项目**（../edge，fin / pyp 共用同一台），
-        理由是证书：一台 Caddy = 一个内部 CA = 根证书只需在每台设备装一次。
-        每个项目自带一个就是 N 个 CA、装 N 次，那种事没人会坚持做，最后大家都在点
-        "继续前往"——那一档只防被动嗅听。
+        配置确实在这个仓库里（deploy/edge/Caddyfile，两条路共用），但把它做成
+        compose 里的一个服务会把 docker 变成"要 HTTPS 就必须装 docker"——而这条路
+        存在的全部理由就是那台机器上没有 docker，也不该为了一个反代装一层虚拟机。
 
-        所以这里守的是**归属**，不是"提不提"：本仓库里不能出现 Caddyfile，
-        compose 里不能声明 caddy 服务。引用外部网关的容器名（xc 要检查它在不在）
-        是正当的。
+        Caddyfile **只能有一份**：两份的结果一定是其中一份先过期，而两边都"能跑"，
+        差别只在证书或某个头上，不到出事那天不会有人发现。
         """
-        assert not list(ROOT.glob("Caddyfile*")), "根目录出现了 Caddyfile"
-        assert not list(DEPLOY.rglob("Caddyfile*")), "deploy/ 出现了 Caddyfile"
+        found = sorted(
+            q.relative_to(ROOT).as_posix()
+            for q in ROOT.rglob("Caddyfile*")
+            if ".venv" not in q.parts and ".git" not in q.parts
+        )
+        assert found == ["deploy/edge/Caddyfile"], f"Caddyfile 不止一份或不在 deploy/edge/：{found}"
         compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
-        assert "caddy" not in compose["services"], "本仓库的编排里不该声明 caddy 服务"
+        assert "caddy" not in compose["services"], "网关不该是编排里的一个服务"
+        assert "caddy" not in GATEWAY_COMPOSE.read_text(encoding="utf-8")
 
     def test_project_name_is_pinned(self, compose: dict):
         """不写死 ``name:`` 的话 compose 用 compose 文件所在目录名，也就是
@@ -134,8 +142,15 @@ class TestSingleFile:
         assert compose.get("name") == "xingcha"
 
     def test_build_context_is_the_repo_root(self, compose: dict):
-        """compose 里的相对路径以**文件所在目录**为基准，这里是 deploy/。"""
-        assert compose["services"]["xingcha"]["build"]["context"] == ".."
+        """compose 里的相对路径以**compose 文件所在目录**为基准。
+
+        断言的是"解析出来是仓库根"，不是字面的 ``../..``：编排按系统分目录之后
+        这个前缀已经变过一次（deploy/ → deploy/linux/），而写死字面量的断言在那次
+        移动里只会红一次，然后被人改成新的字面量——它守不住"context 必须是仓库根"
+        这件真正要紧的事（context 错了的症状是 COPY 找不到源码，报错离根因很远）。
+        """
+        ctx = compose["services"]["xingcha"]["build"]["context"]
+        assert (COMPOSE.parent / ctx).resolve() == ROOT, f"build context 不是仓库根：{ctx}"
 
 
 # =============================================================================
@@ -163,7 +178,7 @@ class TestEnvVarContract:
     DERIVED: ClassVar[frozenset[str]] = frozenset(
         {
             "XINGCHA_BIND_ADDR",  # 由 XINGCHA_WEB_HOST 推出来
-            "XINGCHA_PUBLIC_PORT",  # 走网关时从 ../edge/.env 读
+            "XINGCHA_PUBLIC_PORT",  # 走网关时固定 8443（网关那条 docker run 的 -p）
         }
     )
 
@@ -258,7 +273,7 @@ class TestOrchestrationShape:
         """独立跑时**不能**信任 X-Forwarded-*。
 
         那时应用是直接可达的，无条件读那个头等于让任何人左右 cookie 的 Secure 标记。
-        只有叠加层（零宿主端口、唯一入口是网关）才配得上 ``*``。
+        只有叠加层配得上 ``*``——那时端口只绑回环，唯一入口是本机的网关。
         """
         assert "XINGCHA_TRUSTED_PROXIES" not in compose["services"]["xingcha"]["environment"]
 
@@ -266,8 +281,14 @@ class TestOrchestrationShape:
         assert list(compose["services"]) == ["xingcha"]
 
     def test_env_file_carries_the_host_env_into_the_container(self, compose: dict):
-        """后台密码与各厂商的 key 变量都靠它进容器——上游页读的就是这些。"""
-        assert compose["services"]["xingcha"]["env_file"] == ["../.env"]
+        """后台密码与各厂商的 key 变量都靠它进容器——上游页读的就是这些。
+
+        同样按**解析后的路径**断言：必须正好是仓库根的 ``.env``。指到别处的症状是
+        "我在 .env 里填了密码，容器里却没有"，而 compose 不会有任何抱怨。
+        """
+        env_file = compose["services"]["xingcha"]["env_file"]
+        assert len(env_file) == 1, f"env_file 不止一份，会有先后覆盖：{env_file}"
+        assert (COMPOSE.parent / env_file[0]).resolve() == ROOT / ".env"
 
     def test_orchestration_owned_settings_are_not_left_to_the_env_file(self, compose: dict):
         """这几项由编排决定，必须写在 ``environment:`` 里。
@@ -282,36 +303,35 @@ class TestOrchestrationShape:
         assert env["XINGCHA_DATA_DIR"] == "/data"
         assert env["XINGCHA_HOST"] == "0.0.0.0"
 
-    def test_the_gateway_overlay_removes_every_host_port(self):
-        """挂网关时**一个宿主端口都不能剩**。
+    def test_the_gateway_overlay_only_sets_environment(self):
+        """叠加层**只改 environment**，不碰 ports / networks。
 
-        `ports: !override []` 而不是让它合并：compose 对列表默认是**追加**，
-        少了 override 基础那份的端口映射会继续存在——于是同时有两条入口，一条经
-        网关是 HTTPS，一条直连是明文且绕过 ufw。而人只会记住能打开的那一个。
+        网关是宿主进程，容器照样要发布那个端口（只是绑在 127.0.0.1 上，由
+        deploy/linux/xc 的 derive_bind_addr 保证）。哪天有人在这里把 ports 清成
+        `!override []`，网关就再也连不上了——而症状是"容器 healthy、网关一直 502"，
+        两边单独看都正常。
         """
-        raw = GATEWAY_COMPOSE.read_text(encoding="utf-8")
-        assert "ports: !override" in raw, "少了 !override，宿主端口会被保留"
-        overlay = yaml.safe_load(raw.replace("!override", ""))
-        assert overlay["services"]["xingcha"]["ports"] == []
-        assert overlay["services"]["xingcha"]["expose"] == ["8720"]
+        overlay = yaml.safe_load(GATEWAY_COMPOSE.read_text(encoding="utf-8"))
+        svc = overlay["services"]["xingcha"]
+        assert set(svc) == {"environment"}, f"叠加层动了别的东西：{sorted(svc)}"
+        assert "networks" not in overlay, "网关不在 docker 网络里，它是宿主进程"
 
-    def test_the_gateway_overlay_trusts_the_proxy_and_joins_an_external_network(self):
-        """两件事必须同时成立，缺一件都会出安静的问题。
+    def test_the_gateway_overlay_sets_both_halves_of_the_https_story(self):
+        """两项必须**成套出现**，缺一项都会出安静的问题。
 
         - 不信任 ``X-Forwarded-Proto``：应用以为自己在 http 上，**会话 cookie 不带
           Secure**——浏览器那半段明明是 HTTPS，却少一层保护，而功能完全正常。
-        - 网络不是 external：compose 自建的名字会带项目名前缀（xingcha_edge），
-          网关根本不在那里面——症状是网关一直 502 而两边容器都"在跑"。实际踩过。
+        - PUBLIC_URL 还是 http：后台印出的 curl 示例连不上，而错误信息指不到
+          "该走网关"。
+
+        ``*`` 在这里是安全的，前提写在叠加层的注释里：那个端口只绑 127.0.0.1，
+        唯一能发这个头的就是本机上的 Caddy。宿主经发布端口连进来时容器看到的源地址
+        是 docker 网桥的网关（172.x.0.1，随项目网络变），写死必然有一天对不上。
         """
-        overlay = yaml.safe_load(
-            (GATEWAY_COMPOSE)
-            .read_text(encoding="utf-8")
-            .replace("!override", "")
-        )
+        overlay = yaml.safe_load(GATEWAY_COMPOSE.read_text(encoding="utf-8"))
         env = overlay["services"]["xingcha"]["environment"]
         assert env["XINGCHA_TRUSTED_PROXIES"] == "*"
         assert env["XINGCHA_PUBLIC_URL"].startswith("https://")
-        assert overlay["networks"]["default"]["external"] is True
 
     def test_the_base_public_url_is_http(self, compose: dict):
         """独立跑时展示的 curl 示例必须是 http —— 那时确实没有 TLS。
@@ -333,13 +353,18 @@ class TestOrchestrationShape:
     def test_data_mount_defaults_to_the_host_dir_and_can_be_a_named_volume(
         self, compose: dict, compose_raw: str
     ):
-        """Windows 上必须能换成命名卷。
+        """默认是仓库根下的 ``data/``，而且必须能换成命名卷。
 
-        Docker Desktop 经 9p/virtiofs 把 Windows 目录挂进虚拟机，那是网络文件系统，
-        **SQLite 的 WAL 在上面会静默降级**——症状是零星的 database is locked，
-        只在并发写时出现，压不出来也难复现。
+        默认走宿主目录，是因为那样备份就是几个能直接拷走的文件；留着命名卷这条
+        退路，是因为**宿主目录不一定适合放 SQLite**：网络文件系统上 WAL 会静默
+        降级——症状是零星的 database is locked，只在并发写时出现，压不出来也难复现。
+
+        默认值同样按解析后的路径断言，理由见 test_build_context_is_the_repo_root。
         """
-        assert compose_vars(compose_raw)["XINGCHA_DATA_MOUNT"] == "../data"
+        default = compose_vars(compose_raw)["XINGCHA_DATA_MOUNT"]
+        assert (COMPOSE.parent / default).resolve() == ROOT / "data", (
+            f"data 默认挂载点不是仓库根下的 data/：{default}"
+        )
         assert "xingcha_data" in compose.get("volumes", {}), (
             "命名卷没声明，设 XINGCHA_DATA_MOUNT=xingcha_data 会失败"
         )
@@ -435,11 +460,28 @@ class TestOpsScripts:
         """配了网关就必须在启动前检查它；没配则不该被一个不相干的容器挡住。
 
         不检查的症状是"容器 healthy 却什么都打不开"——那种状态最难认，因为每一层
-        单独看都正常。实际踩过一次（xingcha 不在 edge 网络里，网关一直 502）。
+        单独看都正常。实际踩过一次（网关一直 502，而容器 healthy）。
         """
         code = self._code(sh)
-        assert "network inspect" in code, "deploy/linux/xc 没检查共享网络"
         assert "XINGCHA_GATEWAY" in code, "deploy/linux/xc 没读拓扑开关"
+        # 网关是宿主进程，所以判据是"那个端口有没有人听"，不是查某个容器在不在。
+        # 认端口而不认进程名，换成 nginx / Traefik 时这里才不用跟着改。
+        assert "ss -tln" in code, "deploy/linux/xc 没检查网关端口在不在"
+
+    def test_the_gateway_forces_the_port_onto_loopback(self, sh: str):
+        """挂网关时绑定地址**必须被强制成 127.0.0.1**，不看 XINGCHA_WEB_HOST。
+
+        少了这一条：有人把 WEB_HOST 填成内网 IP（那是它本来的用法——证书上的名字），
+        容器那个端口就跟着绑到 0.0.0.0 上，于是 TLS 旁边多出一条明文入口，谁都能连、
+        还绕过 ufw。而页面、证书、网关全都正常，没有任何现象指向这件事。
+
+        它同时也是叠加层敢写 ``XINGCHA_TRUSTED_PROXIES=*`` 的前提。
+        """
+        code = self._code(sh)
+        body = code[code.index("derive_bind_addr()") : code.index("export XINGCHA_BIND_ADDR")]
+        assert re.search(r"\[ -z \"\$GATEWAY\" \] \|\| \{ printf '127\.0\.0\.1'", body), (
+            "derive_bind_addr 没有在配了网关时强制回环"
+        )
 
     def test_the_script_removes_orphans(self, sh: str):
         """``up`` / ``down`` 必须带 ``--remove-orphans``。
@@ -490,7 +532,7 @@ class TestWindowsEntry:
         found = sorted(
             q.name for q in DEPLOY.rglob("*") if q.suffix.lower() in (".bat", ".ps1")
         )
-        assert found == ["xc.bat"], f"deploy/ 下的 Windows 入口与闭集不符：{found}"
+        assert found == ["edge.bat", "xc.bat"], f"deploy/ 下的 Windows 入口与闭集不符：{found}"
 
     def test_it_uses_crlf_and_no_bom(self):
         r"""必须 CRLF、不带 BOM。
@@ -570,12 +612,15 @@ class TestWindowsEntry:
         """
         assert "防火墙" in bat
 
-    def test_the_env_template_documents_the_windows_settings(self):
-        """三项少一项各有各的坑法，模板里必须都在（注释掉也算）。
+    def test_the_env_template_documents_the_no_docker_settings(self):
+        """这条路上的三项，模板里必须都在（注释掉也算）。
 
-        · XINGCHA_HOST 不填 0.0.0.0     → 网关 502 而本机完全正常
-        · XINGCHA_PUBLIC_URL 不填       → 后台印出打不开的 127.0.0.1 地址
-        · XINGCHA_TRUSTED_PROXIES 不填  → 会话 cookie 不带 Secure，而功能全正常
+        Caddy 单文件就在**同一台机器上**，所以：
+
+        · XINGCHA_HOST            → 保持 127.0.0.1；改成 0.0.0.0 等于多开一条
+                                    绕过 TLS 的明文入口，而功能完全正常
+        · XINGCHA_PUBLIC_URL 不填 → 后台印出打不开的 127.0.0.1:8720 地址
+        · XINGCHA_TRUSTED_PROXIES 不填 → 会话 cookie 不带 Secure，而功能全正常
         """
         text = ENV_EXAMPLE.read_text(encoding="utf-8")
         for name in ("XINGCHA_HOST", "XINGCHA_PUBLIC_URL", "XINGCHA_TRUSTED_PROXIES"):
@@ -584,11 +629,124 @@ class TestWindowsEntry:
     def test_the_env_template_does_not_hand_out_a_wildcard_proxy(self):
         """``XINGCHA_TRUSTED_PROXIES`` 在这条路上**不能**示范 ``*``。
 
-        容器那边敢信任所有来源，前提是零宿主端口、唯一入口就是网关；Windows 这边
-        端口是真的开在局域网上的，填 ``*`` 等于让任何人伪造 X-Forwarded-Proto。
+        容器那边敢信任所有来源，前提是端口只绑回环、唯一入口就是本机的网关；
+        这条路上星槎是宿主上的一个普通进程，填 ``*`` 等于让任何能连到它的人伪造
+        X-Forwarded-Proto。``127.0.0.1`` 就够了——Caddy 就在本机。
         """
         text = ENV_EXAMPLE.read_text(encoding="utf-8")
         assert not re.search(r"^#?\s*XINGCHA_TRUSTED_PROXIES=\s*\*", text, re.M)
+
+
+# =============================================================================
+# 网关（deploy/edge）
+# =============================================================================
+
+
+class TestEdgeGateway:
+    """网关是**宿主上的一个 Caddy 单文件**，两条部署路径共用同一份 Caddyfile。
+
+    它和这个仓库之间有三条隐式契约，全都是"改坏了不报错、只在真访问时才表现成
+    别的毛病"的那种：
+
+    · 反代目标端口 ≠ 星槎发布的端口 → 网关一直 502，而两边单独看都在跑；
+    · 站点端口 ≠ xc 印出来的端口     → 后台印一个打不开的地址，服务本身好着；
+    · EDGE_HOST 没传进去             → 站点地址退化成 https://:8443，证书签不出来。
+    """
+
+    @pytest.fixture(scope="class")
+    def caddyfile(self) -> str:
+        return CADDYFILE.read_text(encoding="utf-8")
+
+    def test_it_reverse_proxies_the_port_xingcha_publishes(self, caddyfile: str, compose_raw: str):
+        """反代目标必须是**星槎发布的那个宿主端口**，而且只在回环上。
+
+        对不上的症状是网关一直 502，而 `xc status` 显示容器 healthy——每一层单独看
+        都正常，最难认的那类。
+        """
+        m = re.search(r"^\s*reverse_proxy\s+127\.0\.0\.1:(\d+)", caddyfile, re.M)
+        assert m, "Caddyfile 里没有反代 127.0.0.1 的那一行"
+        assert m.group(1) == compose_vars(compose_raw)["XINGCHA_WEB_PORT"], (
+            "Caddyfile 的反代目标和 compose 发布的端口对不上"
+        )
+
+    def test_the_site_port_matches_what_xc_prints(self, caddyfile: str):
+        """站点端口与 ``deploy/linux/xc`` 走网关时用的端口必须相等。
+
+        两处各写一遍是有意的取舍（xc 不去解析 Caddyfile），代价由这条断言兜着——
+        不一致的症状是后台印出一个打不开的地址，而服务本身完全正常。
+        """
+        site = re.search(r"^https://\{\$EDGE_HOST\}:(\d+)", caddyfile, re.M)
+        assert site, "Caddyfile 里没有 https://{$EDGE_HOST}:<端口> 这样的站点地址"
+        xc = re.search(r"if \[ -n \"\$GATEWAY\" \]; then\n\s*p=(\d+)", XC.read_text(encoding="utf-8"))
+        assert xc, "deploy/linux/xc 的 public_port 里读不出网关端口"
+        assert site.group(1) == xc.group(1), "Caddyfile 的站点端口和 xc 印的端口对不上"
+
+    #: 少一行各有各的坑法，表在 deploy/edge/CADDY.md。
+    REQUIRED_LINES: ClassVar[list[str]] = [
+        "default_sni",  # 按 IP 访问不发 SNI，Caddy 一张证书都选不出来
+        "bind 0.0.0.0",  # 否则绑到字面 IP 上，DHCP 换地址就起不来
+        "tls internal",  # 公网 CA 不给私网 IP 签
+        "flush_interval -1",  # 否则 SSE 被缓冲，"回答要等生成完才一次性蹦出来"
+    ]
+
+    @pytest.mark.parametrize("line", REQUIRED_LINES)
+    def test_the_lines_that_cannot_be_dropped(self, caddyfile: str, line: str):
+        assert line in caddyfile, f"Caddyfile 少了 {line}，症状见 deploy/edge/CADDY.md"
+
+    def test_no_hsts_on_an_internal_ca(self, caddyfile: str):
+        """内网别发 HSTS。
+
+        零收益（没有可降级的 http 入口），代价却很实：它让浏览器**拒绝**你点
+        "继续前往"，而新设备在装根证书之前必然撞证书警告——"点一下继续"变成
+        "这个站点你今天进不去了"，且没有任何提示说原因是一个响应头。
+        """
+        assert "Strict-Transport-Security" not in caddyfile
+
+    def test_both_scripts_pass_the_host_in_from_the_one_source(self):
+        """``EDGE_HOST`` 必须由脚本传进去，且来源只有仓库根 .env 的 WEB_HOST。
+
+        Caddyfile 里的 ``{$VAR}`` 读的是**进程环境变量**，不是文件里的什么插值；
+        空的话站点地址退化成 ``https://:8443``，证书签不出来而报错离根因很远。
+        另设一个变量则是第二个来源——两个来源必然有一天不一致，而那时页面上印的
+        地址和证书上的名字对不上。
+        """
+        for path in (EDGE_SH, EDGE_BAT):
+            text = path.read_text(encoding="utf-8")
+            assert "EDGE_HOST" in text, f"{path.name} 没传 EDGE_HOST"
+            assert "XINGCHA_WEB_HOST" in text, f"{path.name} 没从 .env 读 XINGCHA_WEB_HOST"
+
+    def test_the_shell_script_is_executable_with_a_shebang(self):
+        assert EDGE_SH.stat().st_mode & 0o111, "deploy/edge/edge 没有可执行位"
+        assert EDGE_SH.read_text(encoding="utf-8").startswith("#!"), "缺 shebang"
+
+    def test_the_shell_script_does_not_use_grep_dash_capital_p(self):
+        """和 xc 同一条理由：这台机器上 ``grep`` 是 ugrep 的 shim，PCRE 的 ``\\K``
+        不生效、返回 1，配上 ``set -e`` 就是整个脚本静默退出。"""
+        code = "\n".join(
+            ln
+            for ln in EDGE_SH.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")
+        )
+        assert "-oP" not in code
+
+    def test_the_bat_uses_crlf_and_no_bom(self):
+        r"""cmd.exe 的 ``goto`` 按字节偏移找标签，行尾少一个字节就可能跳飞；
+        UTF-8 BOM 会让第一行变成一条不认识的命令。两种都不会给出像样的报错。"""
+        raw = EDGE_BAT.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf"), "edge.bat 带了 UTF-8 BOM"
+        assert b"\r\n" in raw, "edge.bat 不是 CRLF —— cmd 的 goto 会跳飞"
+        assert b"\n" not in raw.replace(b"\r\n", b""), "edge.bat 里混了裸 LF"
+
+    def test_the_binary_is_not_committed(self):
+        """caddy 二进制**不进版本库**：45 MB，而且每台机器的平台/架构不同。
+
+        进了库的后果不只是仓库变大——它会开始漂移：谁也不知道那个文件是哪个版本、
+        哪个平台的，而 `edge get` 现取一个是几秒钟的事。
+        """
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        for name in ("deploy/edge/caddy", "deploy/edge/caddy.exe"):
+            assert name in ignored, f".gitignore 里没有 {name}"
+        assert not (EDGE / "caddy").exists(), "deploy/edge/caddy 不该在仓库里"
 
 
 # =============================================================================
@@ -615,7 +773,7 @@ class TestEnvNameAlignment:
     def _referenced() -> set[str]:
         """部署产物里出现的所有 ``XINGCHA_*`` 名字（只看可执行部分）。"""
         names: set[str] = set()
-        for path in (COMPOSE, GATEWAY_COMPOSE, XC, XC_BAT):
+        for path in (COMPOSE, GATEWAY_COMPOSE, XC, XC_BAT, EDGE_SH, EDGE_BAT):
             text = path.read_text(encoding="utf-8")
             code = "\n".join(
                 ln
@@ -663,7 +821,8 @@ class TestEnvNameAlignment:
 
 
 class TestDocsHaveOneOwner:
-    """网关的部署说明**只有一份**，在 deploy/CADDY.md。
+    """网关的部署说明**只有一份**，在 deploy/edge/CADDY.md——和它说的那些文件同一个
+    目录。
 
     用户明确要求过"其他地方不要有重复的部分"。这不是洁癖：两处各写一份的结果一定是
     其中一份先过期，而读到过期那份的人会照着做——然后撞上一个已经不存在的步骤
@@ -674,8 +833,9 @@ class TestDocsHaveOneOwner:
     GATEWAY_ONLY: ClassVar[list[str]] = ["edge trust", "root.crt", "default_sni", "内部 CA"]
 
     def test_the_gateway_doc_exists_and_is_linked(self):
-        caddy = DEPLOY / "CADDY.md"
-        assert caddy.exists(), "deploy/CADDY.md 不见了"
+        caddy = EDGE / "CADDY.md"
+        assert caddy.exists(), "deploy/edge/CADDY.md 不见了"
+        assert not (DEPLOY / "CADDY.md").exists(), "deploy/CADDY.md 又冒出来一份"
         assert "CADDY.md" in (DEPLOY / "README.md").read_text(encoding="utf-8")
         assert "CADDY.md" in (ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -686,7 +846,7 @@ class TestDocsHaveOneOwner:
             for q in [ROOT / "README.md", DEPLOY / "README.md"]
             if phrase in q.read_text(encoding="utf-8")
         ]
-        assert not others, f"「{phrase}」是网关的细节，只该在 deploy/CADDY.md 里，却出现在 {others}"
+        assert not others, f"「{phrase}」是网关的细节，只该在 deploy/edge/CADDY.md 里，却出现在 {others}"
 
 
 # =============================================================================

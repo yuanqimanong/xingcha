@@ -825,8 +825,8 @@ ORCHESTRATION_ENV_NAMES: Final = frozenset(
         # 不登记就会被 warn_unknown_env 误报成"拼错了"。
         "XINGCHA_BIND_ADDR",
         "XINGCHA_WEB_HOST",
-        # 独立跑时这个容器发布的宿主端口。走网关时端口是网关的，
-        # 由 deploy/linux/xc 从 ../edge/.env 读出来导出成 XINGCHA_PUBLIC_PORT。
+        # 独立跑时这个容器发布的宿主端口。走网关时端口是网关的（8443），
+        # 由 deploy/linux/xc 导出成 XINGCHA_PUBLIC_PORT。
         "XINGCHA_WEB_PORT",
         "XINGCHA_PUBLIC_PORT",
         "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷
