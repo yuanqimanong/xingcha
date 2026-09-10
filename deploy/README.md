@@ -20,7 +20,35 @@ cd ~/Desktop/my-projects/xingcha && ./deploy/linux/xc start
 
 首次会从 `deploy/.env.example` 生成一份 `.env` 并停下来。
 
-没有 docker 的那条见下面「不走 docker」一节，网关是同一个，data 位置与备份方式也一样。
+**这台 Linux 没装 docker** 的话，第 1 步的网关一模一样，第 2 步换成 uv 直接在宿主上起：
+
+```bash
+# 1. 装 uv（一次性。装完**重开一个窗口**：PATH 是进程启动时读的）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. 起服务
+cd ~/Desktop/my-projects/xingcha && uv run --frozen --no-dev xingcha serve
+```
+
+就这两条，没有单独的 `uv sync`——`uv run` 会先按 `uv.lock` 把环境对齐再跑（`--frozen` 不许它就地改锁文件，
+`--no-dev` 只装跑服务用得上的那些）。Python 也由 uv 自己装（`requires-python >=3.12`），系统里没有 3.12
+不影响。前台跑，Ctrl-C 就是停止；data 在仓库根的 `data/`，和 docker 那条同一个位置。
+
+**`.env` 也不用先复制**：没有它就全走默认值，`127.0.0.1:8720`、明文 HTTP、只有这台机器能打开。要改配置
+再 `cp deploy/.env.example .env`（和 docker 那条**同一份**模板）——而要动的**不是**上面那张表里的
+`XINGCHA_GATEWAY` / `XINGCHA_WEB_PORT`——那几项只有 compose 读，在这条路上写了也不生效——而是 `.env`
+最后一节的 `XINGCHA_HOST` / `XINGCHA_PORT`，挂网关时再放开 `XINGCHA_TRUSTED_PROXIES=127.0.0.1`
+与 `XINGCHA_PUBLIC_URL`。
+
+这两条在 **Windows 上一样用**，只是装 uv 换成 `winget install --id astral-sh.uv`、`cd` 换成仓库路径；
+不过那边直接双击 `deploy\windows\xc.bat` 更省事，它就是这两条外加生成 `.env`、打印一个能点开的地址。
+
+两处差别容易踩：`./deploy/linux/xc` 与 `drill.sh` 整个是 docker 包装，这条路上没有对应物，日常动作直接敲
+`uv run xingcha ...`；另外这里没有 `restart: unless-stopped` 那一层，**关掉终端就是停止**，要开机自启得
+自己写一个 systemd 单元。
+
+其余的（为什么不打镜像、HTTPS 怎么接、备份与演练）见下面「不走 docker」一节——网关是同一个，data 位置
+与备份方式也一样。
 
 ---
 
