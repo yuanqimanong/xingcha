@@ -1,4 +1,4 @@
-"""从 :mod:`xingcha.contract` 的常量生成 ``docs/CONTRACT.md``。
+"""从 :mod:`xingcha.contract` 的常量生成仓库根的 ``CONTRACT.md``。
 
 **文档不手写。** 手写的契约文档一定会和代码漂移，而漂移的那一刻你就有了两份互相矛盾
 的"权威"——更糟的是，人会去信文档而不是代码。这里把常量渲染成文档，并由
@@ -258,7 +258,7 @@ def render() -> str:
     return "\n".join(out) + "\n"
 
 
-DOC_PATH = Path(__file__).resolve().parents[2] / "docs" / "CONTRACT.md"
+DOC_PATH = Path(__file__).resolve().parents[2] / "CONTRACT.md"
 
 
 def write(path: Path | None = None) -> Path:

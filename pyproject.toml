@@ -1,13 +1,13 @@
 [project]
 name = "xingcha"
-version = "0.1.0.dev0"
+version = "1.0.0"
 description = "自部署的 Agent 控制面：把提示词变成可调用、可计量、可带走的服务"
 requires-python = ">=3.12"
 license = { text = "AGPL-3.0-only" }
 
 dependencies = [
   # Agent 内核。~= 锁到补丁位：AgentSpec 字段与 CAPABILITY_TYPES 会随版本演进，
-  # 全部适配集中在 core/builder.py 一个文件（见 docs/开发计划.md §6 标准 3）。
+  # 全部适配集中在 core/builder.py 一个文件。
   # [spec] extra 提供 YAML 支持，缺失会 ImportError。
   "pydantic-ai-slim[openai,spec]~=2.35.3",
   "fastapi>=0.135,<1.0",

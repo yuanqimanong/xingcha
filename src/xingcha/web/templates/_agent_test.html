@@ -1,4 +1,6 @@
-{% if not ok %}
+{# ok 为假**且有话说**才摆错误块。Agent 卡片上的测试弹窗会先带着历史渲染一次，
+   那一次既没跑也没错——没有这个 and，它会顶着一句「没有跑通」打开。 #}
+{% if not ok and message %}
 <div class="alert danger">
   <div>
     <div class="alert-title">没有跑通{% if elapsed %} · {{ elapsed }}s{% endif %}</div>
@@ -52,9 +54,7 @@
 
 {% if ok %}
 <div class="hint mt4">
-  上面是<strong>上游实际收发的内容</strong>（不是照表单重建的），所以看得见系统指令
-  拼好之后长什么样、模板套在哪一层、校验退回时模型收到的错误详情是什么。
-  这一次<strong>没有落库</strong>，也不占任何配额。
+  以上是<strong>上游实际收发的内容</strong>。本次试运行未落库、不占配额。
 </div>
 {% endif %}
 
@@ -90,8 +90,7 @@
   </details>
   {% endfor %}
   <div class="hint">
-    只留最近 {{ history | length }} 次。<strong>这里存着提示词原文与模型输出</strong>——
-    它们落在本机数据库里，不随 <code>/v1</code> 的调用记录走（那张表从不存内容）。
+    只保留最近 {{ history | length }} 次，含提示词原文与模型输出，存在本机数据库。
   </div>
 </div>
 {% endif %}

@@ -1671,30 +1671,80 @@ textarea {
   background: var(--surface-2);
   box-shadow: none;
 }
-.agent-card.off .agent-slug,
 .agent-card.off .agent-name {
   color: var(--ink-3);
 }
 .agent-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--s2);
   justify-content: space-between;
 }
-.agent-slug {
-  font-weight: 600;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
+/* 标题是名称。slug 在下面那行——**它是给机器看的**，默认值是一串时间戳，
+   当标题的话整页每张卡都长得一样。 */
 .agent-name {
-  font-size: 13px;
-  margin-top: var(--s2);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+  text-decoration: none;
 }
+.agent-name:hover {
+  color: var(--accent);
+}
+/* 徽章不换行：卡片窄的时候它们该挤标题，而不是自己散成两行。 */
+.agent-badges {
+  display: flex;
+  gap: var(--s1);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* --- 标识行 --- */
+/* 单行截断而不是 overflow-wrap: anywhere：slug 可以很长（默认 20 个字符，改成
+   更长也合法），换行会把卡片顶高，而一列卡片高度不齐比一条被截断的 id 更难扫。
+   完整值在 title 里，旁边那个按钮能整条复制走。 */
+.agent-id {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  min-width: 0;
+}
+.agent-id code {
+  /* 0 1 auto：短 slug 时贴着内容宽，长 slug 时才收缩并省略。写 1 1 auto 的话
+     一个 8 个字符的 slug 也会被拉成一整条横贯卡片的空框。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  background: var(--recess);
+  border: 1px solid var(--rule);
+  border-radius: var(--r1);
+  padding: 1px var(--s1);
+}
+.agent-id-copy {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink-4);
+  cursor: pointer;
+}
+.agent-id-copy:hover {
+  color: var(--accent);
+}
+
 .agent-desc {
   font-size: 12px;
   color: var(--ink-3);
   line-height: 1.5;
-  margin-top: 2px;
+  margin-top: var(--s2);
 }
 .agent-meta {
   margin-top: var(--s3);
@@ -1702,6 +1752,46 @@ textarea {
 }
 .agent-meta td.mono {
   overflow-wrap: anywhere;
+}
+
+/* --- 模型在当前上游里不存在 --- */
+/* 一条左边框 + 一层极淡的底色。不用整卡红边：一组里可能大半都失效，那时满屏红框
+   除了刺眼之外不提供任何区分度，而"哪几个"才是要看的。
+   同时**不只靠颜色**——卡片右上角有「模型失效」这个文字徽章，色觉障碍下仍然读得出。 */
+.agent-card.stale {
+  border-left: 3px solid var(--danger);
+  background: linear-gradient(90deg, var(--danger-soft) 0%, var(--surface) 40%);
+}
+.agent-card.stale .agent-meta td.mono {
+  color: var(--danger);
+}
+/* 模型名后面那个点。纯装饰，aria-hidden。 */
+.stale-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: var(--s1);
+  border-radius: 50%;
+  background: var(--danger);
+  vertical-align: middle;
+}
+/* 只在用户没要求减少动效时才闪。持续 3 次就停——一直闪的东西会被大脑过滤掉，
+   而且它出现在的是一整页里的少数几张卡，不需要一直喊。 */
+@media (prefers-reduced-motion: no-preference) {
+  .stale-dot {
+    animation: stale-pulse 1.4s ease-in-out 3;
+  }
+}
+@keyframes stale-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-ring);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+    opacity: 0.45;
+  }
 }
 .agent-actions {
   display: flex;

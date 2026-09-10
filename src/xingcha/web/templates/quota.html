@@ -4,8 +4,7 @@
 <div class="page-head">
   <div>
     <h1>配额</h1>
-    <p>给一个<strong>主体</strong>在一个<strong>窗口</strong>内设上限。同一次调用会同时命中三层主体，
-      <strong>最紧的那条先生效</strong>——不是取最宽松的。</p>
+    <p>给一个<strong>主体</strong>在一个<strong>窗口</strong>内设上限。三层主体同时检查，<strong>最紧的一条先生效</strong>。</p>
   </div>
 </div>
 
@@ -15,8 +14,7 @@
 <div class="alert warn">
   <div>
     <div class="alert-title">还没有任何配额</div>
-    <div>在此之前，唯一的钱刹车是 OpenRouter 侧那把 key 的信用上限。
-      结构化 Agent 最坏会调用 <strong>1+重试次数</strong> 次模型，所以一条跑飞的调用能花掉几倍的钱。</div>
+    <div>当前没有任何上限。结构化 Agent 最多会调用 <strong>1+重试次数</strong> 次模型。</div>
   </div>
 </div>
 {% endif %}
@@ -29,7 +27,7 @@
   <div class="card-body">
     <form method="post" action="/admin/quota/save" class="form-row">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <div class="field" style="flex:1 1 260px">
+      <div class="field" style="flex:0 1 220px">
         <label for="subject">主体</label>
         <select id="subject" name="subject">
           {% for group, items in subject_groups %}
@@ -63,9 +61,8 @@
       </div>
     </form>
     <div class="hint mt4">
-      两个上限至少设一个。<strong>次数上限永远精确</strong>；金额上限最多超出
-      「在飞请求数 × 单次费用」——调用前不可能知道要花多少，所以它天然是事后判定。
-      另外约三分之一的在售模型查不到价，对它们只有次数上限兜底。
+      两个上限至少设一个。<strong>次数上限精确</strong>；金额上限是事后判定，
+      最多超出「在飞请求数 × 单次费用」。查不到单价的模型只受次数上限约束。
     </div>
   </div>
 </div>

@@ -278,16 +278,53 @@ def enable_instrumentation(tracing: Any) -> None:
 #:
 #: 每一项都在 :func:`model_settings_fields` 里对着官方 schema 校验过存在，所以
 #: pydantic-ai 哪天改了字段名，构建期就会红，而不是在某次调用时静默失效。
-FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str], ...]] = (
-    # (字段名, 中文标签, 提示)
-    ("temperature", "temperature", "0 最确定、越高越发散。抽取类任务通常设 0。"),
-    ("top_p", "top_p", "核采样。与 temperature 二选一调，同时调难以推理。"),
-    ("max_tokens", "max_tokens", "单次回复的上限。设太小会让长回答被截断。"),
-    ("seed", "seed", "同样输入尽量给同样输出。多数上游只是尽力而为，不保证。"),
-    ("presence_penalty", "presence_penalty", "抑制重复出现的话题。范围 -2 ~ 2。"),
-    ("frequency_penalty", "frequency_penalty", "抑制重复用词。范围 -2 ~ 2。"),
-    ("top_k", "top_k", "只从概率最高的 k 个词里采样。部分上游不支持。"),
-    ("timeout", "timeout（秒）", "**单次**上游请求的超时，不是整轮。长思考模型要放宽。"),
+#: 每一项的第三格是**留空时实际生效的值**，直接印在输入框里。
+#:
+#: 原先那里写的是"默认"两个字，而那等于什么都没说：调 temperature 的人想知道的正是
+#: "不动它是多少"。这些数字是 **OpenAI 兼容 API 的文档默认值**——星槎留空时压根不发
+#: 这个字段，所以真正决定取值的是上游。少数上游会不一样，所以措辞是"上游默认"。
+#:
+#: 有三项没有数字可写，那就**不写数字**：``max_tokens`` 由模型自己的上限决定，
+#: ``seed`` / ``top_k`` 不发就是不生效。编一个数字比写"默认"更糟。
+#:
+#: ``timeout`` 是唯一一项星槎自己知道确切值的（``settings.request_timeout``），
+#: 所以它是个占位符，由 :func:`model_settings_fields` 填进去。
+FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    # (字段名, 中文标签, 留空时实际是多少, 提示)
+    ("temperature", "temperature", "上游默认 1", "0 最确定、越高越发散。抽取类任务通常设 0。"),
+    ("top_p", "top_p", "上游默认 1", "核采样。与 temperature 二选一调，同时调难以推理。"),
+    ("max_tokens", "max_tokens", "不限，到模型自己的上限", "设太小会让长回答被截断。"),
+    ("seed", "seed", "不发送", "同样输入尽量给同样输出。多数上游只是尽力而为，不保证。"),
+    ("presence_penalty", "presence_penalty", "上游默认 0", "抑制重复出现的话题。范围 -2 ~ 2。"),
+    ("frequency_penalty", "frequency_penalty", "上游默认 0", "抑制重复用词。范围 -2 ~ 2。"),
+    ("top_k", "top_k", "不发送", "只从概率最高的 k 个词里采样。部分上游不支持。"),
+    (
+        "timeout",
+        "timeout（秒）",
+        "{request_timeout}",
+        "**单次**上游请求的超时，不是整轮。长思考模型要放宽。",
+    ),
+)
+
+#: 厂商专属的参数。**不在通用 ``ModelSettings`` 里**，所以单独一张表：
+#: :func:`model_settings_fields` 那道"对着官方 schema 校验字段名"的检查用的是
+#: 通用那份，把这些混进去会直接把构建搞红。
+#:
+#: ``openai_reasoning_effort`` 是实测过真的会发出去的——它落成请求体里的
+#: ``reasoning_effort``（见 tests/test_agent_form.py 里那条探针）。不实测不敢加：
+#: ``AgentSpec`` 的 ``extra='ignore'`` 会静默吞掉收不下的键，症状是"我设了、没生效"。
+#:
+#: 取值不是数字而是一个闭集，所以单独走 ``<select>``，不进
+#: :func:`model_settings_from_form` 的数字转换。
+FORM_CHOICE_SETTINGS: Final[tuple[tuple[str, str, str, str, tuple[str, ...]], ...]] = (
+    (
+        "openai_reasoning_effort",
+        "reasoning_effort",
+        "上游默认 medium",
+        "思考深度。**只有目录里带 reasoning 参数的模型认它**，别的模型会忽略"
+        "（不会报错）。越高越慢越贵。",
+        ("minimal", "low", "medium", "high"),
+    ),
 )
 
 #: 能力清单里对**单用户自托管**真正有用、且不需要额外参数的那些。
@@ -372,20 +409,77 @@ FORM_CAPABILITIES: Final[tuple[tuple[str, str, str, dict[str, Any] | None], ...]
 CAPABILITY_INSTRUMENTATION: Final = "Instrumentation"
 
 
-def model_settings_fields() -> tuple[tuple[str, str, str], ...]:
+def model_settings_fields(
+    request_timeout: float | None = None,
+) -> tuple[tuple[str, str, str, str], ...]:
     """表单要用的模型参数，**对着官方 schema 校验过**。
 
     不校验的话，pydantic-ai 改字段名之后表单会静默失效：填了 temperature、
     存进 spec、``extra='ignore'`` 把它吞掉——你以为设了、实际跑的是默认值。
+
+    ``request_timeout`` 传进来是为了把 ``timeout`` 那一项的"留空是多少"填成真值。
+    不传就留占位符原样——CLI 与测试不需要它。
     """
     known = set(_spec_schema()["$defs"]["ModelSettings"].get("properties", {}))
-    missing = [name for name, _, _ in FORM_MODEL_SETTINGS if name not in known]
+    missing = [name for name, _, _, _ in FORM_MODEL_SETTINGS if name not in known]
     if missing:  # pragma: no cover - 只在上游改名时触发
         raise RuntimeError(
             f"这些字段在官方 ModelSettings 里不存在了：{missing}。"
             f"pydantic-ai 改了字段名，FORM_MODEL_SETTINGS 要跟着改。"
         )
-    return FORM_MODEL_SETTINGS
+    if request_timeout is None:
+        return FORM_MODEL_SETTINGS
+    shown = f"{request_timeout:g}"
+    return tuple(
+        (f, label, default.format(request_timeout=shown), hint)
+        for f, label, default, hint in FORM_MODEL_SETTINGS
+    )
+
+
+def sampling_params_ignored(model_id: str, provider: Any) -> bool:
+    """这个模型会不会把 ``temperature`` / ``top_p`` **静默丢掉**。
+
+    pydantic-ai 把所有 ``openai/`` 前缀的模型名都当成"推理模型且思考常开"
+    （profile 里 ``thinking_always_enabled``），而推理模型不接受采样参数，于是它们在
+    发请求前被剥掉——只在服务端日志里 ``warnings.warn`` 一句。对着页面的人来说症状是
+    "我设了 temperature=0，跑出来还是发散的"，而表单上一切正常。
+
+    所以这里问一次 profile，把答案摆到表单上。**只影响 ``openai/*``**：
+    ``anthropic/*``、``google/*``、裸模型名都照常发送（有测试钉着，见
+    tests/test_agent_form.py 的 TestSettingsActuallyReachTheWire）。
+
+    这是在读第三方的内部结构，所以整段包在 try 里：读不到就说"不知道"（返回 False），
+    宁可少一句提示，也不能因为上游换了个数据形状就让整个表单 500。
+    """
+    if not model_id or provider is None:
+        return False
+    try:
+        profile = provider.model_profile(model_id)
+        if profile is None:
+            return False
+        if isinstance(profile, dict):
+            return bool(profile.get("thinking_always_enabled"))
+        return bool(getattr(profile, "thinking_always_enabled", False))
+    except Exception:  # pragma: no cover - 只在 pydantic-ai 换形状时走到
+        log.debug("取不到 %s 的 model profile，不显示采样参数提示", model_id, exc_info=True)
+        return False
+
+
+def choice_settings_fields() -> tuple[tuple[str, str, str, str, tuple[str, ...]], ...]:
+    """厂商专属的枚举参数。字段名对着 ``OpenAIChatModelSettings`` 校验。
+
+    校验的理由与上面同一条：收不下的键会被静默吞掉，而症状是"设了没生效"。
+    """
+    from pydantic_ai.models.openai import OpenAIChatModelSettings
+
+    known = set(OpenAIChatModelSettings.__annotations__)
+    missing = [name for name, *_ in FORM_CHOICE_SETTINGS if name not in known]
+    if missing:  # pragma: no cover - 只在上游改名时触发
+        raise RuntimeError(
+            f"这些字段在 OpenAIChatModelSettings 里不存在了：{missing}。"
+            f"pydantic-ai 改了字段名，FORM_CHOICE_SETTINGS 要跟着改。"
+        )
+    return FORM_CHOICE_SETTINGS
 
 
 def capabilities_from_form(raw: Any) -> list[Any]:
@@ -885,7 +979,7 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
     """
     ints = {"max_tokens", "seed", "top_k"}
     out: dict[str, Any] = {}
-    for field, _, _ in model_settings_fields():
+    for field, _, _, _ in model_settings_fields():
         text = (raw.get(field) or "").strip()
         if not text:
             continue
@@ -895,6 +989,18 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
             from ..errors import AgentSpecInvalid
 
             raise AgentSpecInvalid(f"{field} 不是合法的数字：{text!r}") from e
+
+    # 枚举项：**只收闭集里的值**。不校验的话一个手改过的表单能把任意字符串塞进
+    # spec，而上游对无效值的反应是一个 400，报错离"你在下拉框里选了什么"很远。
+    for field, _, _, _, options in choice_settings_fields():
+        text = (raw.get(field) or "").strip()
+        if not text:
+            continue
+        if text not in options:
+            from ..errors import AgentSpecInvalid
+
+            raise AgentSpecInvalid(f"{field} 只能是 {'/ '.join(options)} 之一，收到 {text!r}")
+        out[field] = text
     return out
 
 
@@ -933,7 +1039,10 @@ def form_view(spec: dict[str, Any]) -> dict[str, Any]:
     names = capability_names(spec.get("capabilities") or [])
     prompting = prompting_from_spec(spec)
     return {
-        "settings": {k: settings.get(k, "") for k, _, _ in model_settings_fields()},
+        "settings": {
+            k: settings.get(k, "")
+            for k, *_ in (*model_settings_fields(), *choice_settings_fields())
+        },
         "capabilities": names,
         "instrumented": CAPABILITY_INSTRUMENTATION in names,
         "user_template": prompting.user_template,

@@ -345,16 +345,68 @@ async def list_groups(session: AsyncSession) -> list[str]:
     return [r for r in rows if r]
 
 
-async def rename_group(session: AsyncSession, old: str, new: str) -> int:
+#: 分组名的长度上限。与模板里的 ``maxlength`` 是同一个数。
+GROUP_NAME_MAX = 40
+
+
+async def declared_groups(session: AsyncSession, keyring: Any) -> list[str]:
+    """在后台"新建分组"建过、但可能还没有成员的分组名。"""
+    from . import setting as setting_svc
+
+    raw = await setting_svc.get(session, keyring, C.SETTING_KEY_AGENT_GROUPS)
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except ValueError:
+        # 手改坏了不该让整页 500——分组只是个展示分类。
+        log.warning("agent.groups 不是合法 JSON，已忽略")
+        return []
+    return [str(i).strip() for i in items if isinstance(i, str) and str(i).strip()]
+
+
+async def _write_declared(session: AsyncSession, keyring: Any, names: list[str]) -> None:
+    from . import setting as setting_svc
+
+    ordered = sorted(dict.fromkeys(names))
+    await setting_svc.set_(
+        session, keyring, C.SETTING_KEY_AGENT_GROUPS, json.dumps(ordered, ensure_ascii=False)
+    )
+
+
+async def declare_group(session: AsyncSession, keyring: Any, name: str) -> str:
+    """登记一个分组名。返回规范化后的名字；已存在时是幂等的。
+
+    校验放在这里而不是路由里：CLI 和后台走的是同一条路。
+    """
+    clean = " ".join(name.split())[:GROUP_NAME_MAX]
+    if not clean:
+        raise ValueError("分组名不能为空。")
+    if clean == DEFAULT_GROUP:
+        raise ValueError(f"「{DEFAULT_GROUP}」是没分组时的展示名，不能建成一个真的分组。")
+    await _write_declared(session, keyring, [*await declared_groups(session, keyring), clean])
+    return clean
+
+
+async def all_groups(session: AsyncSession, keyring: Any) -> list[str]:
+    """下拉框里该出现的全部分组：有成员的 + 登记过还空着的。"""
+    return sorted({*await list_groups(session), *await declared_groups(session, keyring)})
+
+
+async def rename_group(session: AsyncSession, keyring: Any, old: str, new: str) -> int:
     """把一个分组下的 Agent 全部挪到另一个名字下。返回挪了几个。
 
-    新名字为空 = 挪回默认分组（写 NULL）。分组不是一张表，就是 Agent 上的一个
-    字符串——建表要维护"空分组还留着吗"，而一个没有成员的分组没有任何意义。
+    新名字为空 = 挪回默认分组（写 NULL），并把这个名字从登记表里删掉——不然它会
+    以一个空分组的身份留在下拉框里，而用户刚做的动作是"把它去掉"。
     """
     rows = (await session.execute(select(Agent).where(Agent.group_name == old))).scalars().all()
-    target = new.strip() or None
+    target = " ".join(new.split())[:GROUP_NAME_MAX] or None
     for row in rows:
         row.group_name = target
+    declared = [g for g in await declared_groups(session, keyring) if g != old]
+    if target:
+        declared.append(target)
+    await _write_declared(session, keyring, declared)
     return len(rows)
 
 

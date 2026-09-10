@@ -9,7 +9,7 @@
 这是"业务代码只改两行"这句承诺的直接验证。
 
 桌面客户端（Cherry Studio / Open WebUI / Continue / Cursor）装不进 CI，
-它们的实测结论记在 ``docs/客户端兼容.md``，那份文档明确区分了"已验证"与"未验证"。
+它们的实测结论记在 README 的「客户端兼容」一节，那里区分了已验证与未验证。
 """
 
 from __future__ import annotations

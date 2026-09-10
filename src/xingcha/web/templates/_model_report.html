@@ -38,3 +38,15 @@
   {% include "_capabilities.html" %}
 </div>
 {% endif %}
+
+{# 「模型参数」卡上那条提示也同一次换掉。它随模型变：只有部分模型会把采样参数丢掉。 #}
+<div id="ms-note" hx-swap-oob="true">
+  {% if sampling_ignored %}
+  <div class="notice warn mb4">
+    <strong>这个模型会忽略 temperature 与 top_p。</strong>
+    它被识别为"思考常开"的推理模型，而推理模型不接受采样参数——填了会在发请求前被
+    剥掉，<strong>不报错</strong>。要控发散度就用下面的 <code>reasoning_effort</code>，
+    或换一个非 <code>openai/</code> 前缀的模型。
+  </div>
+  {% endif %}
+</div>

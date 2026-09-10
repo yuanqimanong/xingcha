@@ -50,7 +50,7 @@ class TestFieldListsAreSchemaDriven:
 
     def test_every_form_setting_exists_in_the_official_schema(self):
         known = set(builder._spec_schema()["$defs"]["ModelSettings"]["properties"])
-        for field, _, _ in builder.model_settings_fields():
+        for field, *_ in builder.model_settings_fields():
             assert field in known, f"{field} 不在官方 ModelSettings 里"
 
     def test_every_form_capability_exists_in_pydantic_ai(self):
@@ -64,10 +64,137 @@ class TestFieldListsAreSchemaDriven:
 
         只给字段名（``top_p``）等于把 OpenAI 的 API 文档摆给用户看。
         """
-        for field, label, hint in builder.model_settings_fields():
+        for field, label, default, hint in builder.model_settings_fields():
             assert label and len(hint) > 8, f"{field} 的说明太短"
+            assert default, f"{field} 没写留空时是多少"
         for name, label, hint, _ in builder.form_capabilities():
             assert label and hint, f"{name} 缺标签或提示"
+
+
+class TestSettingsActuallyReachTheWire:
+    """表单里的模型参数**必须真的出现在上游请求体里**。
+
+    这不是多余的一层：``AgentSpec`` 的 ``extra='ignore'`` 会静默吞掉它收不下的键，
+    而 pydantic-ai 的 model profile 还会按模型名再剥一层。两处都不报错，症状是
+    "我在页面上设了、跑起来没生效"——而页面看起来一切正常。
+
+    这里逐个把参数送进一个真的 HTTP 上游，然后读它收到的 JSON。
+    """
+
+    @staticmethod
+    async def _sent(upstream, model_id: str, settings: dict) -> dict:
+        from xingcha.core.builder import BuildOptions
+        from xingcha.core.upstream import UpstreamConfig
+        from xingcha.services import run as run_svc
+
+        cfg = UpstreamConfig(api_key="sk-or-v1-fake", base_url=upstream.base_url)
+        spec = builder.validate_spec(
+            {
+                "name": "probe",
+                "model": model_id,
+                "instructions": "x",
+                "model_settings": settings,
+            }
+        )
+        rt = builder.build(
+            spec_json=spec,
+            tier=C.Tier.T2,
+            out_schema=None,
+            provider=builder.make_provider(cfg, timeout=10.0),
+            options=BuildOptions(),
+            concurrency=None,
+        )
+        await run_svc.execute(
+            rt,
+            conv=run_svc.to_conversation([{"role": "user", "content": "hi"}]),
+            run_timeout=10.0,
+        )
+        return json.loads(upstream.last().body)
+
+    @pytest.mark.anyio
+    async def test_reasoning_effort_reaches_the_upstream(self, upstream: FakeUpstream):
+        """``openai_reasoning_effort`` 落成请求体里的 ``reasoning_effort``。
+
+        表单里那个下拉之所以敢加，就是因为这条。裸写 ``reasoning_effort``
+        （不带 ``openai_`` 前缀）**会被静默丢掉**——见下一条。
+        """
+        body = await self._sent(upstream, "openai/gpt-5", {"openai_reasoning_effort": "high"})
+        assert body.get("reasoning_effort") == "high"
+
+    @pytest.mark.anyio
+    async def test_the_unprefixed_spelling_is_silently_dropped(self, upstream: FakeUpstream):
+        """反证：少了 ``openai_`` 前缀就什么都不会发生，而且不报错。
+
+        这条在的意义是把"为什么字段名必须对着 OpenAIChatModelSettings 校验"钉住。
+        """
+        body = await self._sent(upstream, "openai/gpt-5", {"reasoning_effort": "high"})
+        assert "reasoning_effort" not in body
+
+    @pytest.mark.anyio
+    async def test_numeric_settings_reach_the_upstream(self, upstream: FakeUpstream):
+        body = await self._sent(upstream, "deepseek-v4-pro", {"temperature": 0.3, "top_p": 0.9})
+        assert body.get("temperature") == 0.3
+        assert body.get("top_p") == 0.9
+
+    @pytest.mark.anyio
+    async def test_openai_prefixed_models_lose_temperature(self, upstream: FakeUpstream):
+        """**已知缺陷，钉在这里而不是假装没有。**
+
+        pydantic-ai 把所有 ``openai/`` 前缀的模型名都当成"推理模型且思考常开"
+        （profile 里 ``thinking_always_enabled=True``），而推理模型不收 ``temperature``
+        / ``top_p``，于是它们被剥掉。只影响 ``openai/*``——``anthropic/*``、
+        ``google/*``、裸模型名都正常（上一条）。
+
+        这条断言**记录当前行为**。哪天 pydantic-ai 改了判断、或者星槎自己按目录里的
+        ``reasoning`` 参数来决定，这条会红——那时候要做的是把它改成正向断言，
+        顺便把表单上那句提示去掉。
+        """
+        body = await self._sent(upstream, "openai/gpt-4o", {"temperature": 0.3, "top_p": 0.9})
+        assert "temperature" not in body, "pydantic-ai 不再剥 temperature 了，去更新表单提示"
+        assert "top_p" not in body
+
+
+class TestDefaultsAreConcrete:
+    """输入框里印的是**具体值**，不是"默认"两个字。
+
+    调 temperature 的人想知道的正是"不动它是多少"，而"默认"恰好不回答那个问题。
+    """
+
+    def test_no_field_just_says_default(self):
+        for field, _, default, _ in builder.model_settings_fields():
+            assert default != "默认", f"{field} 还写着「默认」"
+            assert default, f"{field} 没写留空时是多少"
+
+    def test_the_timeout_default_is_the_real_configured_value(self):
+        """timeout 是唯一一项星槎自己知道确切值的，所以必须印真值。"""
+        fields = dict((f, d) for f, _, d, _ in builder.model_settings_fields(request_timeout=600))
+        assert fields["timeout"] == "600"
+        # 不传就留占位符，不许把花括号漏到页面上
+        raw = dict((f, d) for f, _, d, _ in builder.model_settings_fields())
+        assert raw["timeout"] == "{request_timeout}"
+
+    def test_the_page_shows_them(self, logged_in: TestClient):
+        body = logged_in.get("/admin/agents/new").text
+        assert 'placeholder="默认"' not in body
+        assert "上游默认 1" in body
+
+    def test_the_effort_select_is_on_the_page(self, logged_in: TestClient):
+        body = logged_in.get("/admin/agents/new").text
+        assert 'name="ms_openai_reasoning_effort"' in body
+        for opt in ("minimal", "low", "medium", "high"):
+            assert f'value="{opt}"' in body
+
+    def test_an_effort_outside_the_closed_set_is_refused(self):
+        """手改过的表单不许把任意字符串塞进 spec：上游对无效值回 400，而那个错误
+        离"你在下拉框里选了什么"很远。"""
+        from xingcha.errors import AgentSpecInvalid
+
+        with pytest.raises(AgentSpecInvalid):
+            builder.model_settings_from_form({"openai_reasoning_effort": "ultra"})
+
+    def test_an_effort_inside_the_set_survives(self):
+        out = builder.model_settings_from_form({"openai_reasoning_effort": "high"})
+        assert out == {"openai_reasoning_effort": "high"}
 
 
 class TestBlankIsNotZero:
@@ -261,7 +388,7 @@ class TestFormPage:
 
     def test_model_params_are_rendered(self, logged_in: TestClient):
         body = logged_in.get("/admin/agents/new").text
-        for field, _, _ in builder.model_settings_fields():
+        for field, *_ in builder.model_settings_fields():
             assert f'name="ms_{field}"' in body, f"{field} 没出现在表单里"
 
     def test_capabilities_are_rendered(self, logged_in: TestClient):
@@ -801,8 +928,30 @@ class TestModelReport:
         for label in ("深度思考", "联网搜索", "原生结构化输出", "工具调用", "图片 / 文件输入"):
             assert label in body, f"少了「{label}」"
 
-    def test_an_empty_model_renders_nothing(self, logged_in: TestClient):
-        assert self._report(logged_in, "").strip() == ""
+    def test_an_empty_model_renders_no_report(self, logged_in: TestClient):
+        """空模型名不摆报告——但**仍然要发那个 oob 交换**。
+
+        oob 是用来清掉上一个模型留下的提示的。不发的话，从一个"会忽略 temperature"
+        的模型改回空输入，那条红字会留在页面上，而它已经不适用于任何东西。
+        """
+        body = self._report(logged_in, "")
+        assert "model-report" not in body, "空模型名不该有报告块"
+        assert 'id="ms-note" hx-swap-oob="true"' in body, "少了清提示的那次 oob"
+        assert "会忽略 temperature" not in body
+
+    def test_a_reasoning_model_warns_that_sampling_is_ignored(self, logged_in: TestClient):
+        """``openai/*`` 会把 temperature / top_p 丢掉，这件事必须写在表单上。
+
+        pydantic-ai 只在服务端 ``warnings.warn`` 一句，页面上完全看不出来——
+        症状是"我设了 temperature=0，跑出来还是发散的"。
+        """
+        body = self._report(logged_in, "openai/gpt-5")
+        assert "会忽略 temperature" in body
+
+    def test_a_normal_model_does_not_warn(self, logged_in: TestClient):
+        """反面：别对着一个照常发送采样参数的模型摆一条红字。"""
+        body = self._report(logged_in, "deepseek-v4-pro")
+        assert "会忽略 temperature" not in body
 
     def test_the_literal_route_is_not_eaten_by_the_slug_route(self, logged_in: TestClient):
         """**字面路由必须注册在 ``/agents/{slug}`` 之前。**

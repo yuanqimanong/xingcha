@@ -201,7 +201,6 @@ def _render(request: Request, template: str, ctx: dict[str, Any]) -> HTMLRespons
     state = request.app.state.xc
     base = {
         "version": __version__,
-        "contract": C.CONTRACT_VERSION,
         "current": request.url.path.rstrip("/") or "/admin",
         "public_url": state.settings.public_url
         or f"http://{state.settings.host}:{state.settings.port}",
@@ -1584,21 +1583,36 @@ def _lint_ctx(schema_text: str, tier: str) -> dict[str, Any]:
 
 @router.get("/agents")
 async def agents_page(request: Request) -> Response:
-    await require_admin(request)
+    session = await require_admin(request)
     state = request.app.state.xc
     from ..core.guarantee import TIER_INFO
     from ..services import agent as agent_svc
+    from ..services import agent_test as test_svc
 
     async with state.sessionmaker() as s:
         pairs = await agent_svc.list_all(s)
         stats = await _agent_summaries(s)
+        declared = await agent_svc.declared_groups(s, state.keyring)
+        trials = await test_svc.recent_many(s, [row.slug for row, _ in pairs])
+
+    # 换上游之后有些 Agent 写的模型可能已经不存在了（切换页会先列出来让你确认，
+    # 但确认过之后这件事只剩在这一页上看得见）。
+    #
+    # **只在目录真的拉到东西时才判**：目录为空有两种原因——上游没有 /models 端点，
+    # 或者这次没拉到。那时把每个 Agent 都标成失效是在撒谎，而且撒得很响。
+    catalog = state.catalog.all()
+    catalog_known = bool(catalog)
 
     groups: dict[str, list[Any]] = {}
+    stale_total = 0
     for row, ver in pairs:
         spec = json.loads(ver.spec_json) if ver else {}
         tier = ver.tier if ver else "—"
         st = stats.get(row.id) or _NO_RUNS
         prompting = builder_mod.prompting_from_spec(spec)
+        model_id = spec.get("model") or ""
+        model_stale = bool(catalog_known and model_id and state.catalog.get(model_id) is None)
+        stale_total += 1 if model_stale else 0
         groups.setdefault(row.group_name or agent_svc.DEFAULT_GROUP, []).append(
             SimpleNamespace(
                 slug=row.slug,
@@ -1620,8 +1634,15 @@ async def agents_page(request: Request) -> Response:
                 # 撒谎——这正是"可定价率"这个指标要挡住的事，卡片上也得挡住。
                 unpriced=st.unpriced,
                 last=st.last,
+                # 卡片上的「测试」弹窗要能直接看到前几次跑的是什么，不用先跳去编辑页。
+                trials=[_test_history_row(r) for r in trials.get(row.slug, [])],
+                model_stale=model_stale,
             )
         )
+
+    # 登记过、还没有成员的分组也要出现——不然"新建分组"点完页面毫无变化。
+    for name in declared:
+        groups.setdefault(name, [])
 
     # 默认分组排最后：它是"还没归类"的那堆，不该占着第一屏。
     ordered = sorted(groups.items(), key=lambda kv: (kv[0] == agent_svc.DEFAULT_GROUP, kv[0]))
@@ -1629,7 +1650,18 @@ async def agents_page(request: Request) -> Response:
     resp = _render(
         request,
         "agents.html",
-        {"groups": ordered, "csrf": csrf.value, "default_group": agent_svc.DEFAULT_GROUP},
+        {
+            "groups": ordered,
+            "csrf": csrf.value,
+            "default_group": agent_svc.DEFAULT_GROUP,
+            "agent_count": len(pairs),
+            "stale_total": stale_total,
+            "catalog_known": catalog_known,
+            "upstream_label": _active_upstream_label(state),
+            "group_names": sorted(n for n in groups if n != agent_svc.DEFAULT_GROUP),
+            "group_name_max": agent_svc.GROUP_NAME_MAX,
+            "flash": _take_agents_flash(request, session),
+        },
     )
     csrf.apply(resp)
     return resp
@@ -1652,9 +1684,61 @@ async def rename_agent_group(
     from ..services import agent as agent_svc
 
     async with state.sessionmaker() as s:
-        await agent_svc.rename_group(s, old, new)
+        await agent_svc.rename_group(s, state.keyring, old, new)
         await s.commit()
     return security_headers(RedirectResponse("/admin/agents", status_code=303))
+
+
+def _active_upstream_label(state: Any) -> str:
+    """当前出口的名字，用在"换过上游所以有模型失效了"那条提示里。
+
+    只用于文案。取不到就说"当前上游"——为了一句提示去多查一次数据库不值得。
+    """
+    ref = getattr(getattr(state, "upstream", None), "ref", "") or ""
+    return str(ref) or "当前上游"
+
+
+@router.post("/agents/group/create")
+async def create_agent_group(
+    request: Request,
+    name: str = Form(default=""),
+    csrf_token: str = Form(default=""),
+) -> Response:
+    """登记一个空分组。
+
+    "先建分组、再往里放 Agent" 是人的自然顺序。分组在库里只是 Agent 上的一个字符串，
+    所以还没有成员的分组名单独存一份（``agent.groups``）。
+    """
+    await guard_mutation(request, csrf_token)
+    session = await current_session(request)
+    state = request.app.state.xc
+    from ..services import agent as agent_svc
+
+    async with state.sessionmaker() as s:
+        try:
+            created = await agent_svc.declare_group(s, state.keyring, name)
+        except ValueError as e:
+            _put_agents_flash(request, session, "warn", str(e))
+            return security_headers(RedirectResponse("/admin/agents", status_code=303))
+        await s.commit()
+    _put_agents_flash(request, session, "ok", f"已建好分组「{created}」")
+    return security_headers(RedirectResponse("/admin/agents", status_code=303))
+
+
+def _put_agents_flash(request: Request, session: Any, level: str, message: str) -> None:
+    """给 Agent 列表页留一句一次性提示（跨 303 用）。"""
+    if session is not None:
+        request.app.state.xc.flash.put(f"{session.id}:agents", f"{level}\n{message}")
+
+
+def _take_agents_flash(request: Request, session: Any) -> Any:
+    if session is None:
+        return None
+    raw = request.app.state.xc.flash.take(f"{session.id}:agents")
+    if not raw:
+        return None
+    level, _, message = raw.partition("\n")
+    return SimpleNamespace(level=level or "info", title="", message=message)
 
 
 @router.post("/agents/{slug}/toggle")
@@ -1679,8 +1763,11 @@ async def toggle_agent(request: Request, slug: str, csrf_token: str = Form(defau
 
 
 def _empty_form() -> Any:
+    from ..core.ids import new_agent_slug
+
     return SimpleNamespace(
-        slug="",
+        # slug 发布后不可改，所以默认值必须一次到位、不会撞。用户可以整个改掉。
+        slug=new_agent_slug(),
         name="",
         description="",
         instructions="",
@@ -1712,15 +1799,19 @@ async def _form_shell(request: Request) -> dict[str, Any]:
     models, native = await _model_choices(state)
     tracing = state.tracing
     async with state.sessionmaker() as s:
-        groups = await agent_svc.list_groups(s)
+        groups = await agent_svc.all_groups(s, state.keyring)
     return {
         "models": models,
         "native_count": native,
         "tiers": _tier_options(),
-        "model_settings": builder.model_settings_fields(),
+        # 传 request_timeout 进去，「timeout 留空是多少」才显示得出真值。
+        "model_settings": builder.model_settings_fields(state.settings.request_timeout),
+        "choice_settings": builder.choice_settings_fields(),
         "output_channels": guarantee_mod.OUTPUT_CHANNELS,
         "capabilities": builder.form_capabilities(),
         "groups": groups,
+        # 分组下拉里"没分组"那一项的显示名。库里存的是 NULL，见 agent_svc.DEFAULT_GROUP。
+        "default_group": agent_svc.DEFAULT_GROUP,
         # 可观测那一栏要知道地址配了没：没配就不该给一个勾了没用的开关
         "trace_endpoint": tracing.endpoint if tracing is not None else "",
         "trace_include_content": tracing.include_content if tracing is not None else False,
@@ -1770,6 +1861,7 @@ def _model_report_ctx(request: Request, model: str) -> dict[str, Any]:
             "no_catalog": False,
             "capabilities": [],
             "hidden_caps": [],
+            "sampling_ignored": False,
         }
     info = state.catalog.get(model)
     known = info is not None and info.declares_capabilities
@@ -1804,6 +1896,9 @@ def _model_report_ctx(request: Request, model: str) -> dict[str, Any]:
             for name, label, _, _ in builder.form_capabilities()
             if not usable({"Thinking": "reasoning", "WebSearch": "web_search"}.get(name, name))
         ],
+        # temperature / top_p 会不会被静默丢掉。见 builder.sampling_params_ignored——
+        # 那件事只在服务端日志里 warn 一句，页面上不说的话没人会发现。
+        "sampling_ignored": builder.sampling_params_ignored(model, state.provider),
     }
 
 
@@ -1979,7 +2074,11 @@ async def agent_save(
     # 把那份清单抄第二遍，而两份清单迟早会不一致。
     raw = await request.form()
     settings_raw = {
-        field: str(raw.get(f"ms_{field}") or "") for field, _, _ in builder.model_settings_fields()
+        field: str(raw.get(f"ms_{field}") or "")
+        for field, *_ in (
+            *builder.model_settings_fields(),
+            *builder.choice_settings_fields(),
+        )
     }
     caps = builder.capabilities_from_form(raw)
     if raw.get("instrument"):
@@ -2197,31 +2296,13 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
     from ..core.builder import BuildOptions
     from ..core.schema_guard import SchemaRejected, validate_schema
     from ..errors import XingchaError
-    from ..services import agent_test as test_svc
-    from ..services import run as run_svc
 
     raw = await request.form()
     probe = str(raw.get("test_input") or "").strip()
     slug = str(raw.get("slug") or "").strip()
 
-    async def render(ctx: dict[str, Any]) -> Response:
-        """把这一次的结果连同最近几次一起渲染。
-
-        历史与本次走同一个模板片段：两套渲染迟早在"这一列显示什么"上分叉，而这里
-        要的恰恰是能把这次和上次并排比。
-        """
-        async with state.sessionmaker() as s:
-            rows = await test_svc.recent(s, slug)
-        return security_headers(
-            _render(
-                request,
-                "_agent_test.html",
-                {**ctx, "history": [_test_history_row(r) for r in rows]},
-            )
-        )
-
     async def failed(message: str) -> Response:
-        return await render({"ok": False, "message": message})
+        return await _trial_render(request, slug, {"ok": False, "message": message})
 
     if not probe:
         return await failed("先填一段测试输入——它就是调用方会发来的那条 user 消息。")
@@ -2250,7 +2331,11 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             ),
         )
         settings_raw = {
-            f: str(raw.get(f"ms_{f}") or "") for f, _, _ in builder.model_settings_fields()
+            f: str(raw.get(f"ms_{f}") or "")
+            for f, *_ in (
+                *builder.model_settings_fields(),
+                *builder.choice_settings_fields(),
+            )
         }
         caps = builder.capabilities_from_form(raw)
         spec = builder.spec_from_form(
@@ -2277,6 +2362,52 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
     except (SchemaRejected, XingchaError, ValueError) as e:
         return await failed(str(getattr(e, "message", e)))
 
+    return await _run_trial(
+        request,
+        slug=slug,
+        probe=probe,
+        rt=rt,
+        tier=choice.tier.value,
+        tier_note=choice.reason,
+        model=model,
+    )
+
+
+async def _trial_render(request: Request, slug: str, ctx: dict[str, Any]) -> Response:
+    """把这一次的结果连同最近几次一起渲染。
+
+    历史与本次走同一个模板片段：两套渲染迟早在"这一列显示什么"上分叉，而这里
+    要的恰恰是能把这次和上次并排比。
+    """
+    state = request.app.state.xc
+    from ..services import agent_test as test_svc
+
+    async with state.sessionmaker() as s:
+        rows = await test_svc.recent(s, slug)
+    history = [_test_history_row(r) for r in rows]
+    return security_headers(_render(request, "_agent_test.html", {**ctx, "history": history}))
+
+
+async def _run_trial(
+    request: Request,
+    *,
+    slug: str,
+    probe: str,
+    rt: Any,
+    tier: str,
+    tier_note: str,
+    model: str,
+) -> Response:
+    """执行一次试运行：调上游、记历史、渲染结果。
+
+    表单试跑（新建/编辑页）与 Agent 卡片上的「测试」共用它——两处最容易分叉的地方
+    正是"失败时显示什么"，而那恰好是最需要一致的部分。
+    """
+    state = request.app.state.xc
+    from ..errors import XingchaError
+    from ..services import agent_test as test_svc
+    from ..services import run as run_svc
+
     conv = run_svc.apply_prompting(
         run_svc.to_conversation([{"role": "user", "content": probe}]), rt.prompting
     )
@@ -2295,7 +2426,7 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
                 s,
                 slug=slug,
                 model=model,
-                tier=choice.tier.value,
+                tier=tier,
                 ok=False,
                 prompt=probe,
                 error=e.message,
@@ -2303,8 +2434,10 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
                 elapsed_ms=int(elapsed * 1000),
             )
             await s.commit()
-        return await render(
-            {"ok": False, "message": e.message, "rows": rows, "elapsed": f"{elapsed:.1f}"}
+        return await _trial_render(
+            request,
+            slug,
+            {"ok": False, "message": e.message, "rows": rows, "elapsed": f"{elapsed:.1f}"},
         )
 
     from ..api.runlog_mw import price
@@ -2325,7 +2458,7 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             s,
             slug=slug,
             model=model,
-            tier=choice.tier.value,
+            tier=tier,
             ok=True,
             prompt=probe,
             output=outcome.content,
@@ -2340,13 +2473,15 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             cost_source=source,
         )
         await s.commit()
-    return await render(
+    return await _trial_render(
+        request,
+        slug,
         {
             "ok": True,
             "rows": rows,
             "output": outcome.content,
-            "tier": choice.tier.value,
-            "tier_note": choice.reason,
+            "tier": tier,
+            "tier_note": tier_note,
             "elapsed": f"{elapsed:.1f}",
             "input_tokens": outcome.input_tokens,
             "output_tokens": outcome.output_tokens,
@@ -2355,7 +2490,60 @@ async def agent_test(request: Request, csrf_token: str = Form(default="")) -> Re
             "violations": outcome.schema_violations,
             "cost": _fmt_cost(str(cost)) if cost is not None else "—",
             "cost_source": source,
-        }
+        },
+    )
+
+
+@router.post("/agents/{slug}/trial")
+async def agent_trial(request: Request, slug: str, csrf_token: str = Form(default="")) -> Response:
+    """跑一次**已保存的当前版本**，不改动它。
+
+    与表单试跑的区别只有一个：跑的是库里那一版，而不是页面上没保存的内容。
+    Agent 列表页上的「测试」用它——那里没有表单可以取值。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    from ..core import builder
+    from ..core.builder import BuildOptions
+    from ..errors import XingchaError
+    from ..services import agent as agent_svc
+
+    raw = await request.form()
+    probe = str(raw.get("test_input") or "").strip()
+    if not probe:
+        return await _trial_render(request, slug, {"ok": False, "message": "先填一段测试输入。"})
+    if state.provider is None:
+        return await _trial_render(
+            request,
+            slug,
+            {"ok": False, "message": "还没有配置上游 key。到「上游」页配好之后再试。"},
+        )
+
+    try:
+        async with state.sessionmaker() as s:
+            a = await agent_svc.resolve(s, slug, include_inactive=True)
+        spec = json.loads(a.spec_json)
+        rt = builder.build(
+            spec_json=spec,
+            tier=C.Tier(a.tier),
+            out_schema=json.loads(a.out_schema) if a.out_schema else None,
+            provider=state.provider,
+            options=BuildOptions(),
+            concurrency=state.concurrency,
+        )
+    except (XingchaError, ValueError) as e:
+        return await _trial_render(
+            request, slug, {"ok": False, "message": str(getattr(e, "message", e))}
+        )
+
+    return await _run_trial(
+        request,
+        slug=slug,
+        probe=probe,
+        rt=rt,
+        tier=a.tier,
+        tier_note=f"已保存的 v{a.version}",
+        model=str(spec.get("model", "")),
     )
 
 

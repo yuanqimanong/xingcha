@@ -956,6 +956,56 @@ class TestThemeSwitch:
         for value in C.THEMES:
             assert f'value="{value}"' in body, f"切换器缺 {value}"
 
+    def test_the_value_only_rides_on_the_submit_button(self, logged_in: TestClient):
+        """整份 payload 就是按钮上的 ``name="value"``——没有别的输入承载它。
+
+        这条断言在的理由见下一条：正因为 value 只在提交按钮上，任何"提交后立刻
+        禁用按钮"的逻辑都会把它一起丢掉。
+        """
+        body = logged_in.get("/admin").text
+        head = body.index('class="theme-switch"')
+        form = body[head : body.index("</form>", head)]
+        assert 'name="value"' in form
+        assert "<input" not in form.replace('<input type="hidden"', ""), (
+            "value 只该由 <button name=value> 承载，别再加一个隐藏输入"
+        )
+
+    def test_a_missing_value_is_a_bad_request(self, logged_in: TestClient):
+        """提交者被丢掉时后端会 422——这就是那个 bug 在用户眼里的样子。
+
+        实际发生过：``static/app.js`` 的防重复提交在 ``submit`` 事件里立刻
+        ``disabled = true``，而表单数据（entry list）是在 submit 之后才构造的、
+        构造时会跳过 disabled 控件，**包括点下去的那个按钮**。于是点「亮」/「暗」
+        提交上去没有 value，页面变成一段 JSON 报错。修复见下面那个类。
+        """
+        logged_in.get("/admin")
+        r = logged_in.post(
+            "/admin/theme",
+            data={"csrf_token": csrf_of(logged_in), "back": "/admin"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 422
+
+
+class TestSubmitLockKeepsTheSubmitter:
+    """防重复提交**必须延后一拍**再禁用按钮。
+
+    立刻禁用会把提交者的 ``name=value`` 从表单数据里抹掉。大多数表单看不出来
+    （数据在 input 里），但主题切换整份 payload 就在按钮上——见
+    ``TestThemeSwitch.test_a_missing_value_is_a_bad_request``。
+    """
+
+    def test_the_lock_is_deferred(self, client: TestClient):
+        js = client.get("/admin/static/app.js").text
+        # 锚在"原生表单才进锁"那一句上：注释顺序会变，这个判断不会。
+        pivot = js.index("form.hasAttribute('hx-post')")
+        start = js.rindex("document.addEventListener('submit'", 0, pivot)
+        block = js[start : js.index("});", pivot)]
+        assert "setTimeout(() => lock(form), 0)" in block, (
+            "原生 submit 里必须延后 lock，否则提交按钮上的 name=value 会被丢掉"
+        )
+        assert not re.search(r"^\s*lock\(form\);", block, re.M), "不能在 submit 事件里同步 lock"
+
 
 # =============================================================================
 # 密钥页
@@ -1020,6 +1070,206 @@ SCHEMA_TEXT = (
 )
 
 
+class TestAgentGroups:
+    """分组：先建组、再往里放 Agent。
+
+    分组在库里只是 ``agent.group_name`` 上的一个字符串，所以**还没有成员的分组**
+    单独存一份（``contract.SETTING_KEY_AGENT_GROUPS``）。不存的话「新建分组」
+    点完页面一点变化都没有——而人的顺序通常是先分类再填内容。
+    """
+
+    def _create(self, client: TestClient, name: str) -> httpx2.Response:
+        client.get("/admin/agents")
+        return client.post(
+            "/admin/agents/group/create",
+            data={"name": name, "csrf_token": csrf_of(client)},
+            follow_redirects=False,
+        )
+
+    def test_an_empty_group_survives_and_shows_up(self, logged_in: TestClient):
+        assert self._create(logged_in, "合同处理").status_code == 303
+        body = logged_in.get("/admin/agents").text
+        assert "合同处理" in body
+        assert "这个分组还是空的" in body
+
+    def test_it_reaches_the_group_dropdown(self, logged_in: TestClient):
+        """建完组要能在 Agent 表单里选到——否则这个动作没有下一步。"""
+        self._create(logged_in, "合同处理")
+        body = logged_in.get("/admin/agents/new").text
+        assert '<option value="合同处理"' in body
+
+    def test_the_onboarding_copy_stays_while_there_are_no_agents(self, logged_in: TestClient):
+        """空分组不该把「还没有 Agent」那段引导顶掉。
+
+        判据是"有没有 Agent"而不是"有没有分组"——建过一个空分组之后后者就非空了，
+        而那时候引导语比任何时候都更该在。
+        """
+        self._create(logged_in, "合同处理")
+        assert "还没有 Agent" in logged_in.get("/admin/agents").text
+
+    def test_creating_twice_is_idempotent(self, logged_in: TestClient):
+        self._create(logged_in, "合同处理")
+        self._create(logged_in, "合同处理")
+        assert logged_in.get("/admin/agents").text.count('name="old" value="合同处理"') == 1
+
+    def test_the_display_name_for_ungrouped_cannot_be_claimed(self, logged_in: TestClient):
+        """「默认分组」是没分组时的展示名，不能被建成一个真的分组。
+
+        建成了的话页面上会出现两个同名分组，而其中一个是 NULL、一个是字符串——
+        之后任何"这个 Agent 在哪一组"的问题都有两个答案。
+        """
+        from xingcha.services.agent import DEFAULT_GROUP
+
+        self._create(logged_in, DEFAULT_GROUP)
+        assert logged_in.get("/admin/agents").text.count(f'value="{DEFAULT_GROUP}"') == 0
+
+    def test_a_blank_name_is_refused(self, logged_in: TestClient):
+        assert self._create(logged_in, "   ").status_code == 303
+        assert "分组名不能为空" in logged_in.get("/admin/agents").text
+
+
+class TestStaleModelMarking:
+    """换上游之后有些 Agent 写的模型不存在了，Agent 页要标出来。
+
+    切换页会在切之前把要失效的列出来让你确认，但确认过之后这件事只剩这一页看得见。
+    不标的话症状是"这个 Agent 昨天还好着，今天调用就 404"，而页面上一切正常。
+    """
+
+    def _agent(self, client: TestClient, slug: str, model: str) -> None:
+        client.get("/admin/agents/new")
+        r = client.post(
+            "/admin/agents/save",
+            data={
+                "slug": slug,
+                "name": f"名字-{slug}",
+                "instructions": "干活",
+                "model": model,
+                "tier": "",
+                "retries": "2",
+                "csrf_token": csrf_of(client),
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303, r.text
+
+    @staticmethod
+    def _stock(client: TestClient, *ids: str) -> None:
+        """给目录塞几个模型。直接写内部快照——这一页只读 all() 与 get()。"""
+        from xingcha.core.models_catalog import ModelInfo
+
+        cat = client.app.state.xc.catalog  # type: ignore[attr-defined]
+        cat._models = {i: ModelInfo(id=i, name=i, created=0) for i in ids}
+
+    def test_nothing_is_marked_when_the_catalog_is_empty(self, logged_in: TestClient):
+        """**目录为空时一个都不许标。**
+
+        空有两种原因：上游没有 ``/models`` 端点（厂商直连很常见），或者这次没拉到。
+        那时把每个 Agent 都标成失效是在撒谎，而且撒得很响——满屏红。
+        """
+        self._agent(logged_in, "aaa", "openai/gpt-5")
+        self._stock(logged_in)  # 空目录
+        body = logged_in.get("/admin/agents").text
+        assert "模型失效" not in body
+
+    def test_a_model_outside_the_catalog_is_marked(self, logged_in: TestClient):
+        self._agent(logged_in, "aaa", "openai/gpt-5")
+        self._stock(logged_in, "vendor/something-else")
+        body = logged_in.get("/admin/agents").text
+        assert "模型失效" in body
+        assert "1 个 Agent 的模型在当前上游里不存在" in body
+        # 卡片本体也要带上 stale（CSS 靠它画左边框与底色）
+        assert re.search(r'class="agent-card[^"]*\bstale\b', body), "卡片上没有 stale 类"
+
+    def test_a_model_inside_the_catalog_is_not_marked(self, logged_in: TestClient):
+        self._agent(logged_in, "aaa", "openai/gpt-5")
+        self._stock(logged_in, "openai/gpt-5", "vendor/other")
+        body = logged_in.get("/admin/agents").text
+        assert "模型失效" not in body
+
+    def test_the_marker_is_not_colour_only(self, logged_in: TestClient):
+        """只靠颜色标记的话色觉障碍下读不出来，所以必须同时有文字。"""
+        self._agent(logged_in, "aaa", "openai/gpt-5")
+        self._stock(logged_in, "vendor/something-else")
+        body = logged_in.get("/admin/agents").text
+        assert "模型失效" in body, "缺文字徽章"
+
+    def test_it_says_what_to_do_about_it(self, logged_in: TestClient):
+        """标出来只是一半，还得说怎么修——否则用户只知道坏了。"""
+        self._agent(logged_in, "aaa", "openai/gpt-5")
+        self._stock(logged_in, "vendor/something-else")
+        body = logged_in.get("/admin/agents").text
+        assert "/admin/upstreams" in body
+        assert "裸模型直通不受影响" in body
+
+
+class TestAgentCardHierarchy:
+    """卡片标题是**名称**，不是 slug。
+
+    反过来的话，默认 slug（一串时间戳）会让整页每张卡的标题都长得一样，扫一眼认不出
+    哪张是哪张。slug 是给机器的（对外的 ``model`` 值），降成一行等宽小字、单行截断、
+    可整条复制。
+    """
+
+    def test_the_name_is_the_heading_and_links_to_the_agent(self, logged_in: TestClient):
+        TestStaleModelMarking()._agent(logged_in, "aaa", "openai/gpt-5")
+        body = logged_in.get("/admin/agents").text
+        assert '<a class="agent-name" href="/admin/agents/aaa">名字-aaa</a>' in body
+        assert 'class="agent-slug' not in body, "slug 不再是标题了"
+
+    def test_the_slug_is_copyable(self, logged_in: TestClient):
+        """slug 长了之后是被截断显示的，所以必须能整条拿走。"""
+        TestStaleModelMarking()._agent(logged_in, "aaa", "openai/gpt-5")
+        body = logged_in.get("/admin/agents").text
+        assert 'data-copy="aaa"' in body
+
+    def test_the_id_line_truncates_instead_of_wrapping(self, client: TestClient):
+        """换行会把卡片顶高，而一列卡片高度不齐比一条被截断的 id 更难扫。"""
+        css = client.get("/admin/static/style.css").text
+        block = css[css.index(".agent-id code") : css.index(".agent-id-copy")]
+        assert "text-overflow: ellipsis" in block
+        assert "white-space: nowrap" in block
+
+
+class TestNewAgentSlugDefault:
+    """新建页预填一个 UUIDv7。
+
+    slug 是**对外的 ``model`` 值**，发布后不能改，所以默认值必须一次到位：不会撞、
+    也不会因为"同一秒建两个"而重复。用 v7 而不是 v4 是因为高 48 位是毫秒时间戳，
+    字典序等于创建顺序。
+    """
+
+    def test_it_is_prefilled_and_valid(self, logged_in: TestClient):
+        body = logged_in.get("/admin/agents/new").text
+        m = re.search(r'id="slug"[^>]*value="([^"]*)"', body)
+        assert m, "新建页没有预填标识"
+        slug = m.group(1)
+        assert re.fullmatch(r"[a-z][a-z0-9]*(-[a-z0-9]+)*", slug), slug
+        C.validate_slug(slug)
+        # 完整的 uuid7 是 33 个字符（含前缀），那版被否掉了：它是对外的 model 值，
+        # 要出现在业务代码里、卡片标题上、错误信息里，没人会留着。
+        assert len(slug) <= 24, f"默认标识又变长了：{slug}"
+
+    def test_two_visits_differ(self, logged_in: TestClient):
+        def slug_of() -> str:
+            body = logged_in.get("/admin/agents/new").text
+            m = re.search(r'id="slug"[^>]*value="([^"]*)"', body)
+            assert m
+            return m.group(1)
+
+        assert slug_of() != slug_of()
+
+    def test_the_version_is_ordered_by_time(self):
+        """同一毫秒内随机段决定顺序，跨毫秒必须严格递增——不然"按 slug 排序"没意义。"""
+        import time
+
+        from xingcha.core.ids import uuid7_hex
+
+        first = uuid7_hex()
+        time.sleep(0.005)
+        assert uuid7_hex() > first
+        assert first[12] == "7", "版本位不是 7"
+
+
 class TestAgentForm:
     def _create(self, client: TestClient, **over) -> httpx2.Response:
         client.get("/admin/agents/new")
@@ -1044,6 +1294,30 @@ class TestAgentForm:
         body = logged_in.get("/admin/agents").text
         assert "extract" in body
         assert "T2 · 结构化" in body
+
+    def test_the_card_carries_a_trial_dialog(self, logged_in: TestClient):
+        """卡片上的「测试」是弹窗，不是跳到编辑页的锚点。
+
+        跳过去会把人带进一整页表单，而他要做的只是"拿一条真实输入试一下"。
+        弹窗里既能跑这一次，也能看前几次——最近三次由 agent_test 服务保留。
+        """
+        self._create(logged_in)
+        body = logged_in.get("/admin/agents").text
+        assert 'data-open-dialog="#trial-extract"' in body
+        assert 'id="trial-extract"' in body
+        assert 'hx-post="/admin/agents/extract/trial"' in body
+        # 还没跑过，不该顶着一句「没有跑通」打开
+        assert "没有跑通" not in body
+
+    def test_the_trial_endpoint_needs_an_input(self, logged_in: TestClient):
+        self._create(logged_in)
+        logged_in.get("/admin/agents")
+        r = logged_in.post(
+            "/admin/agents/extract/trial",
+            data={"test_input": "  ", "csrf_token": csrf_of(logged_in)},
+        )
+        assert r.status_code == 200
+        assert "先填一段测试输入" in r.text
 
     def test_slug_is_readonly_when_editing(self, logged_in: TestClient):
         """标识发布后不能改——调用方的代码里写着它。"""

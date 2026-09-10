@@ -5,8 +5,7 @@
   <div>
     <h1>{{ '新建 Agent' if is_new else agent.name }}</h1>
     {% if is_new %}
-    <p>Agent 就是一段被固定下来的提示词 + 一份输出约定。建好之后业务代码把
-      <code>model</code> 换成它的标识即可，不改别的。</p>
+    <p>把提示词与输出约定固定下来，得到一个可调用的 <code>model</code> 标识。</p>
     {% else %}
     <p>标识 <code>{{ agent.slug }}</code> · 当前 v{{ agent.version }}
       {% if is_active %}<span class="badge ok">启用</span>
@@ -18,7 +17,14 @@
      保存那个用 form= 关联到下面的表单——按钮不在表单里，靠 HTML 的 form 属性
      跨节点关联，比把整个页头塞进 <form> 干净（那样页头里的停用按钮会变成同一个
      表单的第二个 submit，回到"点保存却停用了"那个坑）。 #}
-  {% if not is_new %}
+  {% if is_new %}
+  {# 新建页的动作也在页头，和编辑页一致：一页里只有一处放"提交"的地方，
+     不用先滚到底才知道按钮在哪。靠 form= 跨节点关联到下面那个表单。 #}
+  <div class="row">
+    <button class="btn primary" type="submit" form="agent-form" data-save>创建</button>
+    <a class="btn ghost" href="/admin/agents">取消</a>
+  </div>
+  {% else %}
   <div class="row">
     <form method="post" action="/admin/agents/{{ agent.slug }}/toggle"
           {% if is_active %}data-confirm="停用「{{ agent.slug }}」？调用方拿它当 model 调用会开始收到 model_not_found。slug 仍然被占着，随时能开回来。"{% endif %}>
@@ -76,22 +82,44 @@
     <section class="card">
         <div class="card-head"><h2>基本信息</h2></div>
         <div class="card-body">
+          {# 标识与分组一行：一个是"对外叫什么"、一个是"在后台归到哪儿"，
+             都是这个 Agent 的身份，且都很短。下面三项各占一整行——名称与说明是
+             自由文本，模型那一格还要在下面挂一块能力速览。 #}
           <div class="form-row">
-            <div class="field" style="flex:1 1 180px">
+            <div class="field" style="flex:2 1 220px">
               <label for="slug">标识</label>
               <input id="slug" name="slug" type="text" class="mono" value="{{ form.slug }}"
                      {% if not is_new %}readonly{% endif %}
                      required pattern="[a-z][a-z0-9]*(-[a-z0-9]+)*" minlength="2" maxlength="48"
                      placeholder="extract">
-              <div class="hint">对外的 <code>model</code> 值。<strong>发布后不可改</strong>。</div>
+              <div class="hint">
+                对外的 <code>model</code> 值。<strong>发布后不可改</strong>。
+                {% if is_new %}默认给的是一个 UUIDv7，可以整个改成好记的名字。{% endif %}
+              </div>
             </div>
-            <div class="field" style="flex:1 1 180px">
+            <div class="field" style="flex:1 1 160px">
+              <label for="group">分组</label>
+              {# 下拉而不是自由输入：手打的分组名会因为一个空格或一个错别字分裂成
+                 两组，而两组看起来一模一样。要新的名字去 Agent 列表页「新建分组」。 #}
+              <select id="group" name="group">
+                <option value="" {% if not form.group %}selected{% endif %}>{{ default_group }}</option>
+                {% for g in groups %}
+                <option value="{{ g }}" {% if form.group == g %}selected{% endif %}>{{ g }}</option>
+                {% endfor %}
+              </select>
+              <div class="hint">仅用于后台归类。</div>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="field">
               <label for="name">名称</label>
               <input id="name" name="name" type="text" value="{{ form.name }}" required maxlength="60"
                      placeholder="合同抽取">
               <div class="hint">只用于后台与模型列表的展示。</div>
             </div>
-            <div class="field" style="flex:2 1 300px">
+          </div>
+          <div class="form-row">
+            <div class="field">
               <label for="model">模型</label>
               <input id="model" name="model" type="text" class="mono" value="{{ form.model }}" required
                      list="model-list" placeholder="openai/gpt-5">
@@ -114,19 +142,10 @@
             </div>
           </div>
           <div class="form-row">
-            <div class="field" style="flex:3 1 320px">
+            <div class="field">
               <label for="description">说明</label>
               <input id="description" name="description" type="text" value="{{ form.description }}"
                      maxlength="200" placeholder="一句话说明它做什么，会出现在 /v1/models 里">
-            </div>
-            <div class="field" style="flex:1 1 180px">
-              <label for="group">分组</label>
-              <input id="group" name="group" type="text" value="{{ form.group }}" maxlength="40"
-                     list="group-list" placeholder="留空 = 默认分组">
-              <datalist id="group-list">
-                {% for g in groups %}<option value="{{ g }}"></option>{% endfor %}
-              </datalist>
-              <div class="hint">只用于后台归类，<strong>不进 slug、不进 /v1/models</strong>。</div>
             </div>
           </div>
         </div>
@@ -140,16 +159,38 @@
             </span>
           </div>
           <div class="card-body">
+            {# 随所选模型重渲染——见 _model_report.html 末尾的 hx-swap-oob。
+               有些模型会把 temperature / top_p 静默丢掉，那件事只有这里说得出。 #}
+            <div id="ms-note"></div>
             <p class="muted small mb4">
-              <strong>留空就是不设这一项。</strong>留空与填 <code>0</code> 是两件不同的事——
-              前者用上游默认，后者是一条明确的指令。
+              <strong>留空就是不发这一项</strong>，框里印的灰字就是那时候实际生效的值。
+              留空与填 <code>0</code> 是两件不同的事：后者是一条明确的指令。
             </p>
             <div class="grid-params">
-              {% for field, label, hint in model_settings %}
+              {# placeholder 是**留空时实际生效的值**，不是"默认"两个字。
+                 调 temperature 的人想知道的正是"不动它是多少"，而"默认"等于没说。 #}
+              {% for field, label, default, hint in model_settings %}
               <div class="field">
                 <label for="ms_{{ field }}">{{ label }}</label>
                 <input id="ms_{{ field }}" name="ms_{{ field }}" type="text" class="mono"
-                       inputmode="decimal" value="{{ form.settings.get(field, '') }}" placeholder="默认">
+                       inputmode="decimal" value="{{ form.settings.get(field, '') }}"
+                       placeholder="{{ default }}">
+                <div class="hint">{{ hint }}</div>
+              </div>
+              {% endfor %}
+
+              {# 枚举项走 select。它们是**厂商专属**的键（不在通用 ModelSettings 里），
+                 由 builder.FORM_CHOICE_SETTINGS 单独维护。 #}
+              {% for field, label, default, hint, options in choice_settings %}
+              <div class="field">
+                <label for="ms_{{ field }}">{{ label }}</label>
+                <select id="ms_{{ field }}" name="ms_{{ field }}">
+                  <option value="">{{ default }}</option>
+                  {% for opt in options %}
+                  <option value="{{ opt }}"
+                          {% if form.settings.get(field) == opt %}selected{% endif %}>{{ opt }}</option>
+                  {% endfor %}
+                </select>
                 <div class="hint">{{ hint }}</div>
               </div>
               {% endfor %}
@@ -166,10 +207,7 @@
           </div>
           <div class="card-body">
             <p class="muted small mb4">
-              这里只列<strong>这条 API 通道上真的能用的</strong>。官方清单里另外那些
-              （网页抓取、图像生成、原生 MCP）不是"支持的模型少"，而是与模型无关地做不到——
-              <code>OpenAIChatModel</code> 原生只认联网搜索一个工具，其余只存在于 OpenAI 的
-              Responses API 上，而星槎有意没走那条（中转会挂）。
+              只列<strong>这条 API 通道上能用的</strong>能力，随所选模型变化。
             </p>
             {# 这一块随模型变——见 _model_report.html 末尾的 hx-swap-oob。 #}
             <div id="cap-list">
@@ -178,11 +216,8 @@
               {% endwith %}
             </div>
             <div class="hint mt4">
-              <strong>网页抓取</strong>去掉了：原生做不到，唯一的路是由星槎自己的进程出网去抓，
-              而那样能不能抓到取决于这台机器能到哪——一个时灵时不灵的能力比没有更糟。
-              <br>
-              <strong>MCP</strong> 需要服务器地址与鉴权，得先有一个配置页——还没做。要用工具的话
-              现在走导出 bundle 手改 <code>agent.yaml</code> 那条路。
+              <strong>网页抓取</strong>与 <strong>MCP</strong> 暂不提供。需要工具的话，
+              导出 bundle 后手改 <code>agent.yaml</code>。
             </div>
           </div>
         </section>
@@ -322,7 +357,7 @@
     <section class="card" id="test">
         <div class="card-head">
           <h2>试运行</h2>
-          <span class="small muted">按上面表单里此刻的内容跑，不保存、不落库、不占配额</span>
+          <span class="small muted">用表单当前内容试跑，不保存</span>
         </div>
         <div class="card-body">
           <div class="field">
@@ -338,7 +373,7 @@
               跑一次 <span class="htmx-indicator">…</span>
             </button>
             <span class="hint">
-              会<strong>真的调一次上游、真的花钱</strong>。跑完显示上游实际收发的整条链路。
+              会<strong>真实调用上游并产生费用</strong>，跑完显示完整的收发链路。
             </span>
           </div>
           <div class="obs-in-test">
@@ -377,14 +412,6 @@
       </section>
   </div>
 
-  {# 只有新建页需要底部按钮。编辑页的保存 / 停用 / 查看版本 / 导出全在页头，
-     底部再放一份只是把页面拉长。 #}
-  {% if is_new %}
-  <div class="row">
-    <button class="btn primary" type="submit" data-save>创建</button>
-    <a class="btn ghost" href="/admin/agents">取消</a>
-  </div>
-  {% endif %}
 </form>
 
 {% if not is_new %}

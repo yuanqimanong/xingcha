@@ -4,7 +4,7 @@
 <div class="page-head">
   <div>
     <h1>总览</h1>
-    <p>把 <code>base_url</code> 指向这里、填一把 <code>sk-xc-</code> 密钥，业务代码就能调任意上游模型，本地不再需要代理。</p>
+    <p>今日与近 30 天的调用量、费用与成功率。</p>
   </div>
 </div>
 
@@ -49,13 +49,9 @@
   <div class="card-body">
     {% include "_run_stats.html" %}
     <div class="hint mt4">
-      顶上那四个是"今天花了多少"，这一组是"最近一个月健康不健康"。
-      不取全时段：半年前坏过一周，那个数就再也回不来了，看不出现在好不好。两个都要：
-      <strong>重试放大</strong>从 1.0 涨上去就是钱在往上走；
-      <strong>schema 违规率</strong>比成功率更早预警——输出质量退化时成功率还是
-      100%（重试兜住了），只有它会先动；
-      <strong>可定价率</strong>说明费用这个数漏了多少，不摆出来的话"这个月花了 X"
-      就是一句不知道有多少缺口的话。
+      <strong>重试放大</strong>高于 1.0 表示重试在推高费用；
+      <strong>schema 违规率</strong>比成功率更早反映输出质量退化；
+      <strong>可定价率</strong>表示费用统计覆盖了多少次调用。
     </div>
   </div>
 </div>
@@ -64,7 +60,7 @@
   <div>
     <div class="alert-title">费用一律是预估</div>
     <div>按上游模型目录的单价计算，与 OpenRouter 账单存在偏差（平台抽成、缓存计价、汇率）。
-      账单以上游官网为准。<strong>v1 不执行配额</strong>——真正的钱刹车请在 OpenRouter 侧给这把 key 单独设一个信用上限。</div>
+      账单以上游官网为准。</div>
   </div>
 </div>
 
