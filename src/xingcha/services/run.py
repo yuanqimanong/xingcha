@@ -279,7 +279,15 @@ def to_conversation(messages: list[dict[str, Any]]) -> Conversation:
         part: Any = UserPromptPart(content=text) if role == "user" else TextPart(content=text)
         want = ModelRequest if role == "user" else ModelResponse
         if history and isinstance(history[-1], want):
-            history[-1].parts.append(part)
+            # 拼一个新 list 而不是 .append()：pydantic-ai 把 parts 标成 Sequence
+            # （只读），append 是它运行时恰好是 list 的实现细节。多一次拷贝，换来
+            # 不依赖那个细节——一轮里的 part 至多几条。
+            #
+            # 经一个 Any 变量赋值，是因为请求轮与响应轮的 part 联合类型不同
+            # （ModelRequestPart / ModelResponsePart），而这里 want 是运行时才定的
+            # ——上面 part 与 history 标 Any 是同一个理由。
+            last: Any = history[-1]
+            last.parts = [*last.parts, part]
         else:
             history.append(want(parts=[part]))
 

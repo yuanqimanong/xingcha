@@ -43,21 +43,25 @@ class TestProxyIsolation:
         assert client._trust_env is False
 
     def test_default_really_would_break(self, monkeypatch: pytest.MonkeyPatch):
-        """反证：不关 trust_env 的话确实会炸。
+        """反证：不关 trust_env 的话，机器上的代理**真的会被接进来**。
 
         没有这条，上面两条只是"我们设了个参数"；有了它才说明那个参数在挡什么。
+
+        判据是 ``_mounts``：trust_env 打开时 httpx 会把环境里的代理解析成一组挂载的
+        代理传输，关掉时一个都没有。此前这里断言的是"构造阶段抛 ImportError
+        （socksio 未装）"——那依赖两件与本仓库无关的事：socksio 恰好没装，以及 httpx
+        恰好在构造期就去导入它。httpx2 2.12 起代理是惰性建立的，于是这条反证在
+        "被挡的东西一点没变"的情况下变红，而红的样子像是我们自己的回归。
         """
         monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1")
-        if "socksio" in _installed():
-            pytest.skip("本机装了 socksio，构造不会失败")
-        with pytest.raises(ImportError, match="socksio"):
-            httpx2.AsyncClient(trust_env=True)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 
+        leaky = httpx2.AsyncClient(trust_env=True)
+        mounted = [t for t in leaky._mounts.values() if t is not None]
+        assert mounted, "trust_env=True 竟然没接入环境代理——这条反证失去意义了"
 
-def _installed() -> set[str]:
-    import importlib.util
-
-    return {"socksio"} if importlib.util.find_spec("socksio") else set()
+        ours = make_client(CFG, timeout=5.0)
+        assert not [t for t in ours._mounts.values() if t is not None]
 
 
 class TestConfig:

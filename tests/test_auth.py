@@ -55,7 +55,11 @@ class TestIssue:
         t = await auth.issue(session, name="ci")
         await session.flush()
         row = (await session.execute(select(Token).where(Token.kid == t.kid))).scalar_one()
-        secret = t.plaintext.rsplit("-", 1)[-1]
+        # 按已知前缀切，**不能 rsplit("-", 1)**：token_urlsafe 的字母表里有 `-`，
+        # 秘密本体里出现一个的话截出来的只是它的尾巴——极端情况是一个字符，而单个
+        # 字符几乎必然出现在 hex 里。那样这条断言会随机变红，而红的时候看起来像
+        # "明文进了库"，正是最容易被当真的那种假警报。
+        secret = t.plaintext.removeprefix(f"{t.display_prefix}-")
         assert secret not in row.hash
         assert secret not in row.display_prefix
         assert secret not in (row.kdf_params or "")
@@ -66,7 +70,7 @@ class TestIssue:
         用「明文前 N 字符」当 prefix 的做法会把秘密本体的开头印在这些地方。
         """
         t = await auth.issue(session, name="ci")
-        secret = t.plaintext.rsplit("-", 1)[-1]
+        secret = t.plaintext.removeprefix(f"{t.display_prefix}-")  # 理由见上一条
         assert secret[:6] not in t.display_prefix
         assert t.display_prefix == f"sk-xc-1-{t.kid}"
 
