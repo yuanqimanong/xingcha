@@ -47,8 +47,8 @@ client.chat.completions.create(model="extract", messages=[...])
 ```bash
 git clone git@github.com:yuanqimanong/xingcha.git
 
-# 1. 先起网关（独立项目，多个项目共用同一台）
-cd edge && ./edge start && cd ..
+# 1. 先起网关：deploy/edge/ 里的 Caddy 单文件（下载 + 起来 + 装根证书，
+#    三条命令，全在 deploy/edge/CADDY.md）
 
 # 2. 再部署 xingcha（首次会生成 .env 并停下来提示填写）
 cd xingcha && ./deploy/linux/xc start
@@ -62,21 +62,23 @@ cd xingcha && ./deploy/linux/xc start
 ./deploy/linux/xc redeploy    # 清空 data 从零开始（会问一次 yes）
 ```
 
-**Windows 不走 docker**：双击 `deploy\windows\xc.bat`，用 uv 在本机直接起进程，
-HTTPS 仍由 Linux 那台 Caddy 反代提供。为什么这么分见
-[deploy/README.md](deploy/README.md#windows不走-docker)。
+**没装 docker 的机器**（Windows，或干净的 Linux）走另一条：双击
+`deploy\windows\xc.bat` 或 `uv run xingcha serve`，用 uv 在本机直接起进程。
+**网关是同一个**（`deploy/edge/`，Windows 双击 `edge.bat`）。为什么这么分见
+[deploy/README.md](deploy/README.md)。
 
 一台 1C1G 的 VPS 足够。**一个容器、一个 compose 文件、一个 SQLite 文件**，没有
 Postgres / Redis / 消息队列。
 
-**对外只有一条路：网关上的 HTTPS。** xingcha 自己一个宿主端口都不发布——直连那条
-路曾经存在过，去掉是因为它是明文（密码与 `sk-xc-` 裸传），而且那个宿主端口走
-Docker 的 `DOCKER-USER` 链、**绕过 ufw**。两条入口并存最糟：它们的安全性质不同，
-而人只会记住能打开的那一个。
+**挂上网关之后对外只有一条路：网关上的 HTTPS。** xingcha 那个端口被强制只绑
+`127.0.0.1`，局域网上连不到。不挂网关时它是明文（密码与 `sk-xc-` 裸传），而且
+docker 发布的端口走 `DOCKER-USER` 链、**绕过 ufw**。两条并存的真正问题是它们的
+安全性质不同，而人只会记住能打开的那一个。
 
-代价是**网关成了硬依赖**，`./deploy/linux/xc start` 会在启动前检查它。网关是独立项目
-（多个项目共用一台，于是根证书只需在每台设备装一次），部署文档见
-[deploy/CADDY.md](deploy/CADDY.md)。
+代价是**网关成了硬依赖**，`./deploy/linux/xc start` 会在启动前检查它在不在。
+网关是 `deploy/edge/` 里的一个 Caddy 单文件——一个可执行文件加一份配置，没有 docker，
+一台机器一个（于是根证书只需在每台设备装一次），文档见
+[deploy/edge/CADDY.md](deploy/edge/CADDY.md)。
 
 ---
 

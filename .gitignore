@@ -28,3 +28,9 @@ build/
 
 # 局域网演示用的临时 Caddy 配置
 .lan-demo/
+
+# 网关的二进制与导出的根证书。**二进制不进版本库**：45 MB，且每台机器的
+# 平台/架构不同——用 ./deploy/edge/edge get 现取（见 deploy/edge/CADDY.md）。
+deploy/edge/caddy
+deploy/edge/caddy.exe
+deploy/edge/root.crt
