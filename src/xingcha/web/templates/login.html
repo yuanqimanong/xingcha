@@ -35,7 +35,7 @@
       {%- if setup -%}
         首次使用。这个密码是后台的唯一凭据，库里只存 argon2id 哈希，忘了取不回来。
       {%- else -%}
-        把 <code>base_url</code> 指向这里、填一把 <code>sk-xc-</code> 密钥，业务代码就能调任意上游模型。
+        输入管理员密码进入后台。
       {%- endif -%}
     </div>
 
@@ -70,7 +70,7 @@
     {% endif %}
     <button class="btn primary" type="submit" style="width:100%">{{ '设置并登录' if setup else '登录' }}</button>
 
-    <div class="auth-foot">v{{ version }} · 契约 v{{ contract }} · 自托管，数据不出这台机器</div>
+    <div class="auth-foot">v{{ version }}</div>
   </form>
 
   {# 题解。名字不是随手取的，值得在第一屏解释一次；放卡片外面，不干扰"我该填什么"。 #}

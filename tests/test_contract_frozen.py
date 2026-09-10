@@ -6,7 +6,7 @@
 下面每一条都对应其中一环：改动它就等于让某个已经在跑的调用方突然坏掉，或者更糟——
 静默地换了语义而不报错。
 
-要真的需要改，走 docs/开发计划.md §3.12 的契约号协商流程，别直接改这里的期望值。
+要真的需要改，走 CONTRACT.md 里的契约号协商规则，别直接改这里的期望值。
 """
 
 from __future__ import annotations
@@ -646,7 +646,7 @@ def test_contract_module_has_no_internal_imports():
 
 
 def test_contract_doc_is_in_sync():
-    """docs/CONTRACT.md 必须与常量一致。
+    """CONTRACT.md 必须与常量一致。
 
     文档不手写——手写的契约文档一定会和代码漂移，而漂移之后你就有了两份互相矛盾的
     「权威」，更糟的是人会去信文档而不是代码。改了常量忘了重新生成，这条会变红：
@@ -657,5 +657,5 @@ def test_contract_doc_is_in_sync():
 
     assert DOC_PATH.exists(), f"{DOC_PATH} 不存在，跑一次 python -m xingcha.contract_doc"
     assert DOC_PATH.read_text(encoding="utf-8") == render(), (
-        "docs/CONTRACT.md 与 contract.py 不一致。重新生成：python -m xingcha.contract_doc"
+        "CONTRACT.md 与 contract.py 不一致。重新生成：python -m xingcha.contract_doc"
     )

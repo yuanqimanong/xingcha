@@ -912,6 +912,13 @@ SETTING_KEY_TRACE_ENABLED: Final = "trace.enabled"
 SETTING_KEY_TRACE_TARGETS: Final = "trace.targets"
 SETTING_KEY_TRACE_ACTIVE: Final = "trace.active"
 
+#: 后台里声明过的 Agent 分组名，JSON 数组。
+#:
+#: 分组本身仍然只是 ``agent.group_name`` 上的一个字符串——这个键存的是**还没有任何
+#: 成员的分组**。不存的话"新建分组"按钮点完什么都不会发生（没有成员的分组查不出来），
+#: 于是只能先建 Agent 再分组，而人的顺序通常是反的。
+SETTING_KEY_AGENT_GROUPS: Final = "agent.groups"
+
 #: 官方 OpenRouter 地址。中转时由管理员在设置里改写。
 #:
 #: 注意：``OPENROUTER_BASE_URL`` 这个环境变量**不被 pydantic-ai 读取**（源码里只有

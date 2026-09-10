@@ -7,11 +7,52 @@
     <p>把提示词配置成一个可调用的 model id。调用方把 <code>model</code> 填成标识就能用，不需要知道背后是什么模型。</p>
   </div>
   <div class="row">
+    <button class="btn" type="button" data-open-dialog="#new-group-dialog">新建分组</button>
     <a class="btn primary" href="/admin/agents/new">新建 Agent</a>
   </div>
 </div>
 
-{% if not groups %}
+{# 先建分组、再往里放 Agent。分组在库里只是 Agent 上的一个字符串，所以还空着的
+   分组名单独存一份（contract.SETTING_KEY_AGENT_GROUPS），否则这个按钮点完页面
+   不会有任何变化。 #}
+<dialog id="new-group-dialog" class="modal">
+  <form method="post" action="/admin/agents/group/create">
+    <div class="card">
+      <div class="card-head"><h2>新建分组</h2></div>
+      <div class="card-body">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="field">
+          <label for="new-group-name">分组名称</label>
+          <input id="new-group-name" name="name" type="text" required
+                 maxlength="{{ group_name_max }}" placeholder="例如：合同处理">
+          <div class="hint">建好之后在 Agent 表单的「分组」下拉里选它。</div>
+        </div>
+        <div class="row mt4">
+          <button class="btn primary" type="submit">创建</button>
+          <a class="btn" href="#" data-close-dialog>取消</a>
+        </div>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+{% if stale_total %}
+{# 只有目录真的拉到东西时才会走到这里（见 routes.agents_page 里的 catalog_known）。
+   否则"目录为空"会被误报成"所有 Agent 都失效了"。 #}
+<div class="alert danger">
+  <div>
+    <div class="alert-title">{{ stale_total }} 个 Agent 的模型在当前上游里不存在</div>
+    <div>换上游之后模型名不一定还在。这些 Agent 被调用时会失败——
+      到编辑页把「模型」换成 <strong>{{ upstream_label }}</strong> 目录里有的一个，
+      或者切回原来那个<a href="/admin/upstreams">上游</a>。
+      裸模型直通不受影响，它把你给的 <code>model</code> 原样转发。</div>
+  </div>
+</div>
+{% endif %}
+
+{# 判据是「有没有 Agent」，不是「有没有分组」：建过一个空分组之后 groups 就非空了，
+   而那时候引导语比任何时候都更该在。 #}
+{% if not agent_count %}
 <div class="card">
   <div class="card-body flush">
     <div class="empty">
@@ -31,6 +72,8 @@
   <summary class="group-head">
     <span class="group-name">{{ group }}</span>
     <span class="dim small">{{ agents | length }} 个</span>
+    {% set group_stale = agents | selectattr('model_stale') | list | length %}
+    {% if group_stale %}<span class="badge danger">{{ group_stale }} 个模型失效</span>{% endif %}
     <span class="grow"></span>
     {% if group != default_group %}
     <span class="group-actions">
@@ -63,19 +106,46 @@
   </dialog>
   {% endif %}
 
+  {% if not agents %}
+  <div class="empty">
+    <div class="empty-title">这个分组还是空的</div>
+    <div class="small">新建 Agent 时在「分组」里选「{{ group }}」。</div>
+  </div>
+  {% endif %}
+
   <div class="agent-grid">
     {% for a in agents %}
-    <div class="agent-card {% if not a.is_active %}off{% endif %}">
+    {# 标题是**名称**，不是 slug。
+       原先反过来——slug 在最上面当大标题——那在 slug 是 `extract` 时看着还行，
+       而默认 slug 是一串时间戳的时候，每张卡的标题就都是一段读不出意思的十六进制，
+       整页扫下去认不出哪张是哪张。slug 是给机器的（对外的 model 值），降成一行
+       等宽小字、单行截断、可整条复制；人要认的是名称。 #}
+    <div class="agent-card {% if not a.is_active %}off{% endif %}{% if a.model_stale %} stale{% endif %}">
       <div class="agent-top">
-        <a class="agent-slug mono" href="/admin/agents/{{ a.slug }}">{{ a.slug }}</a>
-        {% if a.is_active %}<span class="badge ok">启用</span>
-        {% else %}<span class="badge neutral">停用</span>{% endif %}
+        <a class="agent-name" href="/admin/agents/{{ a.slug }}">{{ a.name }}</a>
+        <span class="agent-badges">
+          {% if a.model_stale %}<span class="badge danger" title="当前上游的模型目录里没有 {{ a.model }}">模型失效</span>{% endif %}
+          {% if a.is_active %}<span class="badge ok">启用</span>
+          {% else %}<span class="badge neutral">停用</span>{% endif %}
+        </span>
       </div>
-      <div class="agent-name">{{ a.name }}</div>
+
+      <div class="agent-id">
+        <code class="mono" id="slug-{{ a.slug }}" title="{{ a.slug }}">{{ a.slug }}</code>
+        <button type="button" class="agent-id-copy" data-copy="{{ a.slug }}"
+                data-copy-target="slug-{{ a.slug }}" title="复制标识">复制</button>
+      </div>
+
       {% if a.description %}<div class="agent-desc">{{ a.description }}</div>{% endif %}
 
       <table class="mini agent-meta">
-        <tr><td>模型</td><td class="mono">{{ a.model }}</td></tr>
+        <tr>
+          <td>模型</td>
+          <td class="mono">
+            {{ a.model }}
+            {% if a.model_stale %}<span class="stale-dot" aria-hidden="true"></span>{% endif %}
+          </td>
+        </tr>
         <tr>
           <td>输出</td>
           <td>
@@ -108,7 +178,7 @@
 
       <div class="agent-actions">
         <a class="btn sm" href="/admin/agents/{{ a.slug }}">编辑</a>
-        <a class="btn sm" href="/admin/agents/{{ a.slug }}#test">测试</a>
+        <button class="btn sm" type="button" data-open-dialog="#trial-{{ a.slug }}">测试</button>
         <span class="grow"></span>
         <form method="post" action="/admin/agents/{{ a.slug }}/toggle"
               {% if a.is_active %}data-confirm="停用「{{ a.slug }}」？调用方拿它当 model 调用会开始收到 model_not_found。slug 仍然被占着，随时能开回来。"{% endif %}>
@@ -118,6 +188,40 @@
           </button>
         </form>
       </div>
+
+      {# 跑的是**已保存的当前版本**，不是某个表单里的草稿——这一页没有表单可取值。
+         想改一句提示词再试，那属于编辑页的「试运行」。 #}
+      <dialog id="trial-{{ a.slug }}" class="modal wide">
+        <div class="card">
+          <div class="card-head">
+            <h2>测试 <code class="mono">{{ a.slug }}</code></h2>
+            <span class="small muted">跑已保存的 v{{ a.version }}</span>
+          </div>
+          <div class="card-body">
+            <form hx-post="/admin/agents/{{ a.slug }}/trial"
+                  hx-target="#trial-result-{{ a.slug }}" hx-swap="innerHTML"
+                  hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
+              <div class="field">
+                <label for="trial-input-{{ a.slug }}">测试输入</label>
+                <textarea id="trial-input-{{ a.slug }}" name="test_input" rows="3"
+                          placeholder="调用方会发来的那条 user 消息"></textarea>
+              </div>
+              <div class="row">
+                <button class="btn primary" type="submit" data-lock>
+                  跑一次 <span class="htmx-indicator">…</span>
+                </button>
+                <a class="btn" href="#" data-close-dialog>关闭</a>
+                <span class="hint">会<strong>真实调用上游并产生费用</strong>。</span>
+              </div>
+            </form>
+            <div id="trial-result-{{ a.slug }}" class="mt4">
+              {% with ok = false, message = '', rows = none, history = a.trials %}
+              {% include "_agent_test.html" %}
+              {% endwith %}
+            </div>
+          </div>
+        </div>
+      </dialog>
     </div>
     {% endfor %}
   </div>

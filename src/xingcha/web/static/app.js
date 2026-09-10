@@ -152,7 +152,15 @@
     // 走到这里说明确认那一关已经过了（下面那个监听器在 preventDefault 时会阻断）
     if (e.defaultPrevented) return;
     const form = e.target.closest('form');
-    if (form && !form.hasAttribute('hx-post')) lock(form);
+    if (!form || form.hasAttribute('hx-post')) return;
+    // **必须延后一拍再禁用。** 表单的提交数据（entry list）是在 submit 事件之后
+    // 才构造的，而构造时会跳过所有 disabled 控件——**包括点下去的那个按钮本身**。
+    // 于是"在 submit 里立刻禁用"会把提交者的 name=value 一起丢掉。
+    //
+    // 大多数表单看不出来（数据在 input 里），但侧栏的主题切换整份 payload 就是
+    // 按钮上的 name="value"：点「亮」/「暗」提交上去没有 value，后端 422，
+    // 页面变成一段 JSON 报错。setTimeout 0 让浏览器先把数据收好再禁用。
+    setTimeout(() => lock(form), 0);
   });
 
   // htmx 的表单不触发原生 submit，用它自己的事件。

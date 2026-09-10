@@ -59,7 +59,7 @@ jobs:
         # 文档由常量生成，不手写。漂移了就说明有人手改了文档、或改了常量没重新生成。
         run: |
           uv run python -m xingcha.contract_doc
-          git diff --exit-code -- docs/CONTRACT.md
+          git diff --exit-code -- CONTRACT.md
 
       - name: 全套测试（不含浏览器）
         run: uv run pytest -q -m "not browser"

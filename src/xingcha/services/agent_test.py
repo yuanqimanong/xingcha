@@ -142,3 +142,31 @@ def chain_of(row: AgentTestRun) -> list[Any]:
         for i in items
         if isinstance(i, dict)
     ]
+
+
+async def recent_many(session: AsyncSession, slugs: list[str]) -> dict[str, list[AgentTestRun]]:
+    """一次把多个 slug 的最近几条取回来，按 slug 分好。
+
+    Agent 列表页上每张卡都要展示自己的试运行历史。逐个 slug 查是 N 次往返，而
+    N 是页面上 Agent 的个数——一次 ``IN`` 查询就够，每个 slug 最多 KEEP_PER_SLUG 条，
+    所以结果集天然有界，不需要分页。
+    """
+    if not slugs:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                select(AgentTestRun)
+                .where(AgentTestRun.slug.in_(slugs))
+                .order_by(AgentTestRun.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out: dict[str, list[AgentTestRun]] = {s: [] for s in slugs}
+    for row in rows:
+        bucket = out.setdefault(row.slug, [])
+        if len(bucket) < KEEP_PER_SLUG:
+            bucket.append(row)
+    return out

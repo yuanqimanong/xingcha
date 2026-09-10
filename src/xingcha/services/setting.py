@@ -48,6 +48,8 @@ KNOWN_KEYS: frozenset[str] = frozenset(
         # 上报目标列表。**是密文**：里面每条的 secret key 都在这个 JSON 里。
         C.SETTING_KEY_TRACE_TARGETS,
         C.SETTING_KEY_TRACE_ACTIVE,
+        # 空分组的名字列表。不含任何凭据，所以不加密。
+        C.SETTING_KEY_AGENT_GROUPS,
     }
 )
 
