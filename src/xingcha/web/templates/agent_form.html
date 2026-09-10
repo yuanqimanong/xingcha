@@ -14,7 +14,7 @@
       <strong>标识发布后不能改</strong>——调用方的代码里写着它。</p>
     {% endif %}
   </div>
-  {# 三个动作排在一起：停用 · 查看版本 · 保存。
+  {# 四个动作排在一起：停用 · 查看版本 · 导出 · 保存。
      保存那个用 form= 关联到下面的表单——按钮不在表单里，靠 HTML 的 form 属性
      跨节点关联，比把整个页头塞进 <form> 干净（那样页头里的停用按钮会变成同一个
      表单的第二个 submit，回到"点保存却停用了"那个坑）。 #}
@@ -30,7 +30,12 @@
     <button class="btn" type="button" data-open-dialog="#versions-dialog">
       查看版本{% if versions %} <span class="dim">({{ versions | length }})</span>{% endif %}
     </button>
-    <button class="btn primary" type="submit" form="agent-form">保存为新版本</button>
+    <a class="btn" href="/admin/agents/{{ agent.slug }}/export" download
+       title="导出一个目录：agent.yaml 是标准的 pydantic-ai AgentSpec（不是星槎的私有格式），run.py 零星槎依赖，校验行为、用户模板与少样本一并保留。改完还能用 xingcha agent apply 导回来。">导出</a>
+    {# data-save：保存按钮在编辑页位于表单**外面**（靠 form= 关联），在新建页位于
+       里面。按位置定位（"#agent-form 里的 submit"）在其中一页必然落空——名字才是
+       稳定的那个。这一页已经因为按位置定位坏过两次。 #}
+    <button class="btn primary" type="submit" form="agent-form" data-save>保存为新版本</button>
   </div>
   {% endif %}
 </div>
@@ -372,37 +377,19 @@
       </section>
   </div>
 
+  {# 只有新建页需要底部按钮。编辑页的保存 / 停用 / 查看版本 / 导出全在页头，
+     底部再放一份只是把页面拉长。 #}
+  {% if is_new %}
   <div class="row">
-    {% if is_new %}
-    <button class="btn primary" type="submit">创建</button>
-    {% else %}
-    {# 保存按钮在页头（停用右侧）。这里再放一个是为了长表单滚到底时不用回头， #}
-    {# 两个是同一个 form 的 submit，点哪个都一样。 #}
-    <button class="btn primary" type="submit">保存为新版本</button>
-    {% endif %}
+    <button class="btn primary" type="submit" data-save>创建</button>
     <a class="btn ghost" href="/admin/agents">取消</a>
-    {% if not is_new %}
-    <span class="grow"></span>
-    <a class="btn" href="/admin/agents/{{ agent.slug }}/export" download>导出</a>
-    {% endif %}
   </div>
+  {% endif %}
 </form>
 
 {% if not is_new %}
-<div class="alert info mt5">
-  <div>
-    <div class="alert-title">随时能带走</div>
-    <div>导出的是一个目录：<code>agent.yaml</code> 是标准的 pydantic-ai
-      <code>AgentSpec</code>（不是星槎的私有格式），<code>run.py</code> 零星槎依赖，
-      <strong>校验行为、用户模板与少样本一并保留</strong>。改完还能用
-      <code>xingcha agent apply</code> 导回来。</div>
-  </div>
-</div>
-{% endif %}
-
-{% if not is_new %}
-{# 版本列表做成弹窗：它是"偶尔回头看一眼"的东西，常驻在页面底部只是把导出说明和
-   表单本身推得更远。回滚的表单在弹窗里，仍然是独立的 <form>。 #}
+{# 版本列表做成弹窗：它是"偶尔回头看一眼"的东西，常驻在页面底部只会把表单推得
+   更远。回滚的表单在弹窗里，仍然是独立的 <form>。 #}
 <dialog id="versions-dialog" class="modal wide">
   <div class="card">
     <div class="card-head">
