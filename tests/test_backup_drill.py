@@ -274,7 +274,7 @@ class TestVerifyBackup:
 
 
 class TestCliContractUsedByDrill:
-    """``deploy/drill.sh`` 靠这几条命令与退出码工作。
+    """``deploy/linux/drill.sh`` 靠这几条命令与退出码工作。
 
     改名或改退出码不会让任何单元测试变红，但会让演练脚本在**真出事那天**才失败——
     而那正是最不能失败的时刻。所以把它当契约钉住。

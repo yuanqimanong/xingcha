@@ -808,7 +808,7 @@ THEMES: Final = frozenset({"system", "light", "dark"})
 
 #: 只属于**编排层**的 ``XINGCHA_*`` 变量名。
 #:
-#: 它们出现在 ``.env`` 里，供 compose 插值端口/地址/挂载点，或供 ``deploy/xc``
+#: 它们出现在 ``.env`` 里，供 compose 插值端口/地址/挂载点，或供 ``deploy/linux/xc``
 #: 选择拓扑。应用本身不认识它们，而 ``env_file`` 会把整份 ``.env`` 注进容器——
 #: 所以必须在这里登记，否则 :func:`config.warn_unknown_env` 每次启动都会说
 #: 「未知的配置项 XINGCHA_WEB_PORT 被忽略（拼错了？）」。
@@ -818,18 +818,18 @@ THEMES: Final = frozenset({"system", "light", "dark"})
 ORCHESTRATION_ENV_NAMES: Final = frozenset(
     {
         # 走不走共享网关。空 = 独立跑明文 HTTP；有值 = 那个 docker 网络的名字。
-        # 它决定 deploy/xc 要不要叠 docker-compose.gateway.yml——是**拓扑**开关。
+        # 它决定 deploy/linux/xc 要不要叠 docker-compose.gateway.yml——是**拓扑**开关。
         "XINGCHA_GATEWAY",
-        # 派生值，用户不该设：deploy/xc 从 XINGCHA_WEB_HOST 推出来后导出。
+        # 派生值，用户不该设：deploy/linux/xc 从 XINGCHA_WEB_HOST 推出来后导出。
         # 登记在这里是因为万一有人手动设了，它会经 env_file 进容器——
         # 不登记就会被 warn_unknown_env 误报成"拼错了"。
         "XINGCHA_BIND_ADDR",
         "XINGCHA_WEB_HOST",
         # 独立跑时这个容器发布的宿主端口。走网关时端口是网关的，
-        # 由 deploy/xc 从 ../edge/.env 读出来导出成 XINGCHA_PUBLIC_PORT。
+        # 由 deploy/linux/xc 从 ../edge/.env 读出来导出成 XINGCHA_PUBLIC_PORT。
         "XINGCHA_WEB_PORT",
         "XINGCHA_PUBLIC_PORT",
-        "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷（Windows 用后者）
+        "XINGCHA_DATA_MOUNT",  # 宿主目录还是命名卷
     }
 )
 

@@ -51,18 +51,20 @@ git clone git@github.com:yuanqimanong/xingcha.git
 cd edge && ./edge start && cd ..
 
 # 2. 再部署 xingcha（首次会生成 .env 并停下来提示填写）
-cd xingcha && ./deploy/xc start
+cd xingcha && ./deploy/linux/xc start
 ```
 
 日常就三条：
 
 ```bash
-./deploy/xc start      # 重新构建代码并启动，data 不动
-./deploy/xc update     # 拉代码 + 重新构建启动
-./deploy/xc redeploy    # 清空 data 从零开始（会问一次 yes）
+./deploy/linux/xc start      # 重新构建代码并启动，data 不动
+./deploy/linux/xc update     # 拉代码 + 重新构建启动
+./deploy/linux/xc redeploy    # 清空 data 从零开始（会问一次 yes）
 ```
 
-Windows 用 `.\deploy\xc.ps1`，动作名一样。
+**Windows 不走 docker**：双击 `deploy\windows\xc.bat`，用 uv 在本机直接起进程，
+HTTPS 仍由 Linux 那台 Caddy 反代提供。为什么这么分见
+[deploy/README.md](deploy/README.md#windows不走-docker)。
 
 一台 1C1G 的 VPS 足够。**一个容器、一个 compose 文件、一个 SQLite 文件**，没有
 Postgres / Redis / 消息队列。
@@ -72,7 +74,7 @@ Postgres / Redis / 消息队列。
 Docker 的 `DOCKER-USER` 链、**绕过 ufw**。两条入口并存最糟：它们的安全性质不同，
 而人只会记住能打开的那一个。
 
-代价是**网关成了硬依赖**，`./deploy/xc start` 会在启动前检查它。网关是独立项目
+代价是**网关成了硬依赖**，`./deploy/linux/xc start` 会在启动前检查它。网关是独立项目
 （多个项目共用一台，于是根证书只需在每台设备装一次），部署文档见
 [deploy/CADDY.md](deploy/CADDY.md)。
 

@@ -160,7 +160,7 @@ jobs:
         run: |
           : > .env
           docker network create edge || true
-          docker compose -f deploy/docker-compose.yml --env-file .env config > /tmp/cfg.yml
+          docker compose -f deploy/linux/docker-compose.yml --env-file .env config > /tmp/cfg.yml
           grep -q 'published:' /tmp/cfg.yml \
             && { echo "::error::编排里出现了发布端口"; cat /tmp/cfg.yml; exit 1; }
           grep -q 'name: edge' /tmp/cfg.yml || { echo "::error::没加入共享网络 edge"; exit 1; }
@@ -176,7 +176,7 @@ jobs:
           # 再 chmod 直接 Operation not permitted。这一步曾是 CI 唯一的红点。
           chmod 700 data
           sudo chown -R 10001:10001 data
-          DC="docker compose -f deploy/docker-compose.yml --env-file .env"
+          DC="docker compose -f deploy/linux/docker-compose.yml --env-file .env"
           $DC up -d
           for i in $(seq 1 45); do
             [ "$(docker inspect --format '{{.State.Health.Status}}' xingcha-xingcha-1 2>/dev/null)" = healthy ] && break
@@ -213,5 +213,5 @@ jobs:
       - name: 收尾
         if: always()
         run: |
-          docker compose -f deploy/docker-compose.yml --env-file .env down -v --remove-orphans || true
+          docker compose -f deploy/linux/docker-compose.yml --env-file .env down -v --remove-orphans || true
           docker network rm edge || true

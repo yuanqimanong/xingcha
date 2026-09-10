@@ -1,0 +1,9 @@
+# 换行符。默认交给 git 猜，这里只钉那几个**猜错就直接坏掉**的：
+#
+#   .bat     cmd.exe 对 LF-only 的批处理有历史遗留的坑（goto 按字节偏移找标签，
+#            行尾少一个字节时会跳飞）。必须 CRLF，不管 core.autocrlf 是什么。
+#   .sh / xc 反过来：CRLF 的 shell 脚本在 Linux 上是 `bad interpreter: ^M`，
+#            而这两个正是要在 Linux 部署机上跑的。
+*.bat      text eol=crlf
+*.sh       text eol=lf
+deploy/linux/xc  text eol=lf

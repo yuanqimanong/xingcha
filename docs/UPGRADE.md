@@ -4,7 +4,7 @@
 `sk-xc-` 密钥与 `model` 字符串永不改变，升级期间接受 1–2 秒中断。
 
 ```bash
-./deploy/xc update
+./deploy/linux/xc update
 ```
 
 就这一条。下面是它背后发生的事，以及出问题时该看哪里。
@@ -13,7 +13,7 @@
 先设个简写，后面都用它：
 
 ```bash
-DC="docker compose -f deploy/docker-compose.yml --env-file .env"
+DC="docker compose -f deploy/linux/docker-compose.yml --env-file .env"
 ```
 
 ---
@@ -80,7 +80,7 @@ SSE 帧序列全部写在 [CONTRACT.md](CONTRACT.md) 里，由 `contract.py` 的
 
 ```bash
 git checkout <上一个 commit>
-./deploy/xc start
+./deploy/linux/xc start
 ```
 
 新版本没有加迁移时，旧代码跑在新库上是安全的——库里只是多了几列没人读。
@@ -90,7 +90,7 @@ git checkout <上一个 commit>
 ```bash
 $DC exec xingcha xingcha db downgrade <目标 revision> --yes
 git checkout <上一个 commit>
-./deploy/xc start
+./deploy/linux/xc start
 ```
 
 `downgrade` **总是先备份**。每个迁移都必须有能跑通的 `downgrade()`，

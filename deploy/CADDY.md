@@ -126,10 +126,10 @@ XINGCHA_GATEWAY_PORT=8443     # 网关上分给它的端口
 ```
 
 ```bash
-cd ../xingcha && ./deploy/xc start
+cd ../xingcha && ./deploy/linux/xc start
 ```
 
-`xc` 自己读这一项决定叠不叠 `deploy/docker-compose.gateway.yml`，并且**只在配了
+`xc` 自己读这一项决定叠不叠 `deploy/linux/docker-compose.gateway.yml`，并且**只在配了
 网关时才检查它在不在**——没配就不该被一个不相干的容器挡住。
 
 还没接进来的站点会回 **502**，不会拖垮网关——一个项目没上线不该影响别的项目。
@@ -202,6 +202,28 @@ https://{$EDGE_HOST}:9445 {
 **但 Caddy → 应用这一跳会变成跨网络的明文**，也就是"浏览器那半段加密、网络这半段
 不加密"。别在这种情况下以为 TLS 是端到端的。另外网关会成为硬依赖：Windows 那台
 好着、网关那台挂了，fin 就打不开。
+
+### xingcha 在 Windows 那台时也走这条
+
+那边**不打镜像**——`deploy\windows\xc.bat` 用 uv 直接在宿主起进程，理由见
+[README.md 的 Windows 一节](README.md#windows不走-docker)。于是它也加入不了 `edge`
+网络，走的就是上面这套。
+
+**不用新加站点块**：xingcha 原本那一段照旧，只把 `reverse_proxy` 的目标从容器名
+换成那台机器的「内网 IP:8720」。端口分流、证书、`{$EDGE_HOST}` 全都不变。
+
+```
+	reverse_proxy xingcha:8720        →  reverse_proxy 192.168.x.y:8720
+```
+
+`import common`（或那一段里等价的 `flush_interval -1`）**要保留**：少了它 SSE
+流式响应会被缓冲，症状是"回答要等全部生成完才一次性蹦出来"，而接口本身完全正常。
+
+Windows 那侧要对应放开 `.env` 最后一节的三项——`XINGCHA_HOST=0.0.0.0`、
+`XINGCHA_PUBLIC_URL`、`XINGCHA_TRUSTED_PROXIES=<网关 IP>`。少一项各有各的坑法，
+表在 [README.md](README.md#https-仍然是-linux-那台-caddy-给的)。最后一项别照抄
+容器那边的 `*`：那边敢信任所有来源的前提是零宿主端口，而这里端口是真的开在
+局域网上的。
 
 想跨机器又不要明文跳：Caddy 支持 `acme_server`，让这台网关同时充当**内网 ACME
 CA**，Windows 那台再跑一个小 Caddy 从它签证书。这样每台机器本地终止 TLS，

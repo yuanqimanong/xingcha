@@ -3,7 +3,7 @@
 #
 # 存在的理由：正确的命令太长，而**长命令里每一段都是踩过的坑**——
 #
-#   docker compose -f deploy/docker-compose.yml --env-file .env down \
+#   docker compose -f deploy/linux/docker-compose.yml --env-file .env down \
 #     && sudo rm -rf data && docker compose -f ... up -d --build
 #
 # 这一行有三个陷阱：① 容器还在跑的时候删 data，进程握着已删除的 inode 继续写，
@@ -12,8 +12,8 @@
 #
 # 所以这里只暴露两个动作：
 #
-#   ./xc start      —— 重新构建代码并起来，**data 一个字节都不动**
-#   ./xc redeploy   —— 连数据一起清空，从零开始（会问一次）
+#   ./deploy/linux/xc start      —— 重新构建代码并起来，**data 一个字节都不动**
+#   ./deploy/linux/xc redeploy   —— 连数据一起清空，从零开始（会问一次）
 #
 # 另外四个是顺手的：update / stop / logs / status。
 #
@@ -22,9 +22,12 @@
 # 现在是这里的 update。
 
 set -euo pipefail
-# 脚本在 deploy/ 下，而 .env 与 compose 文件在仓库根。**从脚本自身的位置往上一级**，
-# 这样它在任何目录下被调用都对（`deploy/xc start`、`./xc start`、绝对路径都行）。
-cd "$(dirname "$(dirname "$(readlink -f "$0")")")"
+# 脚本在 deploy/linux/ 下，而 .env 与 data/ 在仓库根。**从脚本自身的位置往上两级**，
+# 这样它在任何目录下被调用都对（`deploy/linux/xc start`、`./deploy/linux/xc start`、绝对路径都行）。
+#
+# 两级不是一级：Windows 那条路（deploy/windows/xc.bat）与这条已经分成两个目录，
+# 少数一级的话 compose 会在 deploy/ 下面建 data/，症状是"起来了但后台是空的"。
+cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
 
 # 契约里读一个值。用 sed 而不是 `grep -oP ... \K`：这台机器上 `grep` 是 ugrep
 # 的 shim，PCRE 的 \K 不生效、返回 1，配上 set -e 就是**整个脚本静默退出**——
@@ -47,8 +50,8 @@ DATA_DIR=./data
 # 是文件而不是变量，因为 `ports` 要整条去掉、`networks` 要凭空出现——这两件事
 # 没法用 ${} 表达。
 GATEWAY=$(from_env XINGCHA_GATEWAY)
-FILES=(-f deploy/docker-compose.yml)
-[ -n "$GATEWAY" ] && FILES+=(-f deploy/docker-compose.gateway.yml)
+FILES=(-f deploy/linux/docker-compose.yml)
+[ -n "$GATEWAY" ] && FILES+=(-f deploy/linux/docker-compose.gateway.yml)
 
 # 绑定地址**由 XINGCHA_WEB_HOST 推出来**，不再是单独一个变量。
 #
@@ -183,7 +186,7 @@ ensure_data_owner() {
 
 wait_healthy() {
   local name; name=$(c ps -q xingcha)
-  [ -n "$name" ] || die "xingcha 容器没起来。看 ./xc logs"
+  [ -n "$name" ] || die "xingcha 容器没起来。看 ./deploy/linux/xc logs"
   say "等健康检查…"
   for _ in $(seq 1 60); do
     case "$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null)" in
@@ -296,12 +299,12 @@ case "${1:-}" in
     cat <<'EOF'
 星槎
 
-  ./xc start        重新构建代码并启动，data 不动（日常用这个）
-  ./xc update       拉代码 + 重新构建启动（工作区脏时会拒绝）
-  ./xc redeploy     清空 data 从零开始（会问一次 yes）
-  ./xc stop         停止，data 保留
-  ./xc logs [n]     跟随日志
-  ./xc status       容器状态 + 后台账号状态
+  ./deploy/linux/xc start        重新构建代码并启动，data 不动（日常用这个）
+  ./deploy/linux/xc update       拉代码 + 重新构建启动（工作区脏时会拒绝）
+  ./deploy/linux/xc redeploy     清空 data 从零开始（会问一次 yes）
+  ./deploy/linux/xc stop         停止，data 保留
+  ./deploy/linux/xc logs [n]     跟随日志
+  ./deploy/linux/xc status       容器状态 + 后台账号状态
 EOF
     exit 1
     ;;

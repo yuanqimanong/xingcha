@@ -4,10 +4,10 @@
 为什么这一层非有不可
 ------------------------------------------------------------------------------
 
-Dockerfile / docker-compose.yml / .env.example / xc / drill.sh 之间有**跨文件的
-隐式契约**，而它们互相之间没有任何类型检查：compose 读一个环境变量，.env.example
-负责告诉用户要填，xc 负责把 compose 文件与 .env 传对，drill.sh 负责用同一套路径
-找到容器。
+Dockerfile / docker-compose.yml / .env.example / xc / xc.bat / drill.sh 之间有
+**跨文件的隐式契约**，而它们互相之间没有任何类型检查：compose 读一个环境变量，
+.env.example 负责告诉用户要填，xc 负责把 compose 文件与 .env 传对，drill.sh 负责
+用同一套路径找到容器。
 
 任意一处漏掉，**单元测试全绿、镜像构建成功、代码审查也看不出来**——症状只在真的
 ``docker compose up`` 时出现。实际发生过两次：一次是 Caddyfile 引用了 compose 从未
@@ -18,7 +18,12 @@ Dockerfile / docker-compose.yml / .env.example / xc / drill.sh 之间有**跨文
 **一个 compose 文件、一个容器、明文 HTTP**。差异全部变成 ``.env`` 里的变量。
 这些断言也跟着换成守新形状的。
 
-**这里只做静态结构检查**，不起容器——起容器的验证是 deploy/drill.sh、CI 的
+Windows 走的是**另一条路**：不打镜像，``deploy/windows/xc.bat`` 用 uv 在宿主直接起进程
+（理由见 deploy/README.md——Docker Desktop 那条路上 data 不能放宿主目录，SQLite 的
+WAL 会静默降级）。两条路共用同一份 ``.env.example`` 与同一个 ``data/`` 位置，
+所以这里也要守住"别悄悄变成两套配置"。
+
+**这里只做静态结构检查**，不起容器——起容器的验证是 deploy/linux/drill.sh、CI 的
 "整栈真的起得来"，与真机演练的事。
 """
 
@@ -34,12 +39,20 @@ import yaml
 from xingcha import contract as C
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPOSE = ROOT / "deploy" / "docker-compose.yml"
+#: deploy/ 按系统分成两个目录：linux/ 是 docker 那条路（编排 + xc + drill），
+#: windows/ 是 uv 本地直跑那条（只有 xc.bat）。**共用的留在 deploy/ 顶层**
+#: ——.env.example 一份、CADDY.md 一份、README.md 一份，那正是它们不该分家的理由。
+DEPLOY = ROOT / "deploy"
+LINUX = DEPLOY / "linux"
+WINDOWS = DEPLOY / "windows"
+
+COMPOSE = LINUX / "docker-compose.yml"
+GATEWAY_COMPOSE = LINUX / "docker-compose.gateway.yml"
 DOCKERFILE = ROOT / "Dockerfile"
-ENV_EXAMPLE = ROOT / "deploy" / ".env.example"
-DRILL_SH = ROOT / "deploy" / "drill.sh"
-XC = ROOT / "deploy" / "xc"
-XC_PS1 = ROOT / "deploy" / "xc.ps1"
+ENV_EXAMPLE = DEPLOY / ".env.example"
+DRILL_SH = LINUX / "drill.sh"
+XC = LINUX / "xc"
+XC_BAT = WINDOWS / "xc.bat"
 
 
 @pytest.fixture(scope="module")
@@ -85,8 +98,8 @@ class TestSingleFile:
     #: 关键是二者**互斥**：叠加层用 `!override` 把宿主端口清掉。两条入口同时存在
     #: 才是真问题——它们的安全性质不同，而人只会记住能打开的那一个。
     ALLOWED: ClassVar[list[str]] = [
-        "deploy/docker-compose.gateway.yml",
-        "deploy/docker-compose.yml",
+        "deploy/linux/docker-compose.gateway.yml",
+        "deploy/linux/docker-compose.yml",
     ]
 
     def test_compose_files_are_a_closed_set(self):
@@ -110,7 +123,7 @@ class TestSingleFile:
         是正当的。
         """
         assert not list(ROOT.glob("Caddyfile*")), "根目录出现了 Caddyfile"
-        assert not list((ROOT / "deploy").glob("Caddyfile*")), "deploy/ 出现了 Caddyfile"
+        assert not list(DEPLOY.rglob("Caddyfile*")), "deploy/ 出现了 Caddyfile"
         compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
         assert "caddy" not in compose["services"], "本仓库的编排里不该声明 caddy 服务"
 
@@ -143,7 +156,7 @@ class TestEnvVarContract:
         missing = [k for k, v in compose_vars(compose_raw).items() if v is None]
         assert not missing, f"这些变量没有默认值，会静默变成空串：{missing}"
 
-    #: compose 会读、但**用户不该设**的变量：由 deploy/xc 推导后导出。
+    #: compose 会读、但**用户不该设**的变量：由 deploy/linux/xc 推导后导出。
     #:
     #: 它们不进 .env.example —— 列在那里等于邀请用户去设一个会被覆盖的值，
     #: 而"我明明设了却不生效"是最费时的一类困惑。
@@ -169,7 +182,7 @@ class TestEnvVarContract:
     def test_derived_vars_are_not_offered_to_the_user(self):
         """派生变量**不能**出现在 .env.example 里。
 
-        列出来就是邀请人去设一个会被 deploy/xc 覆盖的值——"我明明设了却不生效"
+        列出来就是邀请人去设一个会被 deploy/linux/xc 覆盖的值——"我明明设了却不生效"
         是最费时的一类困惑，而这里没有任何提示能让人想到是被覆盖了。
         """
         text = ENV_EXAMPLE.read_text(encoding="utf-8")
@@ -276,7 +289,7 @@ class TestOrchestrationShape:
         少了 override 基础那份的端口映射会继续存在——于是同时有两条入口，一条经
         网关是 HTTPS，一条直连是明文且绕过 ufw。而人只会记住能打开的那一个。
         """
-        raw = (ROOT / "deploy" / "docker-compose.gateway.yml").read_text(encoding="utf-8")
+        raw = GATEWAY_COMPOSE.read_text(encoding="utf-8")
         assert "ports: !override" in raw, "少了 !override，宿主端口会被保留"
         overlay = yaml.safe_load(raw.replace("!override", ""))
         assert overlay["services"]["xingcha"]["ports"] == []
@@ -291,7 +304,7 @@ class TestOrchestrationShape:
           网关根本不在那里面——症状是网关一直 502 而两边容器都"在跑"。实际踩过。
         """
         overlay = yaml.safe_load(
-            (ROOT / "deploy" / "docker-compose.gateway.yml")
+            (GATEWAY_COMPOSE)
             .read_text(encoding="utf-8")
             .replace("!override", "")
         )
@@ -328,7 +341,7 @@ class TestOrchestrationShape:
         """
         assert compose_vars(compose_raw)["XINGCHA_DATA_MOUNT"] == "../data"
         assert "xingcha_data" in compose.get("volumes", {}), (
-            "命名卷没声明，Windows 上设 XINGCHA_DATA_MOUNT=xingcha_data 会失败"
+            "命名卷没声明，设 XINGCHA_DATA_MOUNT=xingcha_data 会失败"
         )
 
     def test_healthcheck_hits_the_app_not_the_port(self, compose: dict):
@@ -355,7 +368,7 @@ class TestOrchestrationShape:
 
 
 class TestOpsScripts:
-    """两个脚本必须真的等价，且不能把踩过的坑重新引进来。
+    """docker 那条路的运维脚本（``deploy/linux/xc``）不能把踩过的坑重新引进来。
 
     这一类跨文件契约没有任何运行时检查：脚本改坏了，全套单测照绿、镜像照建，
     只有真的去部署时才发现——而那通常是在别人的机器上。
@@ -363,7 +376,7 @@ class TestOpsScripts:
 
     @pytest.fixture(scope="class")
     def sh(self) -> str:
-        return (ROOT / "deploy" / "xc").read_text(encoding="utf-8")
+        return XC.read_text(encoding="utf-8")
 
     @staticmethod
     def _code(script: str) -> str:
@@ -374,18 +387,13 @@ class TestOpsScripts:
         """
         return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
 
-    @pytest.fixture(scope="class")
-    def ps1(self) -> str:
-        return (ROOT / "deploy" / "xc.ps1").read_text(encoding="utf-8")
-
-    def test_both_scripts_exist_and_bash_one_is_executable(self, sh: str, ps1: str):
-        assert sh and ps1
-        assert (ROOT / "deploy" / "xc").stat().st_mode & 0o111, "deploy/xc 没有执行位"
+    def test_the_script_exists_and_is_executable(self, sh: str):
+        assert sh
+        assert XC.stat().st_mode & 0o111, "deploy/linux/xc 没有执行位"
 
     @pytest.mark.parametrize("verb", ["start", "redeploy", "stop", "logs", "status"])
-    def test_the_two_scripts_offer_the_same_verbs(self, sh: str, ps1: str, verb: str):
-        assert f"  {verb})" in sh or f"\n  {verb})" in sh, f"deploy/xc 缺 {verb}"
-        assert f"'{verb}'" in ps1, f"deploy/xc.ps1 缺 {verb}"
+    def test_the_script_offers_every_documented_verb(self, sh: str, verb: str):
+        assert f"  {verb})" in sh or f"\n  {verb})" in sh, f"deploy/linux/xc 缺 {verb}"
 
     def test_bash_script_reads_the_uid_from_the_contract(self, sh: str):
         """UID 不能写死。写死的那一刻它就开始和 Dockerfile 漂移，而症状是
@@ -410,56 +418,30 @@ class TestOpsScripts:
         assert re.search(r"^\s*down\s*$", block, re.M), "redeploy 里没有停容器这一步"
         assert block.index("down") < block.index("rm -rf"), "redeploy 在 down 之前就删了 data"
 
-    def test_redeploy_asks_before_destroying_data(self, sh: str, ps1: str):
+    def test_redeploy_asks_before_destroying_data(self, sh: str):
         assert "read -r answer" in sh and '"$answer" = yes' in sh
-        assert "Read-Host" in ps1 and "-ne 'yes'" in ps1
 
-    def test_powershell_tells_windows_users_to_use_a_named_volume(self, ps1: str):
-        """Windows 上 /data **不能**走宿主目录：Docker Desktop 经 9p/virtiofs 挂进
-        虚拟机，那是网络文件系统，SQLite 的 WAL 在上面会静默降级。
-
-        编排本身只有一份（没有 Windows 专用叠加层了），所以这件事只能靠 .env 里的
-        ``XINGCHA_DATA_MOUNT=xingcha_data``——而**脚本必须把它说出来**，否则
-        Windows 用户按默认值跑起来，几周后开始遇到无法复现的 database is locked。
-        """
-        assert "XINGCHA_DATA_MOUNT=xingcha_data" in ps1
-        assert "WAL" in ps1, "没解释为什么必须换成命名卷，下一个人会把它改回去"
-
-    def test_powershell_passes_the_compose_file_and_env_file_explicitly(self, ps1: str):
+    def test_the_script_passes_the_compose_file_and_env_file_explicitly(self, sh: str):
         """不能依赖 .env 里的 COMPOSE_FILE。
 
         它的分隔符跟着 os.pathsep 走：Linux ``:``、Windows ``;``；而且它意味着
         "在哪个目录敲命令"会改变结果——正是让人在 deploy/ 里 restart 失败的原因。
         """
-        assert "'deploy/docker-compose.yml'" in ps1
-        assert "'--env-file', '.env'" in ps1
+        code = self._code(sh)
+        assert "deploy/linux/docker-compose.yml" in code
+        assert "--env-file .env" in code
 
-    def test_both_scripts_check_the_gateway_when_one_is_configured(self, sh: str, ps1: str):
+    def test_the_script_checks_the_gateway_when_one_is_configured(self, sh: str):
         """配了网关就必须在启动前检查它；没配则不该被一个不相干的容器挡住。
 
         不检查的症状是"容器 healthy 却什么都打不开"——那种状态最难认，因为每一层
         单独看都正常。实际踩过一次（xingcha 不在 edge 网络里，网关一直 502）。
         """
-        for name, text in (("deploy/xc", sh), ("deploy/xc.ps1", ps1)):
-            assert "edge-caddy-1" in text, f"{name} 没检查网关容器"
-            assert "network inspect" in text, f"{name} 没检查共享网络"
-            assert "XINGCHA_GATEWAY" in text, f"{name} 没读拓扑开关"
+        code = self._code(sh)
+        assert "network inspect" in code, "deploy/linux/xc 没检查共享网络"
+        assert "XINGCHA_GATEWAY" in code, "deploy/linux/xc 没读拓扑开关"
 
-    def test_bash_and_powershell_agree_on_the_compose_invocation(self, sh: str, ps1: str):
-        """两个脚本必须用**同一份** compose 文件与同一个 .env。
-
-        分开写的话它们会各自漂移，而症状是"我在 Windows 上跑起来的那套和 Linux
-        上不是一个东西"——两边都"能用"，但配置来源不同。
-        """
-        for token in ("deploy/docker-compose.yml", "--env-file"):
-            assert token in sh, f"deploy/xc 里没有 {token}"
-            assert token in ps1, f"deploy/xc.ps1 里没有 {token}"
-
-    def test_powershell_avoids_the_reserved_host_variable(self, ps1: str):
-        """``$Host`` 是 PowerShell 的自动变量，赋值会报错。"""
-        assert "$host =" not in ps1 and "$Host =" not in ps1
-
-    def test_both_scripts_remove_orphans(self, sh: str, ps1: str):
+    def test_the_script_removes_orphans(self, sh: str):
         """``up`` / ``down`` 必须带 ``--remove-orphans``。
 
         不带的话，**从 compose 里删掉一个服务之后它的容器会永远留着**：compose 只
@@ -467,8 +449,146 @@ class TestOpsScripts:
         跑着占端口。实际踩过：Caddy 从编排里去掉之后 xingcha-caddy-1 还在跑、还占着
         8443，而 ``docker compose ps`` 看起来一切正常。
         """
-        for name, text in (("deploy/xc", sh), ("deploy/xc.ps1", ps1)):
-            assert "--remove-orphans" in text, f"{name} 的 up/down 没带 --remove-orphans"
+        assert "--remove-orphans" in self._code(sh), "up/down 没带 --remove-orphans"
+
+
+# =============================================================================
+# Windows 那条路（不走 docker）
+# =============================================================================
+
+
+class TestWindowsEntry:
+    r"""``deploy/windows/xc.bat``：uv 在宿主直接起进程。
+
+    它守的东西和 docker 那条路完全不同，所以单独一类。**每一条都是"改坏了不会有
+    任何报错、只会在那台机器上表现成别的毛病"的那种**：
+
+    · 不 cd 回仓库根 → 在 deploy\ 下面又建一个 data\，症状是"起来了但后台是空的"；
+    · 丢了 --frozen  → 部署机上顺手升了依赖，代码一字未动而行为变了；
+    · 另起一份模板   → 两份 .env.example 各自漂移，两边"都能用"但不是一个东西；
+    · LF 换行        → cmd.exe 的 goto 按字节偏移找标签，跳飞了也不报错。
+    """
+
+    @pytest.fixture(scope="class")
+    def bat(self) -> str:
+        return XC_BAT.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _code(script: str) -> str:
+        """去掉 ``rem`` 注释行——下面几条针对真正执行的行，不是文档。"""
+        return "\n".join(
+            ln for ln in script.splitlines() if not ln.lstrip().lower().startswith("rem")
+        )
+
+    def test_it_exists_and_is_the_only_windows_entry_point(self, bat: str):
+        """Windows 入口是**闭集**：一个 .bat，没有别的。
+
+        此前是 xc.ps1（docker 版）。留着的话双击哪一个会得到完全不同的部署，
+        而两个都"能用"。
+        """
+        assert bat
+        found = sorted(
+            q.name for q in DEPLOY.rglob("*") if q.suffix.lower() in (".bat", ".ps1")
+        )
+        assert found == ["xc.bat"], f"deploy/ 下的 Windows 入口与闭集不符：{found}"
+
+    def test_it_uses_crlf_and_no_bom(self):
+        r"""必须 CRLF、不带 BOM。
+
+        cmd.exe 对 LF-only 批处理有历史遗留的坑：``goto`` 按字节偏移找标签，
+        行尾少一个字节就可能跳飞；而 UTF-8 BOM 会让第一行变成一条不认识的命令。
+        两种都不会给出像样的报错。``.gitattributes`` 钉了 eol=crlf，这里守住结果。
+        """
+        raw = XC_BAT.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf"), "xc.bat 带了 UTF-8 BOM"
+        assert b"\r\n" in raw, "xc.bat 不是 CRLF —— cmd 的 goto 会跳飞"
+        assert b"\n" not in raw.replace(b"\r\n", b""), "xc.bat 里混了裸 LF"
+
+    def test_it_returns_to_the_repo_root(self, bat: str):
+        r"""双击时 cmd 的工作目录是脚本所在目录。
+
+        不 cd 的话 ``.env`` 找不到、``data\`` 会建在 ``deploy\`` 下面——症状是
+        "服务起来了，后台却是空的"，而两处 data 目录都真实存在。
+        """
+        assert 'cd /d "%~dp0..\\.."' in self._code(bat)
+
+    def test_it_does_not_reach_for_docker(self, bat: str):
+        """这条路的**全部意义**就是不装 docker。
+
+        哪天有人"顺手"把 compose 调用加回来，这台机器就又需要 Docker Desktop 了，
+        而那正是 data 不能放宿主目录的那条路。
+        """
+        code = self._code(bat).lower()
+        assert "docker" not in code, "xc.bat 里出现了 docker 调用"
+
+    def test_dependencies_are_locked(self, bat: str):
+        """``uv sync`` 与 ``uv run`` 都要带 ``--frozen``。
+
+        少了它 uv 会就地更新 uv.lock：代码一个字没动，跑的却是另一组依赖版本——
+        和镜像那边 A12 是同一条理由（见 test_image_build_is_locked）。
+        """
+        code = self._code(bat)
+        assert "uv sync --frozen" in code
+        assert "uv run --frozen" in code
+
+    def test_it_shares_the_one_env_template(self, bat: str):
+        r"""Windows 不另起一份模板。
+
+        两份必然各自漂移，而症状是"我在 Windows 上跑的那套和 Linux 上不是一个
+        东西"：两边都能用，但配置来源不同。
+        """
+        assert "deploy\\.env.example" in self._code(bat)
+        strays = sorted(q.name for q in DEPLOY.rglob(".env*") if q.name != ".env.example")
+        assert not strays, f"deploy/ 下出现了第二份 env 模板：{strays}"
+
+    def test_listen_address_comes_only_from_the_env_file(self, bat: str):
+        """不能给 ``serve`` 传 ``--host`` / ``--port``。
+
+        传了就是第二个来源，而两个来源必然有一天不一致——症状是"我在 .env 里改了
+        端口却不生效"，而两处配置单看都对。
+        """
+        code = self._code(bat)
+        assert "xingcha serve" in code
+        serve_line = next(ln for ln in code.splitlines() if "xingcha serve" in ln)
+        assert "--host" not in serve_line and "--port" not in serve_line
+
+    def test_failures_stop_the_window(self, bat: str):
+        """失败路径必须 ``pause``。
+
+        双击起来的窗口在脚本结束时立刻消失——不 pause 的话用户看到的是"闪一下就
+        没了"，报错一个字都读不到。
+        """
+        code = self._code(bat)
+        assert "goto :fail" in code and ":fail" in code
+        assert "pause" in code
+
+    def test_it_warns_about_the_windows_firewall(self, bat: str):
+        """绑 0.0.0.0 之后第一次启动会弹防火墙窗。
+
+        点了取消的话：本机一切正常，网关那边一直 502——那个现象指不到防火墙，
+        所以脚本必须在启动前把这句话说出来。
+        """
+        assert "防火墙" in bat
+
+    def test_the_env_template_documents_the_windows_settings(self):
+        """三项少一项各有各的坑法，模板里必须都在（注释掉也算）。
+
+        · XINGCHA_HOST 不填 0.0.0.0     → 网关 502 而本机完全正常
+        · XINGCHA_PUBLIC_URL 不填       → 后台印出打不开的 127.0.0.1 地址
+        · XINGCHA_TRUSTED_PROXIES 不填  → 会话 cookie 不带 Secure，而功能全正常
+        """
+        text = ENV_EXAMPLE.read_text(encoding="utf-8")
+        for name in ("XINGCHA_HOST", "XINGCHA_PUBLIC_URL", "XINGCHA_TRUSTED_PROXIES"):
+            assert re.search(rf"^#?\s*{name}=", text, re.M), f".env.example 没提到 {name}"
+
+    def test_the_env_template_does_not_hand_out_a_wildcard_proxy(self):
+        """``XINGCHA_TRUSTED_PROXIES`` 在这条路上**不能**示范 ``*``。
+
+        容器那边敢信任所有来源，前提是零宿主端口、唯一入口就是网关；Windows 这边
+        端口是真的开在局域网上的，填 ``*`` 等于让任何人伪造 X-Forwarded-Proto。
+        """
+        text = ENV_EXAMPLE.read_text(encoding="utf-8")
+        assert not re.search(r"^#?\s*XINGCHA_TRUSTED_PROXIES=\s*\*", text, re.M)
 
 
 # =============================================================================
@@ -495,10 +615,13 @@ class TestEnvNameAlignment:
     def _referenced() -> set[str]:
         """部署产物里出现的所有 ``XINGCHA_*`` 名字（只看可执行部分）。"""
         names: set[str] = set()
-        for name in ("docker-compose.yml", "docker-compose.gateway.yml", "xc", "xc.ps1"):
-            text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
+        for path in (COMPOSE, GATEWAY_COMPOSE, XC, XC_BAT):
+            text = path.read_text(encoding="utf-8")
             code = "\n".join(
-                ln for ln in text.splitlines() if not ln.lstrip().startswith(("#", "//", "<#"))
+                ln
+                for ln in text.splitlines()
+                if not ln.lstrip().startswith(("#", "//"))
+                and not ln.lstrip().lower().startswith("rem")
             )
             names.update(re.findall(r"\bXINGCHA_[A-Z_]+\b", code))
         return names
@@ -526,7 +649,7 @@ class TestEnvNameAlignment:
         assert "XINGCHA_MAX_CONCURENCY" not in _KNOWN_ENV_NAMES
 
     def test_the_env_example_only_documents_known_names(self):
-        text = (ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
+        text = ENV_EXAMPLE.read_text(encoding="utf-8")
         from xingcha.config import _KNOWN_ENV_NAMES
 
         documented = set(re.findall(r"^#?\s*(XINGCHA_[A-Z_]+)=", text, re.M))
@@ -551,16 +674,16 @@ class TestDocsHaveOneOwner:
     GATEWAY_ONLY: ClassVar[list[str]] = ["edge trust", "root.crt", "default_sni", "内部 CA"]
 
     def test_the_gateway_doc_exists_and_is_linked(self):
-        caddy = ROOT / "deploy" / "CADDY.md"
+        caddy = DEPLOY / "CADDY.md"
         assert caddy.exists(), "deploy/CADDY.md 不见了"
-        assert "CADDY.md" in (ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+        assert "CADDY.md" in (DEPLOY / "README.md").read_text(encoding="utf-8")
         assert "CADDY.md" in (ROOT / "README.md").read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("phrase", GATEWAY_ONLY)
     def test_gateway_details_live_in_one_place(self, phrase: str):
         others = [
             q.relative_to(ROOT).as_posix()
-            for q in [ROOT / "README.md", ROOT / "deploy" / "README.md"]
+            for q in [ROOT / "README.md", DEPLOY / "README.md"]
             if phrase in q.read_text(encoding="utf-8")
         ]
         assert not others, f"「{phrase}」是网关的细节，只该在 deploy/CADDY.md 里，却出现在 {others}"
@@ -622,7 +745,7 @@ class TestEnvDefaults:
         写一个占位值（``sk-xxx``）的代价：用户 cp 之后忘了改，服务带着一个假 key
         起来，第一次调用才失败——而错误信息指向上游，不指向"你还没配"。
         """
-        text = (ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
+        text = ENV_EXAMPLE.read_text(encoding="utf-8")
         for line in text.splitlines():
             if line.startswith("#") or "=" not in line:
                 continue

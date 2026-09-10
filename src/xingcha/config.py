@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     #:
     #: 取值是 uvicorn 的 ``forwarded_allow_ips``：逗号分隔的 IP/网段，或 ``*``。
     #: 只有在"应用零宿主端口、唯一入口就是那个反代"时 ``*`` 才是合理的——
-    #: 共享网关那套（deploy/docker-compose.edge.yml）正是这种情形。
+    #: 共享网关那套（deploy/linux/docker-compose.gateway.yml）正是这种情形。
     trusted_proxies: str | None = None
 
     # --- 上游 ---

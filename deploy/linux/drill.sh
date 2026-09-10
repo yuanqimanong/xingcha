@@ -15,9 +15,10 @@
 # 以及至少每季度一次。
 #
 # 用法：
-#   ./drill.sh                默认演练（在当前部署上原地做，结束后复原）
-#   ./drill.sh --keep         演练后保留恢复出来的数据（不复原）
-#   ./drill.sh --no-keyring   只恢复数据库、故意不恢复密钥环，验证它**拒绝启动**
+#   ./deploy/linux/drill.sh                默认演练（原地做，结束后复原）
+#   ./deploy/linux/drill.sh --keep         演练后保留恢复出来的数据（不复原）
+#   ./deploy/linux/drill.sh --no-keyring   只恢复数据库、故意不恢复密钥环，
+#                                          验证它**拒绝启动**
 #
 # 演练期间服务会**停机**（约一分钟）。不要在业务高峰跑。
 # 全过程只动 data/ 与一个临时目录，不碰镜像也不碰 .env。
@@ -42,21 +43,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 脚本在 deploy/linux/ 下，仓库根是它上面**两级**（脚本按系统分目录之后是两级）。
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
 
 command -v docker >/dev/null || die "没有 docker。这个脚本是给已部署的机器用的。"
-[[ -f .env ]] || die "没有 .env。先跑 ./deploy/xc start。"
+[[ -f .env ]] || die "没有 .env。先跑 ./deploy/linux/xc start。"
 [[ -d data ]] || die "没有 data/。这台机器上还没有要演练的数据。"
 
-# compose 文件与 .env 显式传，与 deploy/xc 保持一致（不依赖 COMPOSE_FILE）
-dc() { docker compose -f deploy/docker-compose.yml --env-file .env "$@"; }
+# compose 文件与 .env 显式传，与 deploy/linux/xc 保持一致（不依赖 COMPOSE_FILE）
+dc() { docker compose -f deploy/linux/docker-compose.yml --env-file .env "$@"; }
 xc() { dc exec -T xingcha xingcha "$@"; }
 
 # ---------------------------------------------------------------- 1 备份
 step "1/6 备份数据库 + 密钥环"
 dc ps --status running --services 2>/dev/null | grep -qx xingcha \
-  || die "xingcha 容器没在跑。先 ./deploy/xc start。"
+  || die "xingcha 容器没在跑。先 ./deploy/linux/xc start。"
 
 xc db backup --tag drill >/dev/null
 LATEST="$(ls -t data/backups/*.db | head -1)"
@@ -71,7 +73,7 @@ ok "密钥环单独存到 $VAULT/secret.key（这一步是 A10 的关键：它�
 
 # ---------------------------------------------------------------- 2 体检
 step "2/6 体检这份备份"
-# 容器里 XINGCHA_DATA_DIR 已是 /data（见 deploy/docker-compose.yml），不传参就查最新那份
+# 容器里 XINGCHA_DATA_DIR 已是 /data（见同目录的 docker-compose.yml），不传参就查最新那份
 xc db verify || die "备份体检不过——演练到此为止，先修备份"
 
 # ---------------------------------------------------------------- 3 灾难

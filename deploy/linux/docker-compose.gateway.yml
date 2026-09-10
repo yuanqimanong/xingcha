@@ -6,7 +6,7 @@
 # 为什么是文件而不是变量：`ports` 要整条去掉、`networks` 要凭空出现，这两件事都
 # 没法用 `${}` 表达——它们是**拓扑**的差别，不是参数。
 #
-# 用法：在 .env 里写 `XINGCHA_GATEWAY=edge`，然后 ./deploy/xc start。
+# 用法：在 .env 里写 `XINGCHA_GATEWAY=edge`，然后 ./deploy/linux/xc start。
 # 网关自己怎么起，见 deploy/CADDY.md。
 
 services:
@@ -22,7 +22,7 @@ services:
     environment:
       # curl 示例要用**网关**的地址。写成容器自己的 http 地址，用户复制那条命令会
       # 直接连不上（那个端口根本没发布），而错误信息指不到"该走网关"。
-      # 端口来自**网关自己的配置**（../edge/.env 的 PORT_XINGCHA），由 deploy/xc
+      # 端口来自**网关自己的配置**（../edge/.env 的 PORT_XINGCHA），由 deploy/linux/xc
       # 读出来后导出成 XINGCHA_PUBLIC_PORT。
       #
       # 不让用户在两个 .env 里各写一遍：写两遍就会不一致，而不一致的症状是后台

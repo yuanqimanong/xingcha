@@ -13,11 +13,16 @@
 #
 # 代价写在这里：**网关是硬依赖**。它没起，后台完全进不去。
 #
-# 用法一律走 ../deploy/xc（或 xc.ps1），它替你把 -f 与 --env-file 传好，
-# 并在启动前检查网关在不在：
+# 用法一律走 ./xc（同目录），它替你把 -f 与 --env-file 传好，并在启动前检查网关
+# 在不在：
 #
-#     ./deploy/xc start        构建并启动，数据不动
-#     ./deploy/xc redeploy     清空数据从零开始
+#     ./deploy/linux/xc start        构建并启动，数据不动
+#     ./deploy/linux/xc redeploy     清空数据从零开始
+#
+# **这份编排只服务 Linux**，所以它在 deploy/linux/ 下。Windows 走
+# deploy/windows/xc.bat：不打镜像，uv 直接在宿主起进程——理由是 Docker Desktop
+# 那条路上 data 不能放宿主目录（WAL 静默降级），绕开它要把数据塞进命名卷，
+# 于是备份和体检都得进容器做。见 deploy/README.md。
 #
 # 网关自己怎么起，见 ../edge/README.md（那是一个独立项目，fin / pyp 共用同一台）。
 
@@ -28,13 +33,14 @@ name: xingcha
 services:
   xingcha:
     build:
-      # 相对路径以 **compose 文件所在目录** 为基准（这里是 deploy/），所以 .. 是仓库根。
-      context: ..
+      # 相对路径以 **compose 文件所在目录** 为基准（这里是 deploy/linux/），
+      # 所以 ../.. 才是仓库根 —— 这一层是脚本按系统分目录之后加的。
+      context: ../..
       dockerfile: Dockerfile
     image: xingcha:local
     restart: unless-stopped
 
-    # 宿主上绑哪个地址。**不是用户变量**——由 deploy/xc 从 XINGCHA_WEB_HOST 推出来
+    # 宿主上绑哪个地址。**不是用户变量**——由 deploy/linux/xc 从 XINGCHA_WEB_HOST 推出来
     # 再导出（见那里的 derive_bind_addr）：localhost/127.0.0.1 → 只绑回环，
     # 其它 → 0.0.0.0。
     #
@@ -54,10 +60,10 @@ services:
     # 注意这与命令行的 `--env-file` **不是一回事**，很容易踩：
     #   · `--env-file X` 只决定 compose 拿什么去插值 ${...}；
     #   · 这里的 `env_file:` 决定容器里真正有哪些环境变量。
-    # 所以 `--env-file 别的文件` 不会改变容器读到的密码——它读的始终是 ../.env。
-    # 路径写死是有意的：唯一支持的入口是 deploy/xc，而它只用仓库根的 .env。
+    # 所以 `--env-file 别的文件` 不会改变容器读到的密码——它读的始终是仓库根的 .env。
+    # 路径写死是有意的：唯一支持的入口是 deploy/linux/xc，而它只用仓库根的 .env。
     env_file:
-      - ../.env
+      - ../../.env
 
     environment:
       # 这几项由编排决定，**排在 env_file 之后所以会覆盖它**——避免 .env 里
@@ -71,12 +77,13 @@ services:
 
 
     volumes:
-      # 默认宿主目录（../data，即仓库根下的 data/）。
+      # 默认宿主目录（../data，即仓库根下的 data/）。填卷名则改用命名卷。
       #
-      # Windows 上要改成命名卷：`XINGCHA_DATA_MOUNT=xingcha_data`。Docker Desktop
-      # 经 9p/virtiofs 把 Windows 目录挂进虚拟机，那是网络文件系统，**SQLite 的
-      # WAL 在上面会静默降级**——症状是零星的 database is locked，只在并发写时出现。
-      - ${XINGCHA_DATA_MOUNT:-../data}:/data
+      # 只在宿主目录不适合放 SQLite 时才动它：网络文件系统上 **WAL 会静默降级**
+      # ——症状是零星的 database is locked，只在并发写时出现，压不出来也难复现。
+      # Docker Desktop 经 9p/virtiofs 挂进来的 Windows 目录就是这一类；但那条路
+      # 已经不用了，Windows 上直接用 uv 本地跑（deploy/windows/xc.bat），不打镜像。
+      - ${XINGCHA_DATA_MOUNT:-../../data}:/data
 
     # 30 秒是折中。设成和 request_timeout(600s) 一样长的话，每次升级要等 10 分钟；
     # 设成 0 的话，正在跑的调用会被硬切。已对齐的升级档位接受"长请求可能被切断"。
@@ -98,6 +105,6 @@ services:
       start_period: 20s
 
 volumes:
-  # 只有 XINGCHA_DATA_MOUNT=xingcha_data 时才会真的被创建（Windows 那条路径）。
-  # 声明在这里但没人用的命名卷不会被创建，所以对 Linux 部署没有任何副作用。
+  # 只有 XINGCHA_DATA_MOUNT=xingcha_data 时才会真的被创建。
+  # 声明在这里但没人用的命名卷不会被创建，所以对默认的宿主目录部署没有任何副作用。
   xingcha_data:
