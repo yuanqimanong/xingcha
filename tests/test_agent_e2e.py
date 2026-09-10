@@ -499,7 +499,7 @@ class TestUpstreamMessage:
             }
 
         got = _upstream_says(E())
-        assert "rate-limited" in got
+        assert got is not None and "rate-limited" in got
 
     def test_an_unknown_shape_says_nothing_rather_than_guessing(self):
         from xingcha.services.run import _upstream_says

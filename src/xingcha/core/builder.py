@@ -494,7 +494,9 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
 
     ``info`` 是 :class:`ModelInfo` 或 ``None``（目录里没有这个 id）。
     """
-    known = info is not None and info.declares_capabilities
+    # 绑成一个变量而不是 bool：`known` 为真时 info 一定不是 None 这件事，
+    # 类型检查器看不出来——于是下面每一处 info.xxx 都被报成"None 没有这个属性"。
+    declared = info if info is not None and info.declares_capabilities else None
     profile: Any = {}
     try:
         profile = make_model(model_id, provider).profile
@@ -508,7 +510,7 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
         CapabilityCheck(
             "reasoning",
             "深度思考",
-            tri(info.supports_reasoning if known else None),
+            tri(declared.supports_reasoning if declared is not None else None),
             "目录里有 reasoning 参数才算。没有的模型勾了「深度思考」也不会真的想。",
         ),
         CapabilityCheck(
@@ -524,8 +526,8 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
             "native_schema",
             "原生结构化输出（T1）",
             tri(
-                native_ok(model_id, provider, catalog_says=info.supports_native_schema)
-                if known
+                native_ok(model_id, provider, catalog_says=declared.supports_native_schema)
+                if declared is not None
                 else None
             ),
             "目录与 pydantic-ai 的 profile 都点头才算。不点头会自动降级到 T2。",
@@ -533,13 +535,13 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
         CapabilityCheck(
             "tools",
             "工具调用（T2 的工具通道）",
-            tri(info.supports_tools if known else None),
+            tri(declared.supports_tools if declared is not None else None),
             "不支持时 T2 请把「schema 送达方式」改成提示词通道，否则每次都 400。",
         ),
         CapabilityCheck(
             "multimodal",
             "图片 / 文件输入",
-            tri(bool(info.input_modalities - {"text"}) if known else None),
+            tri(bool(declared.input_modalities - {"text"}) if declared is not None else None),
             "**即使模型支持，星槎现在也只发文本**——收到非文本 content part 会明确报错，"
             "而不是静默丢掉。这一栏是给你选模型时参考的。",
         ),
@@ -736,7 +738,9 @@ def build(
     spec_json: str | dict[str, Any],
     tier: Tier,
     out_schema: str | dict[str, Any] | None,
-    provider: OpenRouterProvider,
+    # 联合类型，不是 OpenRouterProvider —— 用哪一种由 base_url 决定（见 make_provider），
+    # 而这里只是把它转交给 make_model。标窄了的话厂商直连那条路每次都是类型错误。
+    provider: Provider,
     options: BuildOptions,
     concurrency: Any = None,
 ) -> AgentRuntime:

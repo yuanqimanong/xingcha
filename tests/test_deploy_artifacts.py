@@ -362,6 +362,10 @@ class TestOrchestrationShape:
         默认值同样按解析后的路径断言，理由见 test_build_context_is_the_repo_root。
         """
         default = compose_vars(compose_raw)["XINGCHA_DATA_MOUNT"]
+        # 没有默认值的话它是 None（空 .env 就挂不上 data 了）——那条由
+        # test_every_var_has_a_default_so_an_empty_env_still_works 单独守着，
+        # 这里先断言一次，顺带让下面的路径拼接有确定的类型。
+        assert default is not None, "XINGCHA_DATA_MOUNT 没有默认值"
         assert (COMPOSE.parent / default).resolve() == ROOT / "data", (
             f"data 默认挂载点不是仓库根下的 data/：{default}"
         )

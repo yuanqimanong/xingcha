@@ -26,8 +26,8 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy import case as sa_case
-from sqlalchemy import func, select
 
 from .. import __version__
 from .. import contract as C
@@ -772,7 +772,9 @@ async def _run_sources(s, *, token_id: int | None = None, limit: int = 20) -> li
     只看调用记录一行行翻答不了——要的是"有几个来源、各调了多少、最近一次什么
     时候"。一把本该只给一台服务器用的 key 上突然冒出第二个 IP，这张表一眼能看出来。
     """
-    where = [Run.client_ip.is_not(None)]
+    # 标注类型：不标的话列表类型被第一个元素（BinaryExpression）定死，而 `==`
+    # 产生的是更宽的 ColumnElement，append 就成了类型错误。
+    where: list[ColumnElement[bool]] = [Run.client_ip.is_not(None)]
     if token_id is not None:
         where.append(Run.token_id == token_id)
     rows = (

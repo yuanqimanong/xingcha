@@ -22,9 +22,10 @@ dist/
 build/
 *.egg-info/
 
-# 编辑器
+# 编辑器与本地工具的元数据
 .vscode/
 .idea/
+.serena/
 
 # 局域网演示用的临时 Caddy 配置
 .lan-demo/
