@@ -49,11 +49,15 @@ class TestProxyIsolation:
 
         判据是 ``_mounts``：trust_env 打开时 httpx 会把环境里的代理解析成一组挂载的
         代理传输，关掉时一个都没有。此前这里断言的是"构造阶段抛 ImportError
-        （socksio 未装）"——那依赖两件与本仓库无关的事：socksio 恰好没装，以及 httpx
-        恰好在构造期就去导入它。httpx2 2.12 起代理是惰性建立的，于是这条反证在
-        "被挡的东西一点没变"的情况下变红，而红的样子像是我们自己的回归。
+        （socksio 未装）"，那依赖两件与本仓库无关的事：socksio 恰好没装，以及 httpx
+        恰好在构造期就去导入它——两者都会变，而变的时候这条反证在"被挡的东西一点
+        没变"的情况下变红，红的样子像是我们自己的回归。
+
+        所以这里**只用 http 代理**，并且先把 socks 的那几个变量清掉：socks 会把
+        "socksio 装没装"重新引进来，而 CI 有一遍是带着 ALL_PROXY=socks5://… 跑的。
         """
-        monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1")
+        for name in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+            monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 
         leaky = httpx2.AsyncClient(trust_env=True)
