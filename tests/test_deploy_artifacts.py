@@ -529,9 +529,7 @@ class TestWindowsEntry:
         而两个都"能用"。
         """
         assert bat
-        found = sorted(
-            q.name for q in DEPLOY.rglob("*") if q.suffix.lower() in (".bat", ".ps1")
-        )
+        found = sorted(q.name for q in DEPLOY.rglob("*") if q.suffix.lower() in (".bat", ".ps1"))
         assert found == ["edge.bat", "xc.bat"], f"deploy/ 下的 Windows 入口与闭集不符：{found}"
 
     def test_it_uses_crlf_and_no_bom(self):
@@ -677,7 +675,9 @@ class TestEdgeGateway:
         """
         site = re.search(r"^https://\{\$EDGE_HOST\}:(\d+)", caddyfile, re.M)
         assert site, "Caddyfile 里没有 https://{$EDGE_HOST}:<端口> 这样的站点地址"
-        xc = re.search(r"if \[ -n \"\$GATEWAY\" \]; then\n\s*p=(\d+)", XC.read_text(encoding="utf-8"))
+        xc = re.search(
+            r"if \[ -n \"\$GATEWAY\" \]; then\n\s*p=(\d+)", XC.read_text(encoding="utf-8")
+        )
         assert xc, "deploy/linux/xc 的 public_port 里读不出网关端口"
         assert site.group(1) == xc.group(1), "Caddyfile 的站点端口和 xc 印的端口对不上"
 
@@ -846,7 +846,9 @@ class TestDocsHaveOneOwner:
             for q in [ROOT / "README.md", DEPLOY / "README.md"]
             if phrase in q.read_text(encoding="utf-8")
         ]
-        assert not others, f"「{phrase}」是网关的细节，只该在 deploy/edge/CADDY.md 里，却出现在 {others}"
+        assert not others, (
+            f"「{phrase}」是网关的细节，只该在 deploy/edge/CADDY.md 里，却出现在 {others}"
+        )
 
 
 # =============================================================================
