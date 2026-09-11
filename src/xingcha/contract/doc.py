@@ -1,26 +1,25 @@
-"""从 :mod:`xingcha.contract` 的常量生成仓库根的 ``CONTRACT.md``。
+"""从 :mod:`xingcha.contract` 的常量生成 ``README.md`` 里「对外契约」那一节。
 
 **文档不手写。** 手写的契约文档一定会和代码漂移，而漂移的那一刻你就有了两份互相矛盾
 的"权威"——更糟的是，人会去信文档而不是代码。这里把常量渲染成文档，并由
-``tests/test_contract_doc.py`` 断言仓库里的文件与生成结果一致：改了常量却忘了重新
+``tests/test_contract_frozen.py`` 断言仓库里的文字与生成结果一致：改了常量却忘了重新
 生成，CI 会变红。
 
-重新生成：``python -m xingcha.contract_doc``
+这一节曾经是独立的 ``CONTRACT.md``，现已并进 README——同一份东西分两个文件，读者
+要先猜自己该读哪个。所以这里只渲染 README 里 :data:`MARK_BEGIN` 与 :data:`MARK_END`
+之间的那一段，节外的文字（包括这两行标记本身）是手写的，生成时原样留着。
+
+重新生成：``python -m xingcha.contract.doc``
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from . import contract as C
+from .. import contract as C
 
-HEADER = """<!-- 本文件由 `python -m xingcha.contract_doc` 从 src/xingcha/contract.py 生成。
-     不要手工编辑：改动会被下次生成覆盖，而且 CI 会因为与常量不一致而变红。 -->
-
-# 星槎对外契约 v{version}
-
-调用方手里只有三样东西：`base_url`、一把 `sk-xc-` key、一个 `model` 字符串。
-本文列出的每一条都对应其中一环——**上线后只能加、不能改**。
+HEADER = """调用方手里只有三样东西：`base_url`、一把 `sk-xc-` key、一个 `model` 字符串。
+本节列出的每一条都对应其中一环——**上线后只能加、不能改**。
 
 想改动其中任何一条，先读 [§12 演进与协商](#12--演进与协商)。
 直接改常量会让 `tests/test_contract_frozen.py` 变红，那不是测试坏了。
@@ -41,7 +40,7 @@ def render() -> str:
     out: list[str] = [
         HEADER.format(version=C.CONTRACT_VERSION, features=_fs(C.FEATURES)),
         "",
-        "## 1 · 路径归属",
+        "### 1 · 路径归属",
         "",
         f"对外前缀：{_fs(C.PUBLIC_PREFIXES)}",
         "",
@@ -66,7 +65,7 @@ def render() -> str:
         "",
         "**演进规则**：从反代收回任意 `/v1` 路径属于破坏性变更，必须契约号 +1 并双轨服务。",
         "",
-        "## 2 · 鉴权与 token",
+        "### 2 · 鉴权与 token",
         "",
         f"只认 `{C.AUTH_HEADER}: {C.AUTH_SCHEME.title()} <token>`。"
         "永不支持 query string 传 key，永不支持 `api-key` / `x-api-key` 头。",
@@ -88,7 +87,7 @@ def render() -> str:
         "**演进规则**：换哈希算法 = 新 scheme 数字，旧 scheme 的校验分支永不删除，"
         "已签发 key 不重签、不失效。`kid` 长度与字符集不再变化；`secret` 长度可随 scheme 变化。",
         "",
-        "## 3 · model 命名空间",
+        "### 3 · model 命名空间",
         "",
         "```",
         f"① 以 {C.EXPLICIT_NS!r} 开头  → 显式命名空间："
@@ -112,7 +111,7 @@ def render() -> str:
         "（放宽会让原本 404 的字符串突然变成有效 Agent）；slug 发布后不可改名，"
         "改名走 `agent_alias` 表；per-user 命名空间只能通过新前缀引入。",
         "",
-        "## 4 · GET /v1/models",
+        "### 4 · GET /v1/models",
         "",
         "| 项 | 值 |",
         "|---|---|",
@@ -138,7 +137,7 @@ def render() -> str:
         "> 降级语义必须冻结：客户端会缓存这个列表并把 id 写进会话配置，"
         "> 一次上游抖动若让接口静默少返回上游模型，用户配置会被抹掉。",
         "",
-        "## 5 · 请求字段三态",
+        "### 5 · 请求字段三态",
         "",
         "| 态 | 字段 |",
         "|---|---|",
@@ -152,7 +151,7 @@ def render() -> str:
         "",
         "**演进规则**：reject 表只能缩小；永不把字段从 honor/ignore 移入 reject。",
         "",
-        "## 6 · 响应形状",
+        "### 6 · 响应形状",
         "",
         "| 项 | 值 |",
         "|---|---|",
@@ -174,7 +173,7 @@ def render() -> str:
         "> 事后「修正」成只报最后一次，会让所有基于 usage 的账单核对、配额聚合与成本看板",
         "> 同时改变口径——那是无法回退的数值毁约。",
         "",
-        "## 7 · 错误契约",
+        "### 7 · 错误契约",
         "",
         "`type` 是粗粒度闭集（供 SDK 分支），`code` 可更细。**两者不相等。**",
         "",
@@ -191,7 +190,7 @@ def render() -> str:
         "5xx 对外只给固定文案 + `run_id`，细节只进日志"
         "——异常文本常带完整 URL、偶尔带 header，直接回显就是一条上游 key 泄漏路径。",
         "",
-        "## 8 · 裸模型直通",
+        "### 8 · 裸模型直通",
         "",
         "| 项 | 值 |",
         "|---|---|",
@@ -214,7 +213,7 @@ def render() -> str:
         "> **v1 唯一真正的钱刹车不在星槎里。** v1 不做配额，必须在 OpenRouter 侧",
         "> 为服务端那把上游 key 单独设一个低额信用上限。",
         "",
-        "## 9 · 运行护栏",
+        "### 9 · 运行护栏",
         "",
         "| 项 | 值 |",
         "|---|---|",
@@ -228,7 +227,7 @@ def render() -> str:
         f"| worker 数 | {C.REQUIRED_WORKERS}，**启动时断言** |",
         f"| journal_mode | `{C.REQUIRED_JOURNAL_MODE}`，**启动时断言，否则拒绝启动** |",
         "",
-        "## 10 · 数据目录与权限",
+        "### 10 · 数据目录与权限",
         "",
         "| 项 | 值 |",
         "|---|---|",
@@ -243,7 +242,7 @@ def render() -> str:
         "上游 key 来源优先级："
         "`setting` 表（Fernet 加密）> `XINGCHA_OPENROUTER_API_KEY`（仅首次启动导入一次并告警）。",
         "",
-        "## 11 · 计量",
+        "### 11 · 计量",
         "",
         f"| 费用来源（`cost_source`） | {_fs(s.value for s in C.CostSource)} |",
         "|---|---|",
@@ -254,7 +253,7 @@ def render() -> str:
         "四态与四档从第一天就写进数据库的 CHECK 约束，尽管 v1 只实现 T2 与前三种来源。",
         "没预留的话，补齐时就是一次需要重建表的迁移。",
         "",
-        "## 12 · 演进与协商",
+        "### 12 · 演进与协商",
         "",
         "上面每一节的「演进规则」讲的是**那一条**怎么加。这一节讲的是加不动的时候怎么办。",
         "",
@@ -276,22 +275,52 @@ def render() -> str:
         "改常量会让 `tests/test_contract_frozen.py` 变红。**那不是测试坏了**——",
         "它是在提醒你正在做一次破坏性变更，先走完上面三步。",
         "",
-        "改完记得重新生成本文：`python -m xingcha.contract_doc`。",
-        "",
+        "改完记得重新生成本节：`python -m xingcha.contract.doc`。",
     ]
     return "\n".join(out) + "\n"
 
 
-DOC_PATH = Path(__file__).resolve().parents[2] / "CONTRACT.md"
+#: 生成区的边界。这两行本身是 README 里手写的，生成时原样留着——它们是"机器写的到
+#: 哪儿为止"的唯一标记，删了 :func:`extract` 就会拒绝工作而不是猜。
+MARK_BEGIN = "<!-- BEGIN GENERATED · python -m xingcha.contract.doc · 不要手工编辑 -->"
+MARK_END = "<!-- END GENERATED -->"
+
+DOC_PATH = Path(__file__).resolve().parents[3] / "README.md"
+
+
+class MarkersMissing(RuntimeError):
+    """README 里找不到成对的生成区标记。"""
+
+
+def _bounds(text: str) -> tuple[int, int]:
+    i = text.find(MARK_BEGIN)
+    j = text.find(MARK_END)
+    if i < 0 or j < 0 or j < i:
+        raise MarkersMissing(
+            f"README.md 里找不到成对的生成区标记。「对外契约」一节需要这两行：\n"
+            f"  {MARK_BEGIN}\n  {MARK_END}"
+        )
+    return i + len(MARK_BEGIN), j
+
+
+def extract(text: str) -> str:
+    """取出 README 里两个标记之间的那一段（含首尾空行的规整化）。"""
+    i, j = _bounds(text)
+    return text[i:j].strip("\n") + "\n"
+
+
+def splice(text: str) -> str:
+    """把生成结果换进 README 的生成区，节外的文字一个字节都不动。"""
+    i, j = _bounds(text)
+    return f"{text[:i]}\n\n{render().strip(chr(10))}\n\n{text[j:]}"
 
 
 def write(path: Path | None = None) -> Path:
     target = path or DOC_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render(), encoding="utf-8")
+    target.write_text(splice(target.read_text(encoding="utf-8")), encoding="utf-8")
     return target
 
 
 if __name__ == "__main__":
     p = write()
-    print(f"已生成 {p}")
+    print(f"已更新 {p} 的「对外契约」一节")

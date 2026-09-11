@@ -141,8 +141,7 @@ async def change_password(
             return await _render_settings(
                 request,
                 password_error=(
-                    "密码由环境变量 XINGCHA_ADMIN_PASSWORD 托管，在这里改不生效。"
-                    "请改 .env 里的那一项并重启服务。"
+                    "当前密码由部署配置指定，在这里改不了。请改 .env 里的那一项并重启服务。"
                 ),
             )
         if not ws.verify_admin_password(

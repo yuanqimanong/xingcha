@@ -15,9 +15,9 @@ import sqlite3
 from pathlib import Path
 
 from .config import Settings, load_vendor_keys
-from .crypto import Keyring
 from .db import migrate
 from .db.engine import apply_umask, sqlite_conn
+from .foundation.crypto import Keyring
 
 log = logging.getLogger(__name__)
 

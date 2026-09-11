@@ -54,7 +54,7 @@
 
 {% if ok %}
 <div class="hint mt4">
-  以上是<strong>上游实际收发的内容</strong>。本次试运行未落库、不占配额。
+  以上是<strong>与上游实际收发的内容</strong>。试运行不写入调用记录，也不占配额。
 </div>
 {% endif %}
 
@@ -104,7 +104,7 @@
   </details>
   {% endfor %}
   <div class="hint">
-    只保留最近 {{ history | length }} 次，含提示词原文与模型输出，存在本机数据库。
+    只保留最近 {{ history | length }} 次，含提示词原文与模型输出，全部留在这台机器上。
   </div>
 </div>
 {% endif %}

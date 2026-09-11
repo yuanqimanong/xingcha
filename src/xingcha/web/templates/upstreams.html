@@ -74,12 +74,12 @@
 <div class="card">
   <div class="card-head">
     <h2>添加供应商</h2>
-    <span class="dim small">环境变量里没有的，或自建中转</span>
+    <span class="dim small">列表里没有的厂商，或你自建的中转</span>
   </div>
   <div class="card-body">
     <p class="muted small mb4">
-      加进左边的切换列表，<strong>不改当前出口</strong>。要用它再去点「检查并切换」。
-      key 加密落库；<strong>拉不通就不保存</strong>。
+      只是加进左边的切换列表，<strong>不改当前出口</strong>；要用它再点「检查并切换」。
+      key 加密保存，页面上不再回显；<strong>连不通就不保存</strong>。
     </p>
     {# 走 htmx 而不是普通提交：**失败时页面不重载，四个输入原样留着**。
        普通提交要么整页重渲染（清空输入），要么把 key 回显进 HTML（等于写进缓存
@@ -178,9 +178,9 @@
   <div class="card-body">
     {% if in_container %}
     <div class="notice warn mb4">
-      <strong>星槎跑在容器里，扫不到宿主的环境变量。</strong>
-      Docker 不继承宿主环境——要让某个厂商 key 出现在这里，得在
-      <code>docker-compose.yml</code> 的 <code>environment:</code> 里显式透传。
+      <strong>这套服务运行在容器里，看不到宿主机上的环境变量。</strong>
+      要让某个厂商的 key 自动出现在下面的列表里，得在部署配置里显式传给它；
+      也可以直接在本页「添加供应商」手动填一把。
     </div>
     {% endif %}
 
@@ -195,10 +195,9 @@
     </div>
 
     <p class="muted small mb4">
-      三个来源并列：<code>.env</code> 里的默认那一对、环境里扫到的厂商 key、以及你
-      自己添加的。<strong>选中的那把会加密落库</strong>，环境变量只作为发现来源——
-      它会出现在 <code>docker inspect</code> 与 <code>/proc/&lt;pid&gt;/environ</code> 里，不是长期存放处。
-      自动识别只认内置名单里的变量名（大小写不敏感），所以 <code>GITHUB_TOKEN</code> 这类不会被误列。
+      列表里有三类来源：部署时配好的默认那一把、从部署配置里自动认出来的各厂商 key、
+      以及你在本页添加的。<strong>选中的那把会加密保存在本机</strong>，此后运行时用的就是这一份。
+      自动识别只认已知厂商的变量名，不会把无关的凭据误当成模型 key 列进来。
     </p>
 
     {% if options %}
@@ -260,9 +259,9 @@
     {% else %}
     <div class="empty">
       <div class="empty-title">没有可切换的上游</div>
-      <div class="small">在 <code>.env</code> 里写一个厂商 key，或在下面添加一个供应商。</div>
-      <div class="mt4"><code>DEEPSEEK_API_KEY=sk-…</code></div>
-      <div class="hint mt4">写完要重启星槎——环境变量在进程启动时读取。</div>
+      <div class="small">在下面「添加供应商」里填一把 key，保存即可用；
+        也可以把常用厂商的 key 写进部署配置，它们会自动出现在这个列表里。</div>
+      <div class="hint mt4">写进部署配置的要重启一次才会被读到，在本页添加的即刻生效。</div>
     </div>
     {% endif %}
   </div>

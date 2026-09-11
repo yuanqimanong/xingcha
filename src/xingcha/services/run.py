@@ -41,7 +41,7 @@ from ..contract import Tier
 from ..core import builder, guarantee
 from ..core.builder import AgentRuntime, BuildOptions
 from ..core.guarantee import guard_counters
-from ..errors import (
+from ..foundation.errors import (
     AgentBuildFailed,
     ModelInvalid,
     QuotaExceeded,

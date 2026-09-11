@@ -56,7 +56,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..db.models import Quota, Run, RunUsage
-from ..errors import QuotaExceeded
+from ..foundation.errors import QuotaExceeded
 
 log = logging.getLogger(__name__)
 

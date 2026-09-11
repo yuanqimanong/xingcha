@@ -20,7 +20,7 @@ from ... import contract as C
 from ...core import builder, exporter
 from ...core.guarantee import TIER_INFO
 from ...db.models import Agent as AgentRow
-from ...errors import XingchaError
+from ...foundation.errors import XingchaError
 from ...services import agent as agent_svc
 from ...services import agent_test as test_svc
 from .agent_view import (

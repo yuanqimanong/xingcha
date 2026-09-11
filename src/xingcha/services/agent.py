@@ -25,7 +25,7 @@ from ..core import builder
 from ..core.guarantee import resolve_tier
 from ..core.schema_guard import SchemaRejected, validate_schema
 from ..db.models import Agent, AgentAlias, AgentVersion, utcnow
-from ..errors import AgentSpecInvalid, ModelNotFound
+from ..foundation.errors import AgentSpecInvalid, ModelNotFound
 
 log = logging.getLogger(__name__)
 

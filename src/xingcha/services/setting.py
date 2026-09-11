@@ -12,8 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import contract as C
-from ..crypto import Keyring
 from ..db.models import Setting, utcnow
+from ..foundation.crypto import Keyring
 
 log = logging.getLogger(__name__)
 

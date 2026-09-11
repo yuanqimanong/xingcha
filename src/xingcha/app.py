@@ -33,9 +33,9 @@ from .core import builder
 from .core.costsink import CostSink
 from .core.models_catalog import ModelsCatalog
 from .core.upstream import UpstreamConfig, UpstreamNotConfigured, UpstreamPool
-from .crypto import Keyring
 from .db.engine import assert_wal, make_engine, make_sessionmaker
-from .errors import (
+from .foundation.crypto import Keyring
+from .foundation.errors import (
     RedactingFormatter,
     XingchaError,
     unhandled_error_handler,
@@ -57,7 +57,7 @@ class AppState:
     """进程级共享状态。挂在 ``app.state.xc`` 上。
 
     显式持有而不是散落成模块级全局：一次调用的生命周期要能用一张图讲完
-    （见 ARCHITECTURE.md），而全局变量很难说清"该在哪儿失效它"。
+    （见 README 的「架构」一节），而全局变量很难说清"该在哪儿失效它"。
     """
 
     def __init__(self, settings: Settings) -> None:

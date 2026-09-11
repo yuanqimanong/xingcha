@@ -24,7 +24,7 @@
       </p>
       <ol class="steps">
         <li>去 <a href="/admin/keys">密钥</a> 页，填一个用途（写清楚是谁在用，吊销时才知道动哪一把），点「签发」。</li>
-        <li><strong>明文只显示这一次。</strong>库里只存哈希，页面刷新后再也取不回来。</li>
+        <li><strong>完整密钥只显示这一次。</strong>我们只保存它的哈希，页面刷新后再也取不回来。</li>
         <li>丢了不用慌：吊销重签，成本很低。吊销后用它的调用<strong>立刻</strong>开始返回 401。</li>
       </ol>
       <div class="hint">
@@ -45,7 +45,7 @@
         <li><a href="/admin/agents/new">新建 Agent</a>，填标识（对外的 <code>model</code> 值，<strong>发布后不能改</strong>）与模型。</li>
         <li>
           <strong>系统提示词</strong>每次调用都带上，调用方改不掉——请求里的 system 消息只会追加在它后面。
-          这是设计：提示词是你的资产。
+          提示词是你的资产，它不会流到调用方手里。
         </li>
         <li>
           要结构化输出就填 <strong>输出 JSON Schema</strong>，并选一个保证档位。
@@ -55,8 +55,9 @@
         <li>满意了点「创建」。每次保存产生一个<strong>新版本</strong>，旧版本留着，随时能回滚。</li>
       </ol>
       <div class="hint">
-        改完想带走？编辑页的「导出」给你 <code>agent.yaml</code>（标准 pydantic-ai AgentSpec，
-        不是私有格式）加一个零星槎依赖的 <code>run.py</code>。改完用 Agent 页的「导入」放回来。
+        <strong>你的 Agent 随时可以带走。</strong>编辑页的「导出」打包提示词、输出约定与一个
+        能直接跑的示例脚本——通用格式，不锁在这里。在别处改完，用 Agent 页的「导入」放回来，
+        存成一个新版本。
       </div>
     </div>
   </section>
@@ -110,30 +111,32 @@ r = client.chat.completions.create(
         <div>
           <dt>结构化 Agent 不支持 <code>stream=true</code></dt>
           <dd>
-            返回 400 <code>stream_unsupported</code>。流到一半的 JSON 没法安全解析，所以这里选择
-            诚实报错，而不是在服务端缓冲完整输出再一次性吐出去（那样 <code>stream=true</code> 就是假的）。
+            返回 400 <code>stream_unsupported</code>。结构化 Agent 承诺给你一份完整合法的 JSON，
+            而流到一半的 JSON 没法解析——与其假装在流式（其实是攒完再一次性吐出来），不如当场说清楚。
             <strong>要流式就用纯文本 Agent</strong>（不填 schema）。
           </dd>
         </div>
         <div>
           <dt>响应里多出来的 <code>x_xingcha</code></dt>
           <dd>
-            扩展块，OpenAI 的形状一个字段都没动。里面有这次调用的档位、费用、
-            schema 违规与重试次数、<code>run_id</code>。SDK 会忽略它，要用就自己读。
+            额外附赠的一块，OpenAI 的标准字段一个都没动。里面是这次调用的保证档位、预估费用、
+            重试与违规次数，以及一个可用来对账的 <code>run_id</code>。SDK 会忽略它，需要就自己读。
           </dd>
         </div>
         <div>
-          <dt>机器上设了 socks 代理</dt>
+          <dt>调用方机器上设了 socks 代理</dt>
           <dd>
-            <code>ALL_PROXY=socks5://...</code> 时 openai SDK 在<strong>构造阶段</strong>就抛
-            <code>ImportError: ... 'socksio' package is not installed</code>。这跟星槎无关——
-            而指向星槎之后你本来就不需要那个代理了，去掉即可。非要留就给 SDK 传
-            <code>http_client=httpx.Client(trust_env=False)</code>。
+            <code>ALL_PROXY=socks5://...</code> 会让 openai SDK 在连上来之前就报错，说缺一个
+            <code>socksio</code> 包。这是调用方本机的代理设置引起的：指到这里之后你本来也不再需要
+            那个代理，去掉即可；要保留就让 SDK 忽略环境里的代理设置。
           </dd>
         </div>
         <div>
-          <dt>浏览器里跑的客户端（Open WebUI 一类）打不开</dt>
-          <dd>要 CORS。星槎默认不发任何 CORS 头，放开：<code>XINGCHA_CORS_ORIGINS=https://你的前端域名</code>。</dd>
+          <dt>浏览器里跑的客户端（Open WebUI 一类）连不上</dt>
+          <dd>
+            浏览器直连需要跨域许可，默认不开。在部署配置里把你的前端域名加进允许列表即可，
+            服务端到服务端的调用不受影响。
+          </dd>
         </div>
         <div>
           <dt>调用突然开始返回 429</dt>
@@ -156,8 +159,8 @@ r = client.chat.completions.create(
   </section>
 
   <div class="hint wide-span">
-    路径归属、令牌格式、响应形状、错误码这些<strong>上线后永不改变</strong>，
-    全部冻结在仓库根的 <code>CONTRACT.md</code> 里。
+    <strong>接入一次，不用再改。</strong>调用地址、密钥格式、响应结构与错误码上线之后只增不减：
+    已经签发的密钥永远有效，已经写好的业务代码不会因为这边升级而需要改动。
   </div>
 </div>
 {% endblock %}

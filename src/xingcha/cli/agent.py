@@ -19,7 +19,7 @@ from ..core import builder, exporter
 from ..core.models_catalog import ModelsCatalog
 from ..core.upstream import UpstreamConfig, make_client
 from ..db.engine import session_scope
-from ..errors import XingchaError
+from ..foundation.errors import XingchaError
 from ..services import agent as agent_svc
 from ..services import setting as setting_svc
 from ._app import agent_app

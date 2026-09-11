@@ -47,16 +47,15 @@
     </div>
     <div class="card-body">
       <div class="hint">
-        <strong>一把本该只给一台服务器用的 key，突然冒出第二个 IP，就是这里看出来的。</strong>
-        来源取自连接对端；只有配了 <code>XINGCHA_TRUSTED_PROXIES</code> 时才采信反代
-        传来的 <code>X-Forwarded-For</code>——不然任何人都能伪造它，这一列就变成
-        "调用方说他是谁"。
+        <strong>一把本该只给一台服务器用的 key，突然冒出第二个 IP，就是在这里看出来的。</strong>
+        地址取自实际连进来的那一端。如果前面挂了反向代理，需要在部署配置里声明信任它，
+        否则这一列显示的会是代理的地址。
       </div>
     </div>
     {% else %}
     <div class="empty">
       <div class="empty-title">还没有带来源的调用记录</div>
-      <div class="small">来源是 0002 之后才开始记的，更早的调用行这一列是空的（如实表示"那时候没记"）。</div>
+      <div class="small">这把 key 还没被用过，或者它的调用都发生在来源记录上线之前。</div>
     </div>
     {% endif %}
   </div>

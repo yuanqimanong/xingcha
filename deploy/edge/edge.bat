@@ -11,7 +11,7 @@ rem     edge.bat trust      install the root cert (machine, else current user)
 rem     edge.bat ca         export root.crt for OTHER devices
 rem     edge.bat status     is anything listening on 8443
 rem
-rem   deploy\edge\CADDY.md    why every line of the Caddyfile is there
+rem   deploy\README.md        gateway doc: root cert, .env host, commands
 rem ===========================================================================
 rem ---------------------------------------------------------------------------
 rem This file is ASCII-only ON PURPOSE. Do not put Chinese (or any multi-byte

@@ -2,7 +2,7 @@
 rem ===========================================================================
 rem xingcha . Windows local run. DOUBLE-CLICK THIS FILE.
 rem
-rem   deploy\windows\XC.md    why no docker here, .env, the firewall step
+rem   deploy\README.md        why no docker here, .env, the firewall step
 rem   deploy\edge\edge.bat    the HTTPS gateway (a separate double-click)
 rem ===========================================================================
 rem ---------------------------------------------------------------------------

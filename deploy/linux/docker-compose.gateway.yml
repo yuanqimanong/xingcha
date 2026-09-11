@@ -9,7 +9,7 @@
 # （PUBLIC_URL 对了而 cookie 少了 Secure，或者反过来 cookie 带了 Secure 而实际
 # 走的是 http，"密码输对却一直跳回登录页"）。compose 的 ${} 表达不了"成套出现"。
 #
-# 网关自己怎么起：deploy/edge/CADDY.md。
+# 网关自己怎么起：deploy/README.md。
 
 services:
   xingcha:

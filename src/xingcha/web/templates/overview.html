@@ -11,9 +11,9 @@
 {% if not upstream_configured %}
 <div class="alert warn">
   <div>
-    <div class="alert-title">还没有配置上游 key</div>
-    <div>在<a href="/admin/settings">设置</a>里填入 OpenRouter key，或执行
-      <code>xingcha config set openrouter.api_key -</code>。在此之前 <code>/v1</code> 的调用会返回 503。</div>
+    <div class="alert-title">还没有配置上游</div>
+    <div>到<a href="/admin/upstreams">上游</a>页填一把 key，保存即刻生效。
+      在那之前，所有调用都会被拒绝。</div>
   </div>
 </div>
 {% endif %}
@@ -59,8 +59,8 @@
 <div class="alert info mb5">
   <div>
     <div class="alert-title">费用一律是预估</div>
-    <div>按上游模型目录的单价计算，与 OpenRouter 账单存在偏差（平台抽成、缓存计价、汇率）。
-      账单以上游官网为准。</div>
+    <div>按上游公布的模型单价估算，用来看趋势和分摊，不等于账单：平台抽成、缓存计价、
+      汇率都会让两边对不上。最终以上游账单为准。</div>
   </div>
 </div>
 

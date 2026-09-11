@@ -11,25 +11,23 @@
 <div class="card mb5">
   <div class="card-head">
     <h2>后台密码</h2>
-    {% if env_managed %}<span class="badge warn">环境变量托管</span>{% endif %}
+    {% if env_managed %}<span class="badge warn">部署配置托管</span>{% endif %}
   </div>
   <div class="card-body">
     {% if env_managed %}
     <div class="notice warn mb4">
-      <strong>密码来自环境变量 <code>XINGCHA_ADMIN_PASSWORD</code>，在这里改不生效。</strong>
-      要换密码：改 <code>.env</code> 里的那一项并重启服务。
-      要改回后台设密：删掉那一项并重启，然后重新访问 <code>/admin</code> 设定。
+      <strong>当前密码由部署配置指定，在这里改不了。</strong>
+      要换密码，改那份配置再重启；想改回在后台自己设，把那一项留空再重启，
+      下次打开后台会引导你设一个新的。
       <div class="hint mt4">
-        注意环境变量会出现在 <code>docker inspect</code> 与
-        <code>/proc/&lt;pid&gt;/environ</code> 里。
+        写在部署配置里的密码，能登上这台服务器的人都看得到。只有你一个人管这台机器时才建议这么用。
       </div>
     </div>
     {% else %}
     {% if admin_password_env_ignored %}
     <div class="notice warn mb4">
-      环境变量 <code>XINGCHA_ADMIN_PASSWORD</code> <strong>被忽略</strong>：库里已经有密码，
-      <strong>先立者为准</strong>。这样任何能往 <code>.env</code> 写一行的人都顶不掉已建好的密码。
-      要改用它，先在服务器上跑 <code>xingcha admin reset-password</code>。
+      部署配置里也写了一个管理员密码，<strong>但它不生效</strong>：后台已经设过密码，<strong>先设的为准</strong>。
+      这样任何能改到那份配置的人，都顶不掉你已经建好的密码。确实要改用它，先按下面的方式重置。
     </div>
     {% endif %}
     {% if password_error %}
@@ -64,9 +62,8 @@
     </form>
     {% endif %}
     <div class="notice mt4">
-      <strong>忘了密码？</strong>在服务器上执行
-      <code>xingcha admin reset-password</code>，之后重新访问 <code>/admin</code> 设定。
-      密码只存 argon2id 哈希，取不回来——没有别的找回途径。
+      <strong>忘了密码？</strong>在服务器上执行 <code>xingcha admin reset-password</code>，
+      再打开后台设一个新的。我们只保存密码的哈希，没有别的找回途径。
     </div>
   </div>
 </div>
@@ -180,7 +177,7 @@
       {% if trace_include_content %}
       <div class="notice warn mb4">
         <strong>提示词与模型输出会被发送到这个地址。</strong>
-        不想带内容就设 <code>XINGCHA_TRACE_INCLUDE_CONTENT=0</code> 并重启。
+        只想要耗时、用量与错误，不想让对话内容离开这台机器的话，在部署配置里关掉内容上报再重启。
       </div>
       {% endif %}
       <form method="post" action="/admin/settings/trace">
@@ -216,8 +213,8 @@
         </div>
         <div class="hint">
           <strong>只有 Langfuse 需要这两把 key</strong>（它用 Basic 认证）；
-          OTel Collector / Jaeger 这类不校验身份的后端留空。secret key 加密存在本机
-          数据库里，页面上不回显；<strong>覆盖同名条目时留空 = 沿用原来那把</strong>。
+          OTel Collector / Jaeger 这类不校验身份的后端留空。secret key 加密保存在本机，
+          页面上不回显；<strong>覆盖同名条目时留空 = 沿用原来那把</strong>。
         </div>
         <div class="row mt4">
           <button class="btn primary" type="button" data-open-dialog="#trace-pw-dialog">保存</button>

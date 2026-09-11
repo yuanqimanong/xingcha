@@ -21,7 +21,7 @@ from ...core import builder
 from ...core.builder import BuildOptions
 from ...core.guarantee import resolve_tier
 from ...core.schema_guard import SchemaRejected, validate_schema
-from ...errors import XingchaError
+from ...foundation.errors import XingchaError
 from ...services import agent as agent_svc
 from ...services import agent_test as test_svc
 from ...services import run as run_svc

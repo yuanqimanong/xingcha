@@ -20,7 +20,7 @@ from .. import contract as C
 from ..contract import ModelKind, ModelRefInvalid, classify_model
 from ..core.builder import BuildOptions
 from ..core.upstream import UpstreamNotConfigured
-from ..errors import (
+from ..foundation.errors import (
     ModelInvalid,
     ModelNotFound,
     ParamUnsupported,

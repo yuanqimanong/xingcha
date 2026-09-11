@@ -60,16 +60,16 @@
           <label for="import-bundle">导出的 zip</label>
           <input id="import-bundle" type="file" name="bundle" accept=".zip,.yaml,.yml">
           <div class="hint">
-            就是「导出」下载的那个包。里面的目录名会被当作标识，
-            <code class="mono">schema.json</code> 一并读进来。
+            「导出」下载的那个包，原样传回来即可：提示词、模型、输出约定一起读进来，
+            包名就是这个 Agent 的标识。
           </div>
         </div>
         <div class="field">
-          <label for="import-yaml">或者，直接贴 agent.yaml</label>
+          <label for="import-yaml">或者，直接贴配置</label>
           <textarea id="import-yaml" name="yaml_text" rows="8"
                     placeholder="model: openai/gpt-5&#10;name: ...&#10;instructions: ..."></textarea>
           <div class="hint">
-            标准的 pydantic-ai AgentSpec。<strong>两个都填时以文件为准。</strong>
+            通用的 Agent 配置格式，手写或从别处生成的都认。<strong>两个都填时以文件为准。</strong>
           </div>
         </div>
         <div class="field">

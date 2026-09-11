@@ -23,7 +23,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from .. import contract as C
 from ..core.upstream import UpstreamNotConfigured
-from ..errors import RequestTooLarge, UpstreamError, UpstreamTimeout, XingchaError
+from ..foundation.errors import RequestTooLarge, UpstreamError, UpstreamTimeout, XingchaError
 from .runlog_mw import RunTracker
 
 log = logging.getLogger(__name__)

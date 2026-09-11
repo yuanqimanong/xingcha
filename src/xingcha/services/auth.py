@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import contract as C
 from ..db.models import Token, utcnow
-from ..errors import InvalidApiKey
+from ..foundation.errors import InvalidApiKey
 
 log = logging.getLogger(__name__)
 

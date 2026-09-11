@@ -16,7 +16,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from ..errors import QuotaExceeded
+from ..foundation.errors import QuotaExceeded
 
 
 @dataclass

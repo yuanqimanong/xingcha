@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .. import contract as C
+from ..config import Settings
 
 
 def mask(value: str) -> str:
@@ -131,6 +132,9 @@ def default_from_env(
     """星槎自己那一对默认变量（``XINGCHA_API_KEY`` / ``XINGCHA_BASE_URL``）。
 
     返回 ``(key, base_url)``，都按别名与大小写兼容解析。
+
+    **只看进程环境。** 文件里那一份归 :func:`default_pair`——两条部署路径在这件事上
+    不一样，见那个函数的说明。
     """
     env = os.environ if environ is None else environ
 
@@ -142,6 +146,37 @@ def default_from_env(
         return None
 
     return first(C.ENV_API_KEY_ALIASES), first(C.ENV_BASE_URL_ALIASES)
+
+
+def default_pair(
+    settings: Settings,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str | None, str | None]:
+    """默认那一对的**唯一出口**：进程环境优先，``.env`` 文件（``Settings``）兜底。
+
+    ------------------------------------------------------------------------------
+    为什么要兜底
+    ------------------------------------------------------------------------------
+
+    两条部署路径把 ``.env`` 送到进程的方式不同：
+
+    - **docker**：compose 的 ``env_file:`` 把整份文件注进容器环境，于是
+      ``os.environ`` 里有 ``XINGCHA_API_KEY``；
+    - **uv 直跑**（Windows 双击、没装 docker 的 Linux）：只有 pydantic 读了那个
+      文件，环境里一个字都没有。:func:`config.load_vendor_keys` 也不补——它**只**补
+      内置厂商名单里的名字，否则一个配置文件就能改 ``PATH``。
+
+    结果是上游页那一行「.env 里的默认」**只在 docker 下出得来**，而 uv 那条路上
+    ``.env`` 明明配着 key、页面上却没有它，切到别家之后回不来。实际撞过。
+
+    兜底取的是 ``Settings``——pydantic 在两条路上都读同一份 ``.env``，所以拿它做
+    第二来源，两条路的结果必然一致。**存放规则不变**：这里只负责"发现"，真正选中
+    的那把仍然加密落库（见模块头）。
+    """
+    key, base = default_from_env(environ)
+    if key and base:
+        return key, base
+    return key or settings.api_key, base or settings.base_url
 
 
 # =============================================================================
@@ -234,11 +269,11 @@ async def probe_switch(
             # **refresh 失败时是返回 False，不是抛异常**（它要保留旧快照）。
             # 只捕获异常的话这里拿到的是空字符串，页面只能说"目录为空"——
             # 而真实原因往往是 404（地址少了或多了 /v1），那句话才是能照着改的。
-            from ..errors import redact
+            from ..foundation.errors import redact
 
             error = redact(catalog.last_error or "")[:200]
     except Exception as e:  # 网络/证书/协议，什么都可能
-        from ..errors import redact
+        from ..foundation.errors import redact
 
         error = redact(f"{type(e).__name__}: {e}")[:200]
     finally:

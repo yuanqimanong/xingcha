@@ -37,7 +37,7 @@
       查看版本{% if versions %} <span class="dim">({{ versions | length }})</span>{% endif %}
     </button>
     <a class="btn" href="/admin/agents/{{ agent.slug }}/export" download
-       title="导出一个目录：agent.yaml 是标准的 pydantic-ai AgentSpec（不是星槎的私有格式），run.py 零星槎依赖，校验行为、用户模板与少样本一并保留。改完还能用 xingcha agent apply 导回来。">导出</a>
+       title="打包带走这个 Agent：提示词、模型、输出约定、用户模板与少样本全在里面，外加一个能直接跑的示例脚本。通用格式，不锁在这里；改完从 Agent 页「导入」放回来。">导出</a>
     {# data-save：保存按钮在编辑页位于表单**外面**（靠 form= 关联），在新建页位于
        里面。按位置定位（"#agent-form 里的 submit"）在其中一页必然落空——名字才是
        稳定的那个。这一页已经因为按位置定位坏过两次。 #}
@@ -221,8 +221,8 @@
               {% endwith %}
             </div>
             <div class="hint mt4">
-              <strong>网页抓取</strong>与 <strong>MCP</strong> 暂不提供。需要工具的话，
-              导出 bundle 后手改 <code>agent.yaml</code>。
+              <strong>网页抓取</strong>与 <strong>MCP</strong> 暂不提供。现在就要用这类工具的话，
+              把 Agent 导出去，在导出的配置里加上，再导回来。
             </div>
           </div>
         </details>
@@ -236,7 +236,7 @@
                         >{{ form.instructions }}</textarea>
               <div class="hint">
                 每次调用都带上，<strong>调用方无法改写</strong>——请求里的 <code>system</code>
-                消息只会被<em>追加</em>在它之后。这是设计：提示词是你的资产。
+                消息只会被<em>追加</em>在它之后。提示词是你的资产，它不会流到调用方手里。
               </div>
             </div>
 

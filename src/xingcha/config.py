@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
 
     # --- 监听 ---
-    #: **默认只监听本地。** 这个默认值本身是契约的一部分（CONTRACT.md §9 运行约束）：
+    #: **默认只监听本地。** 这个默认值本身是契约的一部分（README 「对外契约」§9 运行护栏）：
     #: 改成 0.0.0.0 视为破坏性变更。生产用 Caddy 前置，xingcha 容器不映射宿主端口。
     host: str = "127.0.0.1"
     port: int = Field(default=8720, ge=1, le=65535)

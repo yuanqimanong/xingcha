@@ -16,7 +16,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
-from . import contract as C
+from .. import contract as C
 
 log = logging.getLogger(__name__)
 

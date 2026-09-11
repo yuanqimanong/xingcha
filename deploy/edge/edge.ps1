@@ -23,7 +23,7 @@
     语法只用 Windows PowerShell 5.1 认的：**不用 `?.`、`??`、三元** —— 那些是
     PowerShell 7 的，5.1 上是解析错误，而 5.1 是 Windows 自带的那个版本。
 
-    完整说明见同目录的 CADDY.md。
+    完整说明见 deploy\README.md。
 
 .PARAMETER Verb
     get / run / start / stop / reload / trust / ca / status，默认 run。
@@ -93,7 +93,7 @@ function Test-RootTrusted {
     return $false
 }
 
-# 只提醒，不阻塞。Caddyfile 里有 skip_install_trust（理由见 CADDY.md），所以起服务
+# 只提醒，不阻塞。Caddyfile 里有 skip_install_trust（理由见 deploy\README.md），所以起服务
 # 不再自动装证书、也不会被 UAC 弹窗卡死。代价是「浏览器会拦证书」没人主动告诉你，
 # 而它的症状（打不开）和「网关压根没起来」长得一模一样。这条提示补的是这个。
 function Show-TrustHint {

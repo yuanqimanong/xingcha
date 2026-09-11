@@ -13,7 +13,7 @@
 
     语法只用 5.1 认的：不用 `?.`、`??`、三元。
 
-    为什么 Windows 上不走 docker、.env 怎么配、防火墙那一步——见同目录的 XC.md。
+    为什么 Windows 上不走 docker、.env 怎么配、防火墙那一步——见 deploy\README.md。
 #>
 [CmdletBinding()]
 param()
@@ -51,7 +51,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 # ---------------------------------------------------------------------------
-# .env —— 和 Linux 用**同一份模板**，不另起一份（理由见 XC.md）
+# .env —— 和 Linux 用**同一份模板**，不另起一份（理由见 deploy\README.md）
 # ---------------------------------------------------------------------------
 if (-not (Test-Path ".env")) {
     Say ".env 不存在，从模板生成一份"
@@ -60,7 +60,7 @@ if (-not (Test-Path ".env")) {
     Write-Host ""
     Say "一项都不改也能起来，但**明文 HTTP 且只绑回环**：只有这台机器能打开。"
     Say "要 HTTPS：双击 deploy\edge\edge.bat 起网关，然后翻到 .env 最后一节"
-    Say "把这两行放开（为什么见 deploy\windows\XC.md）："
+    Say "把这两行放开（为什么见 deploy\README.md）："
     Write-Host ""
     Say "    XINGCHA_TRUSTED_PROXIES=127.0.0.1"
     Say "    XINGCHA_PUBLIC_URL=https://本机内网IP:8443"

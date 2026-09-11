@@ -16,8 +16,8 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from . import contract as C
-from .contract import ErrorType
+from .. import contract as C
+from ..contract import ErrorType
 
 log = logging.getLogger(__name__)
 

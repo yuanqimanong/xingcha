@@ -33,7 +33,8 @@
     <div class="auth-title">{{ '设置管理员密码' if setup else '管理后台' }}</div>
     <div class="auth-sub">
       {%- if setup -%}
-        首次使用。这个密码是后台的唯一凭据，库里只存 argon2id 哈希，忘了取不回来。
+        首次使用，先设一个管理员密码。它是进入后台的唯一凭据，我们只保存它的哈希，
+        忘了找不回来、只能重置。
       {%- else -%}
         输入管理员密码进入后台。
       {%- endif -%}
@@ -59,7 +60,7 @@
              autocomplete="{{ 'new-password' if setup else 'current-password' }}"
              required minlength="{{ min_password_len if setup else 1 }}" autofocus>
       {% if setup %}<div class="hint">至少 {{ min_password_len }} 位。</div>{% endif %}
-      {% if env_managed %}<div class="hint">密码由环境变量托管（<code>XINGCHA_ADMIN_PASSWORD</code>）。</div>{% endif %}
+      {% if env_managed %}<div class="hint">当前密码由部署配置指定，在后台里改不了。</div>{% endif %}
     </div>
     {% if setup %}
     <div class="field">

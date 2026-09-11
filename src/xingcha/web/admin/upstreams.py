@@ -17,7 +17,7 @@ from fastapi.responses import RedirectResponse, Response
 from ... import contract as C
 from ...core.upstream import UpstreamConfig
 from ...core.urlguard import UnsafeUpstreamURL, check_upstream_url
-from ...errors import redact
+from ...foundation.errors import redact
 from ...services import agent as agent_svc
 from ...services import providers as provider_svc
 from ...services import setting as setting_svc
@@ -257,12 +257,15 @@ async def upstream_context(request: Request, *, error: str | None = None) -> dic
         agents = await agent_svc.list_all(s)
         saved = await provider_svc.list_all(s, state.keyring)
 
-    default_key, default_base = ue.default_from_env()
+    default_key, default_base = ue.default_pair(state.settings)
 
-    # 切换列表 = 环境里的默认那一对 + 扫到的厂商 key + 用户自己加的。
+    # 切换列表 = .env 里的默认那一对 + 扫到的厂商 key + 用户自己加的。
     #
     # **默认那一对必须在列表里**，否则切到别家之后回不来——它没有"厂商变量名"，
     # 此前也就没有对应的一行，只能靠重新写 .env + 重启。实际撞过。
+    #
+    # 取值走 default_pair 而不是 default_from_env：uv 直跑那条路上 .env 只被 pydantic
+    # 读进 Settings，进程环境里没有它，于是这一行**只在 docker 下出得来**。同样实际撞过。
     options: list[dict[str, Any]] = []
     if default_key:
         options.append(
@@ -358,12 +361,19 @@ async def _resolve_candidate(request: Request, source: str, ref: str) -> tuple[s
 
     if source != "env":
         raise Denied(f"未知的来源：{source}")
+
+    # 默认那一对要和列表用同一个出口（default_pair）：列表能看见、点下去却说"读不到值"
+    # 是最糟的一种不一致——uv 直跑那条路上进程环境里本来就没有它。
+    if ref.upper() in {a.upper() for a in C.ENV_API_KEY_ALIASES}:
+        state = request.app.state.xc
+        api_key, default_base = ue.default_pair(state.settings)
+        if not api_key:
+            raise Denied(f"{ref} 现在读不到值——是不是已经从 .env 里删了？（改完要重启）")
+        return api_key, default_base or ""
+
     api_key = ue.read_key(ref)
     if not api_key:
-        raise Denied(f"环境变量 {ref} 现在读不到值——是不是已经从 .env 里删了？")
-    if ref.upper() == C.ENV_DEFAULT_API_KEY:
-        _, default_base = ue.default_from_env()
-        return api_key, default_base or ""
+        raise Denied(f"现在读不到 {ref} 的值——是不是已经从部署配置里删掉了？（改完要重启）")
     return api_key, C.base_url_for_env(ref.upper()) or ""
 
 

@@ -2,7 +2,7 @@
 
 **这是上游版本适配的唯一集中点。** ``AgentSpec`` 的字段与 ``CAPABILITY_TYPES``
 会随 pydantic-ai 演进，所有兼容处理只写在这个文件里；别处不解释 spec 字段的含义
-（见 ARCHITECTURE.md）。升级 pydantic-ai 时只需要改这里。
+（见 README 的「架构」一节）。升级 pydantic-ai 时只需要改这里。
 
 下面每一条注释里的"实测"都是真跑过的，不是从文档抄的——文档在这几处是错的。
 """
@@ -26,7 +26,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from .. import contract as C
 from ..contract import Tier
-from ..errors import AgentBuildFailed, AgentSpecInvalid
+from ..foundation.errors import AgentBuildFailed, AgentSpecInvalid
 from .costsink import CostSink, make_hook
 from .guarantee import GuaranteeCounters, attach_validator, limits_for, output_spec
 from .upstream import UpstreamConfig, attribution_headers
@@ -995,7 +995,7 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
         try:
             out[field] = int(text) if field in ints else float(text)
         except ValueError as e:
-            from ..errors import AgentSpecInvalid
+            from ..foundation.errors import AgentSpecInvalid
 
             raise AgentSpecInvalid(f"{field} 不是合法的数字：{text!r}") from e
 
@@ -1006,7 +1006,7 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
         if not text:
             continue
         if text not in options:
-            from ..errors import AgentSpecInvalid
+            from ..foundation.errors import AgentSpecInvalid
 
             raise AgentSpecInvalid(f"{field} 只能是 {'/ '.join(options)} 之一，收到 {text!r}")
         out[field] = text

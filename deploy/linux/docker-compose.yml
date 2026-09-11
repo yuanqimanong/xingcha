@@ -27,7 +27,7 @@
 # 那条路上 data 不能放宿主目录（WAL 静默降级），绕开它要把数据塞进命名卷，
 # 于是备份和体检都得进容器做。见 deploy/README.md。
 #
-# 网关自己怎么起见 deploy/edge/CADDY.md：本机上的一个 Caddy 容器，一条 docker run，
+# 网关自己怎么起见 deploy/README.md：本机上的一个 Caddy 单文件进程，
 # 一台可以同时服务本机多个项目（根证书每台设备只装一次）。它不属于这份编排。
 
 # 项目名写死。不写的话 compose 用 compose 文件所在目录名，也就是 "deploy"——

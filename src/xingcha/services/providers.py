@@ -31,7 +31,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import contract as C
-from ..crypto import Keyring
+from ..foundation.crypto import Keyring
 from . import setting as setting_svc
 
 log = logging.getLogger(__name__)
