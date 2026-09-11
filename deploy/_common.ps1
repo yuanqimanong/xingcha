@@ -93,31 +93,46 @@ function Resolve-Deployment {
     $webPort = $env_["XINGCHA_WEB_PORT"]
     if (-not $webPort) { $webPort = $script:DefaultPort }
 
-    # 0.0.0.0 / :: 是**监听地址，不是能敲的主机名**：证书签不给它们，浏览器里也
-    # 没人敲。监听由别处负责（Caddyfile 的 bind 0.0.0.0 / 下面的 BindAddr），
-    # 这个值只决定"名字"。所以不拒绝，替他探一个出来——写死 IP 的话 DHCP 换一次
-    # 地址就"证书警告点不过去"，而 .env 看起来完全正常。
-    $auto = $false
-    if ($webHost -in @("", "0.0.0.0", "::", "[::]")) {
-        $webHost = Find-LanIp
-        if ($webHost) { $auto = $true } else { $webHost = "localhost" }
-    }
-
-    # 绑哪儿。两条规则，第一条优先——与 deploy/linux/xc 的 derive_bind_addr 一致：
+    # 绑哪儿。**只看用户写的原值**，不看下面探测出来的那个——顺序很要紧。
     #
-    #   挂网关            → 127.0.0.1。网关是本机进程，走回环就够了；绑到局域网上
-    #                       等于在 TLS 旁边另开一条明文入口，而两条入口并存时人只
-    #                       会记住能打开的那一个。
-    #   没挂，看 WebHost  → localhost / 127.0.0.1 只绑回环；其它绑 0.0.0.0。
+    # 此前是先探测、再拿探测结果去判断，于是 WEB_HOST 留空会落进 else 绑上
+    # 0.0.0.0：同一份 .env 在 Linux 上只绑回环，在 Windows 上却把明文 HTTP 开给了
+    # 整个局域网。而"开给局域网"按设计必须是**一次显式选择**（把 WEB_HOST 填成真
+    # 地址或 0.0.0.0），留空不是。
+    #
+    # 三条规则，第一条优先——与 deploy/linux/xc 的 derive_bind_addr 逐条对齐：
+    #
+    #   挂网关                  → 127.0.0.1。网关是本机进程，走回环就够了；绑到局域网
+    #                             上等于在 TLS 旁边另开一条明文入口，而两条入口并存时
+    #                             人只会记住能打开的那一个。
+    #   留空 / localhost / 回环 → 127.0.0.1
+    #   其它（含显式 0.0.0.0）  → 0.0.0.0
     #
     # 不直接绑那个 IP：更精确，但 DHCP 换一次地址就起不来
     # （cannot assign requested address），而那个报错离"我改了个显示用的字段"很远。
     $bind = if ($gateway) {
         "127.0.0.1"
-    } elseif ($webHost -in @("localhost", "127.0.0.1")) {
+    } elseif ($webHost -in @("", "localhost", "127.0.0.1")) {
         "127.0.0.1"
     } else {
         "0.0.0.0"
+    }
+
+    # 名字。0.0.0.0 / :: 是**监听地址，不是能敲的主机名**：证书签不给它们，浏览器里
+    # 也没人敲。所以不拒绝，替他探一个内网 IP 出来——写死 IP 的话 DHCP 换一次地址就
+    # "证书警告点不过去"，而 .env 看起来完全正常。
+    #
+    # **只在那个地址真的对外可达时才探。** 绑在回环上却印一个内网 IP，就成了
+    # "页面上的地址看起来完全正确，而别人就是打不开"——这一路上最难认的症状。
+    # 挂网关时可达性来自 Caddy（它自己绑 0.0.0.0:8443），所以那时照探。
+    $auto = $false
+    if ($webHost -in @("", "0.0.0.0", "::", "[::]")) {
+        if ($gateway -or $bind -eq "0.0.0.0") {
+            $webHost = Find-LanIp
+            if ($webHost) { $auto = $true } else { $webHost = "localhost" }
+        } else {
+            $webHost = "localhost"
+        }
     }
 
     # 对外端口与地址。挂网关时端口是**网关的**（8443），不是应用的。
