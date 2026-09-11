@@ -69,20 +69,18 @@ def attribution_headers(cfg: UpstreamConfig) -> dict[str, str]:
     return h
 
 
-def make_client(cfg: UpstreamConfig, *, timeout: float) -> httpx2.AsyncClient:
-    """建一个指向上游的客户端。
+def new_async_client(**kwargs: Any) -> httpx2.AsyncClient:
+    """所有出站 HTTP 客户端的**唯一**建法。读环境代理，socks 缺依赖时退回直连。
 
-    不在这里塞 ``Authorization``：直通层与 Agent 层对鉴权头的处理不同（直通层要先
-    剥掉调用方的头再换成上游 key），放在 client 默认头里反而容易搞混。
+    **别在别处直接 new httpx2.AsyncClient。** 曾经有两处各建各的：这里改成了
+    ``trust_env=True``，而 Agent 真正调模型的那条（``builder.make_provider``）还留着
+    ``False``。症状极具迷惑性——模型目录拉得到、上游体检也通，**只有 Agent 调用**被
+    上游按出口 IP 挡回来，而 502 的文案完全指向上游，一点看不出是自己没走代理。
+
+    ``trust_env`` 的取舍见模块 docstring。ImportError 的兜底必须在**每一个**建客户端
+    的地方都有，所以它只能在这一个函数里。
     """
-    kwargs: dict[str, Any] = {
-        "base_url": cfg.normalized_base(),
-        "timeout": httpx2.Timeout(timeout, connect=min(15.0, timeout)),
-        "follow_redirects": False,
-        "limits": httpx2.Limits(max_connections=64, max_keepalive_connections=16),
-    }
     try:
-        # 见模块 docstring：读环境代理，否则上游的区域限制无法绕过。
         return httpx2.AsyncClient(trust_env=True, **kwargs)
     except ImportError:
         # socks 代理缺 socksio 就是在这里抛的。**必须兜住**：这一步失败等于服务起不来，
@@ -94,6 +92,20 @@ def make_client(cfg: UpstreamConfig, *, timeout: float) -> httpx2.AsyncClient:
             exc_info=True,
         )
         return httpx2.AsyncClient(trust_env=False, **kwargs)
+
+
+def make_client(cfg: UpstreamConfig, *, timeout: float) -> httpx2.AsyncClient:
+    """建一个指向上游的客户端。
+
+    不在这里塞 ``Authorization``：直通层与 Agent 层对鉴权头的处理不同（直通层要先
+    剥掉调用方的头再换成上游 key），放在 client 默认头里反而容易搞混。
+    """
+    return new_async_client(
+        base_url=cfg.normalized_base(),
+        timeout=httpx2.Timeout(timeout, connect=min(15.0, timeout)),
+        follow_redirects=False,
+        limits=httpx2.Limits(max_connections=64, max_keepalive_connections=16),
+    )
 
 
 class UpstreamPool:
