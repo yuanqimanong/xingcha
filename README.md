@@ -598,6 +598,7 @@ src/xingcha/
 | 网关/应用端口在 6 处产物间相等 | `tests/test_deploy_artifacts.py` |
 | 宿主端口默认只绑回环、网关叠加层两项齐全 | 同上 |
 | 出站客户端都读环境代理，且只有一个建法 | `tests/test_outbound_proxy.py` |
+| Windows 与 Linux 推出同一个绑定地址 | `tests/test_bind_addr_parity.py` |
 | 容器 healthy、`/v1` 无凭据 401 | CI：真起整栈 |
 
 契约测试变红时**不是测试坏了**，是在提醒你正在做一次破坏性变更。
