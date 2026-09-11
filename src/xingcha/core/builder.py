@@ -29,7 +29,7 @@ from ..contract import Tier
 from ..foundation.errors import AgentBuildFailed, AgentSpecInvalid
 from .costsink import CostSink, make_hook
 from .guarantee import GuaranteeCounters, attach_validator, limits_for, output_spec
-from .upstream import UpstreamConfig, attribution_headers
+from .upstream import UpstreamConfig, attribution_headers, new_async_client
 
 log = logging.getLogger(__name__)
 
@@ -201,9 +201,11 @@ def make_provider(
         SDK 默认重试 2 次。实测 timeout=0.3 时墙钟被放大到 2.17 秒，并且**把中转
         打了三遍**。重试只该有一层，交给 pydantic-ai 的 retries / guarantee。
 
-    ``trust_env=False``
-        httpx2 默认 True，会读机器的 ALL_PROXY。socks5 下客户端在**构造阶段**就
-        ImportError（socksio 未装），服务起不来且报错看不出跟代理有关。
+    走 ``upstream.new_async_client``
+        **Agent 真正调模型走的就是这里**，所以它必须和拉目录 / 直通那条用同一个建法
+        ——读环境代理。此前这里写死 ``trust_env=False``，而 ``make_client`` 已经改成
+        读代理，于是目录拉得到、上游体检也通，**只有 Agent 调用**被上游按出口 IP 挡回
+        ``This model is not available in your region.``，502 的文案还完全指向上游。
 
     手写的 attribution headers
         传了 ``openai_client=`` 之后，官方**不再**注入 HTTP-Referer / X-Title
@@ -216,8 +218,7 @@ def make_provider(
         # 的估价，上游 body 里那个真实值被 isinstance(v, int) 过滤掉了（实测差 400 倍）。
         hooks["response"] = [make_hook(cost_sink)]
 
-    http = httpx2.AsyncClient(
-        trust_env=False,
+    http = new_async_client(
         timeout=httpx2.Timeout(timeout, connect=min(15.0, timeout)),
         event_hooks=hooks or None,
     )

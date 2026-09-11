@@ -541,7 +541,7 @@ src/xingcha/
 | `schema_lint.py` | schema 字段命名建议 |
 | `exporter.py` | 导出 bundle：`agent.yaml` + 零星槎依赖的 `run.py` |
 | `models_catalog.py` | 上游模型目录（判档与定价的主价源） |
-| `upstream.py` / `urlguard.py` | 上游 HTTP 客户端（一律 `trust_env=False`）与地址校验 |
+| `upstream.py` / `urlguard.py` | 上游 HTTP 客户端（**唯一**建法 `new_async_client`，读环境代理）与地址校验 |
 | `costsink.py` / `ids.py` | 上游实际费用的收集点；标识生成 |
 
 #### `services/` —— 用例编排，不认识 `Request`
@@ -597,6 +597,7 @@ src/xingcha/
 | 依赖方向单向、每个顶层模块都已登记 | `tests/test_layering.py` |
 | 网关/应用端口在 6 处产物间相等 | `tests/test_deploy_artifacts.py` |
 | 宿主端口默认只绑回环、网关叠加层两项齐全 | 同上 |
+| 出站客户端都读环境代理，且只有一个建法 | `tests/test_outbound_proxy.py` |
 | 容器 healthy、`/v1` 无凭据 401 | CI：真起整栈 |
 
 契约测试变红时**不是测试坏了**，是在提醒你正在做一次破坏性变更。
@@ -626,8 +627,9 @@ LLM 相关行为用 pydantic-ai 的 `FunctionModel` / `TestModel` 构造，上�
 
 CI 里有两层别处看不到的断言：
 
-- **代理指黑洞时再跑一遍全套测试**——「代理不进代码」的唯一自动化保证。星槎自建的
-  HTTP 客户端一律 `trust_env=False`。
+- **把代理指向黑洞、其中一个还是 socks，再跑一遍全套测试**——星槎的出站客户端**都读
+  环境代理**（上游按出口 IP 挡请求时只有走代理绕得过），而 socks 缺 `socksio` 会让 httpx
+  在构造阶段就 ImportError。这一遍证明那条兜底在，服务不会因为机器上配了个代理而起不来。
 - **构建镜像并真的把整栈起起来**——断言容器 healthy、默认只绑回环、`/v1` 无凭据 401、
   纯 HTTP 下 cookie 不带 `Secure`。这类跨文件问题不会让任何单测变红。
 ---

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import stat as st
@@ -68,21 +69,26 @@ def doctor() -> None:
         for k, v in os.environ.items()
         if k.lower() in {"all_proxy", "http_proxy", "https_proxy"}
     }
+    # 这一段曾经把代理报成**问题**（"客户端一律 trust_env=False，不会继承它们"）。
+    # 那是 trust_env 反转之前的说法，现在正相反——而 doctor 恰恰是撞上区域限制时
+    # 第一个会去跑的命令，说反话等于把人推离根因。
     if proxy_vars:
-        typer.secho(
-            "  检测到机器级代理环境变量：" + ", ".join(sorted(proxy_vars)),
-            fg=typer.colors.YELLOW,
-        )
-        typer.echo("    星槎自建的 HTTP 客户端一律 trust_env=False，不会继承它们。")
-        typer.echo("    要走中转请配 openrouter.base_url，不要依赖机器代理。")
-        if any(v.startswith("socks") for v in proxy_vars.values()):
+        typer.secho("  出站代理：" + ", ".join(sorted(proxy_vars)), fg=typer.colors.GREEN)
+        typer.echo("    星槎的出站客户端会走它（上游按出口 IP 挡请求时正需要）。")
+        # find_spec 而不是 import：socksio 不是声明依赖，import 它连类型检查都过不了。
+        if any(v.lower().startswith("socks") for v in proxy_vars.values()) and (
+            importlib.util.find_spec("socksio") is None
+        ):
             typer.secho(
-                "    注意：socks5 代理会让未关闭 trust_env 的客户端在构造阶段直接 "
-                "ImportError（socksio 未装），且报错完全看不出跟代理有关。",
+                "    但这是 socks 代理，而 socksio 没装——客户端会在构造阶段 "
+                "ImportError，星槎兜住之后**退回直连**，等于代理没生效。",
                 fg=typer.colors.YELLOW,
             )
+            typer.echo("    改用 http 代理，或 pip install httpx[socks]。")
     else:
-        typer.echo("  未检测到机器级代理环境变量")
+        typer.secho("  未检测到出站代理环境变量", fg=typer.colors.YELLOW)
+        typer.echo("    上游若按出口 IP 拒绝请求（not available in your region），配一个。")
+        typer.echo("    容器里要写进 .env —— 宿主 shell 里 export 的容器看不见。")
 
     base_url = C.OPENROUTER_DEFAULT_BASE_URL
     typer.echo(f"  上游默认    {base_url}")

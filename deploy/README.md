@@ -255,6 +255,7 @@ gpg -c data/secret.key                               # 密钥环，单独存
 | `/v1` 返回 503 | 还没配上游 key。后台「上游」页（当场生效） |
 | 磁盘水位 | `curl -sk https://<内网 IP>:8443/readyz`，低于 10% 标 `degraded` |
 | 本机能开、别的机器连不上 | Windows 防火墙没放行；或 uv 直跑那条只绑了回环 |
+| 目录拉得到、Agent 调用 502 `not available in your region` | 容器里没有代理变量。**写进 `.env`**，只在宿主 shell `export` 容器看不见（见 `.env.example` 第 2 节）|
 
 `xingcha doctor` 一次性检查数据目录权限、schema 版本、密钥环、磁盘、代理环境变量与运行约束，
 并对机器级 socks5 代理这类"报错看不出根因"的情况给出解释。
