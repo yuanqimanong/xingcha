@@ -238,9 +238,7 @@ def enable_instrumentation(tracing: Any) -> None:
 
     这是本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
 
-    ------------------------------------------------------------------------
-    为什么是"按 Agent 开"而不是全局开
-    ------------------------------------------------------------------------
+    **为什么是"按 Agent 开"而不是全局开**
 
     埋点做的事是把每次模型请求的**完整消息与响应**记成 span 属性，然后发到外部
     地址。这件事的答案在不同 Agent 之间通常不同：一个跑客户合同的 Agent 与一个
@@ -311,7 +309,7 @@ FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: 通用那份，把这些混进去会直接把构建搞红。
 #:
 #: ``openai_reasoning_effort`` 是实测过真的会发出去的——它落成请求体里的
-#: ``reasoning_effort``（见 tests/test_agent_form.py 里那条探针）。不实测不敢加：
+#: ``reasoning_effort``。不实测不敢加：
 #: ``AgentSpec`` 的 ``extra='ignore'`` 会静默吞掉收不下的键，症状是"我设了、没生效"。
 #:
 #: 取值不是数字而是一个闭集，所以单独走 ``<select>``，不进
@@ -445,8 +443,7 @@ def sampling_params_ignored(model_id: str, provider: Any) -> bool:
     "我设了 temperature=0，跑出来还是发散的"，而表单上一切正常。
 
     所以这里问一次 profile，把答案摆到表单上。**只影响 ``openai/*``**：
-    ``anthropic/*``、``google/*``、裸模型名都照常发送（有测试钉着，见
-    tests/test_agent_form.py 的 TestSettingsActuallyReachTheWire）。
+    ``anthropic/*``、``google/*``、裸模型名都照常发送。
 
     这是在读第三方的内部结构，所以整段包在 try 里：读不到就说"不知道"（返回 False），
     宁可少一句提示，也不能因为上游换了个数据形状就让整个表单 500。
@@ -531,9 +528,7 @@ def _strip_prefix(model: str) -> str:
 def native_ok(model_id: str, provider: Provider, *, catalog_says: bool) -> bool:
     """这个模型**真的**能走原生 JSON Schema 约束吗（T1 / T1+ 的前提）。
 
-    ------------------------------------------------------------------------
-    必须问两个人，而且要取交集
-    ------------------------------------------------------------------------
+    **必须问两个人，而且要取交集**
 
     此前只问模型目录。而真正的闸在 pydantic-ai 里，**在本地、发请求之前**就会拦：
 

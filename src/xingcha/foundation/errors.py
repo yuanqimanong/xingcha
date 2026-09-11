@@ -76,7 +76,7 @@ class XingchaError(Exception):
         }
         body.update(self.extra)
         out: dict[str, Any] = {"error": body}
-        # **失败响应也带 usage。** 契约 §3.6 的 USAGE_ON_ERROR 冻结了这一点：
+        # **失败响应也带 usage。** 契约 §6 的 USAGE_ON_ERROR 冻结了这一点：
         # 一次重试耗尽的 422 背后是 1+retries 次真实的模型调用，不报出来的话
         # 调用方看不见自己花了多少——而那恰好是最贵的一类调用。
         #
@@ -90,9 +90,7 @@ class XingchaError(Exception):
         return out
 
 
-# --------------------------------------------------------------------------
-# 具体错误。每个只声明 error_type，HTTP 码由契约表决定，不在这里重复。
-# --------------------------------------------------------------------------
+# **具体错误。每个只声明 error_type，HTTP 码由契约表决定，不在这里重复。**
 
 
 class InvalidApiKey(XingchaError):
@@ -193,6 +191,7 @@ class AgentBuildFailed(XingchaError):
     与 400 分开是因为处置路径完全不同：一个是让用户改表单，一个是让管理员改配置。
 
     **原因要带出来。** 此前只回一句"请管理员查看日志"，而这一类失败**每次都发生**
+
     （不是偶发），原因往往具体又可执行——实测拿到过
     "WebSearchTool is not supported with OpenAIChatModel and model 'x'"。
     只说"内部错误"等于让人去猜一个日志里明写着的答案。脱敏之后再带出去：
@@ -262,9 +261,7 @@ class RequestTimeout(XingchaError):
         super().__init__(f"整轮调用超过 {seconds:g} 秒未完成。")
 
 
-# --------------------------------------------------------------------------
-# 处理器
-# --------------------------------------------------------------------------
+# **处理器**
 
 _REDACT_PREFIXES = ("sk-or-v1-", "sk-xc-", "sk-ant-", "sk-proj-")
 
@@ -291,9 +288,7 @@ def redact(text: str) -> str:
 class RedactingFormatter(logging.Formatter):
     """在**日志渲染的唯一收口**上脱敏。
 
-    ------------------------------------------------------------------------
-    为什么必须是 Formatter，而不是在各个 log 调用点手动 redact
-    ------------------------------------------------------------------------
+    **为什么必须是 Formatter，而不是在各个 log 调用点手动 redact**
 
     手动调的下场已经发生过一次：``redact()`` 只被用在 ``XingchaError.log_detail``
     上，而 :func:`unhandled_error_handler` 里的 ``log.exception()`` 把整条 traceback

@@ -8,7 +8,7 @@
 OpenRouter 明天加一个新端点、新参数、新的响应字段，这里都不需要改。
 
 安全上它是本项目风险最高的一段：一个 catch-all 反代后面挂着一把付费 key。
-下面每条卫生措施对应契约 §3.9 的一行，都不是可选项。
+下面每条卫生措施对应契约 §8 的一行，都不是可选项。
 """
 
 from __future__ import annotations
@@ -154,9 +154,7 @@ async def passthrough(path: str, request: Request) -> Response:
 def reserve_passthrough_quota(request: Request, tracker: RunTracker) -> None:
     """给直通请求占配额名额。**两条直通路径共用这一份。**
 
-    ------------------------------------------------------------------------
-    为什么必须共用
-    ------------------------------------------------------------------------
+    **为什么必须共用**
 
     直通有两个入口，很容易被当成一个：
 
@@ -168,7 +166,7 @@ def reserve_passthrough_quota(request: Request, tracker: RunTracker) -> None:
     **对裸模型完全无效**——而裸模型直通恰恰是这个项目的首要用途。开关看着打开了、
     钱刹车根本没落在要刹的那条路上。
 
-    配额**默认不执行**（契约 §3.9 冻结了这一点，打开它是一次收紧）。打开之后
+    配额**默认不执行**（契约 §8 冻结了这一点，打开它是一次收紧）。打开之后
     ``/version`` 的 features 会多一项，调用方能探测到这个变化。
     """
     state = request.app.state.xc

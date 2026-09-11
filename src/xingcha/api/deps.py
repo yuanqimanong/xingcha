@@ -26,8 +26,8 @@ async def require_auth(request: Request) -> Principal:
     """校验 Bearer 令牌。
 
     **直通路径也走这里。** 一个不鉴权的 catch-all 反代 + 一把付费 key = 开放代理，
-    是本项目唯一的「一天烧光余额」级事故。契约 §3.9 把它写成了冻结项，
-    ``tests/test_passthrough.py`` 里有一条会红的断言守着它。
+    是本项目唯一的「一天烧光余额」级事故。契约 §8 把它写成了冻结项
+    （``PASSTHROUGH_REQUIRES_AUTH``）。
     """
     state = request.app.state.xc
     async with state.sessionmaker() as session:

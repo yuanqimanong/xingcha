@@ -40,7 +40,6 @@ __all__ = ["Denied", "asset", "mount", "security_headers"]
 #: ``agent_trial`` 必须排在 ``agents`` 前面：后者有 ``/agents/{slug}``，会把
 #: ``/agents/model-report`` 这类固定路径吞掉。被吞掉是静默的——页面上只会出现
 #: 一句"未知的 Agent：model-report"，看起来像数据问题。
-#: ``tests/test_agent_form.py`` 里有一条用例专门盯着这个。
 _PAGES = (login, overview, keys, logs, settings, upstreams, guide, agent_trial, agents, quota)
 
 

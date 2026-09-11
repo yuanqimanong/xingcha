@@ -43,30 +43,22 @@ jobs:
         run: uv sync --frozen
 
       - name: lint
-        # tests/ 已清空待重做，路径不存在时 ruff 直接报错，所以这里暂时只查 src。
-        # 测试重建后把 tests 加回这两行。
         run: |
-          uv run ruff check src
-          uv run ruff format --check src
+          uv run ruff check src tests
+          uv run ruff format --check src tests
 
       - name: 类型
         run: uv run pyright
 
-      # ══════════════════════════════════════════════════════════════════════
-      # 跑测试的三步暂时停用：tests/ 已清空，正在重做。
-      #
-      # **这不是"CI 太吵所以关掉"**，是三条真实的守卫暂时不在岗，恢复之前下面这些
-      # 东西没有任何自动检查：契约闭集被改（原本红在「契约冻结物」那一步，那是
-      # M0「产出是约束本身」的唯一执行机制）、跨层依赖倒挂、以及"代理不进代码"
-      # ——最后一条只有把代理指向黑洞再跑一遍全套才证得出来。
-      #
-      # 新测试落地后，把下面三步的注释去掉，并按新文件名改第一步的路径。
-      # ══════════════════════════════════════════════════════════════════════
+      - name: 契约冻结物与分层
+        # 单独一步：红在这里就是"你改了一个冻结的闭集"，不是普通的测试失败。
+        # 这一步的存在是 M0「产出是约束本身」的唯一执行机制。
+        run: uv run pytest tests/test_contract_frozen.py tests/test_layering.py -q
 
-      # - name: 契约冻结物
-      #   # 单独一步：红在这里就是"你改了一个冻结的闭集"，不是普通的测试失败。
-      #   # 这一步的存在是 M0「产出是约束本身」的唯一执行机制。
-      #   run: uv run pytest tests/test_contract_frozen.py tests/test_layering.py -q
+      - name: 部署产物一致性
+        # 端口、UID、BOM 这些散在 Caddyfile / compose / sh / ps1 里的数字与属性，
+        # 没有任何语言机制能让它们保持相等。漂移的症状都是"服务好着，只是地址打不开"。
+        run: uv run pytest tests/test_deploy_artifacts.py -q
 
       - name: README 的「对外契约」与常量同步
         # 那一节由常量生成，不手写。漂移了就说明有人手改了文档、或改了常量没重新生成。
@@ -74,21 +66,27 @@ jobs:
           uv run python -m xingcha.contract.doc
           git diff --exit-code -- README.md
 
-      # - name: 全套测试（不含浏览器）
-      #   run: uv run pytest -q
+      - name: 全套测试
+        run: uv run pytest -q
 
-      # - name: 全套测试（代理指黑洞）
-      #   # E1：httpx2 默认 trust_env=True，会读机器的 ALL_PROXY。所有自建 client
-      #   # 必须显式 trust_env=False，否则线上会因为一个环境变量而整体起不来，
-      #   # 且报错完全看不出跟代理有关。
-      #   #
-      #   # socks5 下 socksio 未装会在**构造阶段**就 ImportError，所以这一遍绿是有
-      #   # 含金量的：它证明没有任何客户端在读环境代理。
+      # ══════════════════════════════════════════════════════════════════════
+      # 「代理指黑洞」这一步**仍然停用**，而且不能靠现在这批测试恢复。
+      #
+      # E1：httpx2 默认 trust_env=True，会读机器的 ALL_PROXY。所有自建 client 必须
+      # 显式 trust_env=False，否则线上会因为一个环境变量而整体起不来，且报错完全看
+      # 不出跟代理有关。socks5 下 socksio 未装会在**构造阶段**就 ImportError——所以
+      # 那一遍绿是有含金量的：它证明没有任何客户端在读环境代理。
+      #
+      # 但当前恢复的三份测试是纯静态的（解析文件、比对常量），**一个 HTTP client 都
+      # 不构造**。现在把它打开只会得到一盏免费的绿灯，比没有这一步更糟。
+      # 等直通 / 上游客户端的运行时测试回来之后再恢复：
+      #
       #   env:
       #     HTTP_PROXY: http://127.0.0.1:9
       #     HTTPS_PROXY: http://127.0.0.1:9
       #     ALL_PROXY: socks5://127.0.0.1:9
       #   run: uv run pytest -q -m "not slow"
+      # ══════════════════════════════════════════════════════════════════════
 
   image:
     runs-on: ubuntu-latest

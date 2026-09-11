@@ -400,7 +400,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/admin/openapi.json",
         # 必须显式关掉：即使 docs_url 挪到了 /admin 下，FastAPI 仍会在**根路径**注册
         # 一个 /docs/oauth2-redirect。那是一条计划外的免鉴权路由，而免鉴权路由
-        # 是一个安全关键闭集（见 tests/test_app_startup.py）。
+        # 是一个安全关键闭集（见 _mount_probes）。
         swagger_ui_oauth2_redirect_url=None,
     )
     app.state.xc = AppState(settings)
@@ -423,16 +423,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 def _mount_probes(app: FastAPI) -> None:
     """探针与版本协商。三个都**免鉴权**——这是一个安全关键的闭集。
 
-    往这里加路由必须同步更新 tests/test_app_startup.py 的免鉴权白名单断言。
+    往这里加一条就是往公网多开一扇门，加之前先确认它不读任何主体数据。
     """
 
     @app.get("/", include_in_schema=False)
     async def root() -> Response:
         """根路径跳后台。
 
-        ------------------------------------------------------------------------
-        为什么是 307 而不是直接渲染
-        ------------------------------------------------------------------------
+        **为什么是 307 而不是直接渲染**
 
         这条路由**不做任何鉴权判断，也不碰数据库**——它只是把人送去 ``/admin``，
         由那边现有的守卫决定给总览还是跳登录页。

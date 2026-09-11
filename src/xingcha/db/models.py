@@ -7,7 +7,7 @@ SQLite 的 ``ALTER TABLE`` 能力有限：事后给一列加 ``NOT NULL`` 或 ``
 「重启 + 自动迁移」，停机迁移直接违背它。所以下面这些必须在 0001 就写对：
 
 - 所有主体表的 ``user_id NOT NULL``（v1 单用户，但 v2 加多用户不能停机）
-- ``agent.slug`` 的 **UNIQUE**（slug 是全局命名空间，见契约 §3.3）
+- ``agent.slug`` 的 **UNIQUE**（slug 是全局命名空间，见契约 §3）
 - ``token.hash_alg`` / ``kdf_params``（换哈希算法时盐与参数要随行走）
 - ``agent_version.tier`` 的 CHECK 里**四档全列**，尽管 v1 只实现 T2
   （后来加了第五个 ``none``：纯文本，见迁移 0004）
@@ -86,9 +86,8 @@ class User(Base):
 class Token(Base):
     """API 令牌。**永不存明文**，明文只在签发时展示一次。
 
-    ``kid`` 是唯一查表键，与 secret 无关、不可推导。为什么不用 hash 当查表键：
-    换成带盐的 argon2id 之后就无法反查，只能全表逐行 verify，``O(n)`` 次 argon2
-    每请求 = 送上门的 DoS。届时「已签发 key 永不失效」的承诺就破了。
+    ``kid`` 是唯一查表键，与 secret 无关、不可推导（为什么不用 hash：见契约里
+    ``TOKEN_ENVELOPE_RE``）。
     """
 
     __tablename__ = "token"
@@ -385,7 +384,7 @@ class RunUsage(Base):
 class Quota(Base):
     """三级主体 × 三种窗口。
 
-    表结构在 0001 就位，但 v1 **不执行**配额（契约 §3.9）。建表不花什么成本，而
+    表结构在 0001 就位，但 v1 **不执行**配额（契约 §8）。建表不花什么成本，而
     v0.4 加执行逻辑时不用再动 schema——这正是 expand-contract 想要的形状。
 
     窗口口径一律 **UTC**。用本地时区会让"今天"的边界随部署机时区变化，跨时区对账
