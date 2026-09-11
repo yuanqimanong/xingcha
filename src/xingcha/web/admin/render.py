@@ -79,12 +79,18 @@ async def page(request: Request, template: str, ctx: dict[str, Any]) -> HTMLResp
 
 
 def fmt_time(iso: str | None) -> str:
+    """完整时间戳。**年和秒都要带上。**
+
+    此前是 ``%m-%d %H:%M``。省掉年份，跨年之后"01-03"到底是哪一年只能靠猜；省掉秒，
+    "有效期至 09-12 07:59" 无法回答"到底几点几分几秒过期"——而密钥详情页上这两个
+    数字正是用来对时的。列表页多出来的六个字符换的是一个不需要再推断的时间。
+    """
     if not iso:
         return "—"
     try:
-        return datetime.fromisoformat(iso).strftime("%m-%d %H:%M")
+        return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return iso[:16]
+        return iso[:19]
 
 
 #: 费用来源的人话解释。**实价与估价必须能一眼分开**——把两者显示成同一个样子，

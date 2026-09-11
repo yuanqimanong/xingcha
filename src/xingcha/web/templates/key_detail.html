@@ -4,11 +4,13 @@
 <div class="page-head">
   <div>
     <h1>{{ token.name }}</h1>
-    <p>标识 <code>{{ token.display_prefix }}</code>
+    <p class="meta">标识 <code>{{ token.display_prefix }}</code>
       {% if not token.is_active %}<span class="badge neutral">已吊销</span>
       {% elif token.expired %}<span class="badge warn">已过期</span>
       {% else %}<span class="badge ok">可用</span>{% endif %}
-      · 签发于 {{ token.created }} · 有效期至 {{ token.expires }}</p>
+      {# 每段各自 nowrap：折行只发生在段与段之间，一个时间戳不会被劈成两行。 #}
+      <span class="nowrap">· 签发于 {{ token.created }}</span>
+      <span class="nowrap">· 有效期至 {{ token.expires }}</span></p>
   </div>
   <a class="btn ghost" href="/admin/keys">返回密钥</a>
 </div>

@@ -5,12 +5,19 @@
 
 三个必须显式设置的参数，每一个不设都会以难查的形式咬人：
 
-``trust_env=False``
-    httpx2 默认 ``True``，会读机器的 ``ALL_PROXY`` / ``HTTP_PROXY``。实测在
-    ``ALL_PROXY=socks5://...`` 的机器上，客户端在**构造阶段**就抛
-    ``ImportError: socksio not installed``——服务起不来，而报错完全看不出跟代理有关。
-    星槎的定位就是"代理不进代码"，继承机器代理与这个定位直接冲突：要走中转请配
-    ``openrouter.base_url``。
+``trust_env=True``
+    读机器的 ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY``。**这一项从 False 改了
+    过来**，原先的理由是"代理不进代码，要走中转就配 ``openrouter.base_url``"。
+
+    改的原因：有一类失败它挡不住——上游按**出口 IP 的区域**拒绝请求。实测 OpenRouter
+    对 OpenAI 与 Google 的模型会回 ``This model is not available in your region.``，
+    而机器上那个已经配好的代理正是唯一能用的出口，服务却绕过它直连。症状是"同一台
+    机器上 curl 通、星槎 502"，而 502 的原因看起来完全在上游——最难查的一类。
+
+    ``False`` 当初防的坑是真的：``ALL_PROXY=socks5://...`` 的机器上，客户端在**构造
+    阶段**就抛 ``ImportError: socksio not installed``，服务直接起不来，报错还完全看
+    不出跟代理有关。那个坑现在由 :func:`make_client` 的兜底接住——构造失败就退回不
+    读环境并留一条 warning，而不是把整个服务拖死。
 
 ``max_retries=0``（openai SDK 侧）
     SDK 默认会重试 2 次。实测 timeout=0.3 时墙钟被放大到 2.17 秒，并且**把中转打了
@@ -24,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import httpx2
 
@@ -67,14 +75,25 @@ def make_client(cfg: UpstreamConfig, *, timeout: float) -> httpx2.AsyncClient:
     不在这里塞 ``Authorization``：直通层与 Agent 层对鉴权头的处理不同（直通层要先
     剥掉调用方的头再换成上游 key），放在 client 默认头里反而容易搞混。
     """
-    return httpx2.AsyncClient(
-        base_url=cfg.normalized_base(),
-        # 见模块 docstring：这是 E1，不可省
-        trust_env=False,
-        timeout=httpx2.Timeout(timeout, connect=min(15.0, timeout)),
-        follow_redirects=False,
-        limits=httpx2.Limits(max_connections=64, max_keepalive_connections=16),
-    )
+    kwargs: dict[str, Any] = {
+        "base_url": cfg.normalized_base(),
+        "timeout": httpx2.Timeout(timeout, connect=min(15.0, timeout)),
+        "follow_redirects": False,
+        "limits": httpx2.Limits(max_connections=64, max_keepalive_connections=16),
+    }
+    try:
+        # 见模块 docstring：读环境代理，否则上游的区域限制无法绕过。
+        return httpx2.AsyncClient(trust_env=True, **kwargs)
+    except ImportError:
+        # socks 代理缺 socksio 就是在这里抛的。**必须兜住**：这一步失败等于服务起不来，
+        # 而一台配了 socks 代理的机器本来是能直连上游的，不该因为读代理失败就整个不可用。
+        log.warning(
+            "读取环境代理失败（多半是 ALL_PROXY 指向 socks 但没装 socksio），"
+            "本次退回不读环境代理直连上游。要走 socks 请装 socksio，"
+            "或改用 http 代理，或配 openrouter.base_url 走中转。",
+            exc_info=True,
+        )
+        return httpx2.AsyncClient(trust_env=False, **kwargs)
 
 
 class UpstreamPool:
