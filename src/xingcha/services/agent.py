@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import yaml
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -170,6 +171,95 @@ class SaveResult:
     tier: Tier
     #: 判档被降级时的说明，供表单回显。
     tier_note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SpecBundle:
+    """一份待导入的 Agent 定义：解析并校验过的 ``AgentSpec`` + 输出 schema。"""
+
+    slug: str
+    spec: dict[str, Any]
+    schema_text: str | None
+
+    @property
+    def model(self) -> str:
+        return str(self.spec["model"])
+
+
+def parse_bundle(
+    yaml_text: str, *, slug: str | None = None, schema_text: str | None = None
+) -> SpecBundle:
+    """``agent.yaml`` 文本 → 可以交给 :func:`apply_bundle` 的一束。
+
+    **导入的规矩集中在这一个函数里。** CLI 的 ``agent apply`` 与后台的「导入」
+    都走它——两边各写一遍的话，其中一条路总会先漏掉某个字段，而症状是"导回来的
+    Agent 少了点什么"：表单上看着正常，只有输出变了。
+    """
+    try:
+        spec = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        raise AgentSpecInvalid(f"YAML 解析失败：{e}") from e
+    if not isinstance(spec, dict):
+        raise AgentSpecInvalid("文件内容不是一个 AgentSpec 映射。")
+
+    # 入库前先过官方 AgentSpec 的 schema 校验。AgentSpec 是 extra='ignore'，
+    # 直接构造会**静默吞掉拼错的字段**——那时候你以为配了、其实没配。
+    builder.validate_spec(spec)
+
+    model = spec.get("model")
+    if not isinstance(model, str) or not model:
+        raise AgentSpecInvalid("AgentSpec 里没有 model。")
+
+    # schema 有两处可能的来源，都要认：
+    #   · 单独给的 schema.json（export 的三文件形状）
+    #   · spec 里内嵌的 output_schema（`agent show` 的输出、手写的 agent.yaml）
+    # 只认前者的话，`agent show x > f.yaml && agent apply f.yaml` 会**静默把结构化
+    # Agent 降成纯文本**——200 依旧，只是再也没有校验了，是最难发现的一种回归。
+    if schema_text is None and isinstance(spec.get("output_schema"), dict):
+        schema_text = json.dumps(spec["output_schema"], ensure_ascii=False)
+
+    resolved = (slug or spec.get("name") or "").strip()
+    if not resolved:
+        raise AgentSpecInvalid("没有 slug：给一个，或让文件所在目录名当 slug。")
+    return SpecBundle(slug=resolved, spec=spec, schema_text=schema_text)
+
+
+async def apply_bundle(
+    session: AsyncSession,
+    bundle: SpecBundle,
+    *,
+    native_ok: bool,
+    requested_tier: Tier | None = None,
+    changelog: str = "",
+    group_name: str | None = None,
+) -> SaveResult:
+    """把 :func:`parse_bundle` 的结果落库。
+
+    ``native_ok`` 由调用方给：CLI 现拉一次目录，后台用进程里已有的那份。
+    服务层不直接依赖 catalog，保持依赖方向单向。
+    """
+    spec = bundle.spec
+    retries = spec.get("retries")
+    return await save(
+        session,
+        slug=bundle.slug,
+        name=str(spec.get("name") or bundle.slug),
+        description=spec.get("description"),
+        instructions=str(spec.get("instructions") or ""),
+        model=bundle.model,
+        schema_text=bundle.schema_text,
+        requested_tier=requested_tier,
+        capabilities=spec.get("capabilities"),
+        # model_settings 与 prompting 也要带回来。导出物的 README 写着"改完还能
+        # 导回来"，而漏掉一项的表现是：导回来的 Agent 少了 temperature、或者少了
+        # 用户模板——表单上看着一切正常，只有输出变了。
+        model_settings=spec.get("model_settings") or None,
+        prompting=builder.prompting_from_spec(spec),
+        retries=int(retries) if isinstance(retries, int | str) and str(retries).isdigit() else 2,
+        native_ok=native_ok,
+        group_name=group_name,
+        changelog=changelog,
+    )
 
 
 async def save(

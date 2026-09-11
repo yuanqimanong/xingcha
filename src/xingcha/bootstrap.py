@@ -5,7 +5,7 @@
 这不是为了少写几行：把「密钥环缺失时能不能新建」这条规则放两处，就会出现两处不一致
 的实现——实际发生过一次，CLI 那份漏了守卫，于是密钥环丢失后跑一次 `xingcha config get`
 就会静默重新生成，不但绕过单向门，还让服务重新"能启动"，而库里的密文已永久解不开。
-一个概念只有一处定义（开发计划 §6 标准 2）。
+一个概念只有一处定义——契约常量在 contract.py，启动准备在这里。
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from .config import Settings
+from .config import Settings, load_vendor_keys
 from .crypto import Keyring
 from .db import migrate
-from .db.engine import apply_umask
+from .db.engine import apply_umask, sqlite_conn
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def db_has_ciphertext(db_path: Path) -> bool:
     if not db_path.exists():
         return False
     try:
-        with sqlite3.connect(db_path) as conn:
+        with sqlite_conn(db_path) as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM setting WHERE is_secret = 1 AND value_enc IS NOT NULL"
             ).fetchone()
@@ -56,11 +56,16 @@ def prepare(settings: Settings, *, migrate_db: bool = True) -> Keyring:
 
     顺序是有意的：
 
+    0. 厂商 key —— 把 ``.env`` 里的补进环境，见 :func:`config.load_vendor_keys`
     1. umask —— 必须在任何文件被创建之前，否则先建出来的文件权限就宽了
     2. 数据目录 —— 建目录并收紧权限
     3. 迁移（内含备份） —— 失败即抛，绝不带着半旧 schema 继续
     4. 密钥环 —— 见 :func:`open_keyring`
     """
+    # 放在这里而不是各自的入口：serve 与 CLI 都从 prepare 进来，而"上游页扫得到
+    # 哪些 key"必须两边一致——CLI 的 doctor 也会报环境里有什么。
+    if loaded := load_vendor_keys():
+        log.info("已从 .env 读入厂商 key：%s", "、".join(loaded))
     apply_umask()
     settings.ensure_data_dir()
     if migrate_db:

@@ -13,11 +13,13 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
+from conftest import posix_only
 from xingcha import contract as C
 from xingcha.crypto import Keyring, KeyringInvalid, KeyringMissing
 
 
 class TestCreateAndLoad:
+    @posix_only
     def test_creates_with_0600(self, tmp_path: Path):
         """共享 VPS 上一把 0644 的密钥文件等于没加密。"""
         kr = Keyring.create(tmp_path / "secret.key")
@@ -103,6 +105,7 @@ class TestRotation:
         assert len(reloaded) == 2
         assert reloaded.decrypt(old_blob) == "v1"
 
+    @posix_only
     def test_rotated_file_keeps_0600(self, tmp_path: Path):
         p = tmp_path / "k.key"
         Keyring.create(p).rotate()

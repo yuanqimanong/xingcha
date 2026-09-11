@@ -20,6 +20,18 @@
 	#
 	# 它是**全局选项**——写成 tls 的子指令会报 unknown subdirective。
 	default_sni {$EDGE_HOST}
+
+	# 别在启动时自动往系统信任库里塞根证书。
+	#
+	# Caddy 默认会装，而装系统信任库要提权：Windows 上非管理员运行时弹一个 UAC
+	# 对话框，**进程就停在那里**——8443 一直没人听，日志最后一行是
+	# "installing root certificate (you might be prompted for password)"，
+	# 而没人会从这句话想到"去点一下那个弹窗"。无人值守起服务时就是永久挂起。
+	#
+	# 装信任库本来就是**一次性的、独立的**一步，这个目录里有专门的动作干这件事
+	# （`edge trust` / `edge.bat trust`），它会告诉你要不要提权、装成功没有。
+	# 起服务和装证书分开，两件事各自的失败才看得明白。
+	skip_install_trust
 }
 
 https://{$EDGE_HOST}:8443 {

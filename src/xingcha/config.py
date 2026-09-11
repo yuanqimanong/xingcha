@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Final
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -43,6 +44,58 @@ class DataDirNotWritable(StartupRefused):
     """
 
 
+#: ``.env`` 的路径。与 :class:`Settings` 的 ``env_file`` 是同一份，写两遍会漂。
+ENV_FILE: Final = Path(".env")
+
+
+def load_vendor_keys(env_file: Path | None = None) -> list[str]:
+    """把 ``.env`` 里的**厂商 key** 补进 ``os.environ``，返回补了哪几个。
+
+    ------------------------------------------------------------------------------
+    为什么需要这一步
+    ------------------------------------------------------------------------------
+    pydantic-settings 只把 ``XINGCHA_`` 前缀的项从 ``.env`` 读进 :class:`Settings`；
+    它**不会**把文件里的其它行注进 ``os.environ``。而上游页扫厂商 key 走的是
+    ``os.environ``（见 ``services/upstream_env.discover``）。
+
+    于是 ``deploy/.env.example`` 里那句「各厂商的 key 写这里，后台上游页会扫出来」
+    **只在 docker 下成立**——compose 的 ``env_file:`` 会把整份文件注进容器。走
+    ``xc.bat`` / ``uv run`` 那条路时文件里的 key 根本到不了进程，页面上要么什么都没有，
+    要么扫到的是**你 shell 里那把同名的旧 key**。
+
+    后者才是真正难查的：页面上有一条 DEEPSEEK，看起来配好了，点切换却报 401——
+    而 ``.env`` 里那把明明是好的。两把 key 同名、只有一把在起作用，页面上分不出来。
+    实际踩过。
+
+    ------------------------------------------------------------------------------
+    两条纪律
+    ------------------------------------------------------------------------------
+    **只补内置名单里的名字**（``contract.is_known_upstream_env``）。把 ``.env`` 整份
+    注进环境等于让一个配置文件能改任意环境变量——``PATH``、``PYTHONPATH`` 都在射程内。
+
+    **已经在环境里的不覆盖。** 真实环境变量优先于文件，是所有配置系统的共识；
+    反过来的话，想临时换一把 key 就必须改文件，而改完很容易忘记改回去。
+    """
+    path = env_file or ENV_FILE
+    if not path.exists():
+        return []
+
+    loaded: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name, value = name.strip(), value.strip().strip("'\"")
+        if not value or not C.is_known_upstream_env(name.upper()):
+            continue
+        if os.environ.get(name.upper()):
+            continue  # 环境里已经有了，不覆盖
+        os.environ[name.upper()] = value
+        loaded.append(name.upper())
+    return loaded
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -55,7 +108,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
 
     # --- 监听 ---
-    #: **默认只监听本地。** 这个默认值本身是契约的一部分（开发计划 §3.11）：
+    #: **默认只监听本地。** 这个默认值本身是契约的一部分（CONTRACT.md §9 运行约束）：
     #: 改成 0.0.0.0 视为破坏性变更。生产用 Caddy 前置，xingcha 容器不映射宿主端口。
     host: str = "127.0.0.1"
     port: int = Field(default=8720, ge=1, le=65535)
@@ -66,7 +119,7 @@ class Settings(BaseSettings):
     #: 信任哪些反向代理发来的 ``X-Forwarded-*``。**默认谁都不信。**
     #:
     #: 为什么必须显式配：``X-Forwarded-Proto`` 决定了会话 cookie 要不要带
-    #: ``Secure``（见 web/routes.py 的 cookie_secure）。无条件信任它，任何能直连
+    #: ``Secure``（见 web/admin/security.py 的 cookie_secure）。无条件信任它，任何能直连
     #: 应用的人都可以伪造一个 ``X-Forwarded-Proto: https``——那本身危害有限，但
     #: 同一个头也会影响日志里记录的来源 IP 与将来的重定向拼接，所以默认不信。
     #:
@@ -108,7 +161,7 @@ class Settings(BaseSettings):
     #: 而单用户自托管没有第二个管理员能帮你找回。把它交给 ``.env`` 意味着"这台机器
     #: 的文件系统已经是我的信任边界"——对自托管来说这个前提通常成立。
     #:
-    #: 安全上仍然守住三件事（见 web/routes.login 与 services/websession）：
+    #: 安全上仍然守住三件事（见 web/admin/login.py 与 services/websession）：
     #: 登录限流照旧生效、页面绝不回显、低于长度下限一律拒用（而不是降级放过）。
     admin_password: str | None = None
 

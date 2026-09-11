@@ -78,9 +78,16 @@
      上排是「这个 Agent 是什么」（身份 / 参数 / 能力），下排是「它怎么干活」
      （提示词 / 输出约定 / 试一次）。三列在窄屏上自动落成两列、一列——写死三列的话
      笔记本上每格只剩三百来像素，schema 那个框会挤成一条缝。 #}
-  <div class="grid-3 mb4">
-    <section class="card">
-        <div class="card-head"><h2>基本信息</h2></div>
+  {# 三列：左中两列是「这个 Agent 是什么、怎么干活」的四张卡，右边整整一列留给
+     试运行。
+
+     试运行单独占一列，是因为它的**结果会很长**（完整收发链路 + 最近三次历史），
+     而使用方式是"改一句提示词、跑一次、看输出"——它和表单得能同时在屏幕上。
+     混在流里的话，跑完一次页面被结果顶下去，想再改提示词要滚回上面。 #}
+  <div class="agent-layout mb4">
+    <div class="agent-main">
+    <details class="card" open>
+        <summary><h2>基本信息</h2></summary>
         <div class="card-body">
           {# 标识与分组一行：一个是"对外叫什么"、一个是"在后台归到哪儿"，
              都是这个 Agent 的身份，且都很短。下面三项各占一整行——名称与说明是
@@ -149,15 +156,14 @@
             </div>
           </div>
         </div>
-      </section>
-
-    <section class="card">
-          <div class="card-head">
-            <h2>模型参数</h2>
+      </details>
+    <details class="card" open>
+          <summary>
+            <h2>模型参数 &amp; 能力</h2>
             <span class="dim small">
-              {% if form.has_settings %}已设 {{ form.settings_count }} 项{% else %}用上游默认{% endif %}
+              {% if form.has_settings %}已设 {{ form.settings_count }} 项{% else %}参数用上游默认{% endif %} · {% if form.capabilities %}开了 {{ form.capabilities | length }} 项能力{% else %}未开能力{% endif %}
             </span>
-          </div>
+          </summary>
           <div class="card-body">
             {# 随所选模型重渲染——见 _model_report.html 末尾的 hx-swap-oob。
                有些模型会把 temperature / top_p 静默丢掉，那件事只有这里说得出。 #}
@@ -195,17 +201,16 @@
               </div>
               {% endfor %}
             </div>
-          </div>
-        </section>
 
-    <section class="card">
-          <div class="card-head">
-            <h2>能力</h2>
-            <span class="dim small">
-              {% if form.capabilities %}已开 {{ form.capabilities | length }} 项{% else %}未开启{% endif %}
-            </span>
-          </div>
-          <div class="card-body">
+            <hr class="soft mt4 mb4">
+
+            {# 能力原来是独立一张卡。并进来是因为它和模型参数**随同一个模型变**：
+               换个模型，上面的参数表与下面的能力勾选是同一次 hx-swap-oob 一起换掉的
+               （见 _model_report.html 末尾）。分成两张卡，用户得同时盯着两处才看得出
+               "换模型之后哪些东西变了"。 #}
+            <p class="muted small mb4">
+              <strong>能力</strong>：只列<strong>这条 API 通道上能用的</strong>，随所选模型变化。
+            </p>
             <p class="muted small mb4">
               只列<strong>这条 API 通道上能用的</strong>能力，随所选模型变化。
             </p>
@@ -220,12 +225,9 @@
               导出 bundle 后手改 <code>agent.yaml</code>。
             </div>
           </div>
-        </section>
-  </div>
-
-  <div class="grid-3 mb4">
-    <section class="card">
-          <div class="card-head"><h2>提示词</h2></div>
+        </details>
+    <details class="card" open>
+          <summary><h2>提示词</h2></summary>
           <div class="card-body">
             <div class="field">
               <label for="instructions">系统提示词</label>
@@ -277,16 +279,17 @@
               </div>
             </div>
           </div>
-        </section>
-
-    <section class="card">
-          <div class="card-head">
+        </details>
+    <details class="card" open>
+          <summary>
             <h2>输出保证</h2>
+            {# 摘要里的按钮：app.js 拦掉了 summary 内 button/a 的默认切换，
+               所以点它只跑 lint，不会把卡片折起来。 #}
             <button type="button" class="btn sm" hx-post="/admin/agents/lint" hx-include="#output_schema,#tier"
                     hx-target="#lint-result" hx-swap="innerHTML" hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
               检查字段命名 <span class="htmx-indicator">…</span>
             </button>
-          </div>
+          </summary>
           <div class="card-body">
             <div class="form-row">
               <div class="field">
@@ -303,11 +306,11 @@
                   {% endfor %}
                 </select>
               </div>
-              <div class="field" style="flex:0 1 150px">
+              <div class="field">
                 <label for="retries">校验重试次数</label>
                 <input id="retries" name="retries" type="number" min="0" max="5" value="{{ form.retries }}">
               </div>
-              <div class="field" style="flex:0 1 190px">
+              <div class="field">
                 <label for="output_channel">schema 送达方式</label>
                 <select id="output_channel" name="output_channel">
                   {% for value, label in output_channels.items() %}
@@ -316,7 +319,9 @@
                 </select>
               </div>
             </div>
-            <div class="hint" style="margin-top:calc(-1 * var(--s2))">
+            {# 这里原来用负 margin 把提示往上拽，紧贴 schema 送达方式那个下拉。
+               列一窄，控件换行之后那段提示就压在上一行的框上了。让它老实待着。 #}
+            <div class="hint">
               <strong>只影响 T2，不改变它的保证</strong>（校验与重试两边一样）。
               有的上游没有 tools 这条路——DeepSeek 的思考模式就<strong>不接受 tool_choice</strong>，
               用工具通道每次都 400。换成提示词通道即可；代价是模型对提示词里的 schema
@@ -347,18 +352,26 @@
               <div class="hint">
                 顶层必须是 <code>"type": "object"</code>。不支持 <code>pattern</code>（正则会在
                 服务进程里执行，一条灾难性回溯就能让服务停摆）与指向外部的 <code>$ref</code>。
-                留空即纯文本输出。
+                <strong>留空即纯文本输出。</strong>
+              </div>
+              {# 从零手写 JSON Schema 是这一页最劝退的一步。给一个能直接改的样板，
+                 而不是让人对着空框回忆语法。只在框是空的时候填，不覆盖已有内容。 #}
+              <div class="row mt2">
+                <button type="button" class="btn sm" data-fill-schema>填一个样板</button>
+                <span class="hint">字段名用中文也行，<code>description</code> 是写给模型看的。</span>
               </div>
             </div>
             <div id="lint-result">{% if hints %}{% include "_lint.html" %}{% endif %}</div>
           </div>
-        </section>
+        </details>
+    </div>
 
-    <section class="card" id="test">
-        <div class="card-head">
+    <div class="agent-side">
+    <details class="card" id="test" open>
+        <summary>
           <h2>试运行</h2>
           <span class="small muted">用表单当前内容试跑，不保存</span>
-        </div>
+        </summary>
         <div class="card-body">
           <div class="field">
             <label for="test_input">测试输入 <span class="dim small">调用方会发来的那条 user 消息</span></label>
@@ -409,7 +422,8 @@
 
           <div id="test-result" class="mt4">{% include "_agent_test.html" %}</div>
         </div>
-      </section>
+      </details>
+    </div>
   </div>
 
 </form>

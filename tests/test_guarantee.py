@@ -196,8 +196,25 @@ class TestT3:
 
 
 class TestTierResolution:
-    def test_no_schema_means_t3(self):
-        assert resolve_tier(None, has_schema=False, native_ok=True).tier is Tier.T3
+    def test_no_schema_means_none_not_t3(self):
+        """纯文本报 ``none``，**不是 T3**。
+
+        这条以前断言的是 T3，而那是个谎：T3 的含义是"schema 只进提示词、不做校验"
+        ——至少还有一份 schema；纯文本 Agent 一份都没有。
+
+        它是对外可见的（``x_xingcha.tier`` 直接给调用方），而调用方读它就是为了
+        知道"这次有没有结构保证、代价是什么"。对纯文本回答 T3 是个错误答案。
+        """
+        choice = resolve_tier(None, has_schema=False, native_ok=True)
+        assert choice.tier is Tier.NONE
+        assert choice.tier is not Tier.T3
+
+    def test_t3_is_still_t3_when_there_is_a_schema(self):
+        """有 schema 而选了 T3 的，一个都不许被顺手改掉。
+
+        上面那条修的是"没 schema 却报 T3"，不是"T3 不该存在"。
+        """
+        assert resolve_tier(Tier.T3, has_schema=True, native_ok=False).tier is Tier.T3
 
     def test_t1_downgrades_when_model_lacks_native_support(self):
         """未知或不支持的模型一律降级。

@@ -241,6 +241,14 @@ class TestCleanEnvironment:
             capture_output=True,
             timeout=180,
         )
+        # 解释器在 venv 里的位置**分平台**：POSIX 是 bin/python，Windows 是
+        # Scripts/python.exe。写死前者的代价不是"这条用例失败"而更糟——
+        # `uv pip install --python <不存在的路径>` 直接退 2，于是这一整类用例在
+        # Windows 上以 fixture setup ERROR 结束，而它们恰恰是「导出物零星槎依赖」
+        # 这个卖点的**唯一**证明：开发机上从来没真跑过。
+        python = venv / "Scripts" / "python.exe"
+        if not python.exists():
+            python = venv / "bin" / "python"
         # **只装 README 里承诺的这两个**。多装一个都不算数。
         subprocess.run(
             [
@@ -248,7 +256,7 @@ class TestCleanEnvironment:
                 "pip",
                 "install",
                 "--python",
-                str(venv / "bin" / "python"),
+                str(python),
                 "pydantic-ai-slim[openai,spec]",
                 "jsonschema",
             ],
@@ -260,7 +268,7 @@ class TestCleanEnvironment:
         driver = root / "drive.py"
         driver.write_text(CLEAN_DRIVER, encoding="utf-8")
         proc = subprocess.run(
-            [str(venv / "bin" / "python"), str(driver), str(bundle.directory)],
+            [str(python), str(driver), str(bundle.directory)],
             capture_output=True,
             text=True,
             timeout=300,

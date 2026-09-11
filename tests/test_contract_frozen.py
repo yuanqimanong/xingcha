@@ -473,9 +473,26 @@ class TestMeteringContract:
             "unknown",
         }
 
-    def test_all_four_tiers_reserved_though_only_t2_implemented(self):
-        """四档从第一天就进 DB 的 CHECK。没预留的话，补 T1 时就是一次重建表的迁移。"""
-        assert {t.value for t in C.Tier} == {"T1", "T2", "T1P", "T3"}
+    def test_tier_values_are_the_frozen_set(self):
+        """档位取值是闭集。**改动它必须是有意的。**
+
+        原来四档，后来加了第五个 ``none``（纯文本）。那一次是**加法**：四档的含义
+        一个字没动，只是把"没有 schema"从谎报的 T3 里分了出来——见迁移 0004。
+
+        这条断言红了，先分清是哪一种：
+        * 加了一个新值 → 确认它对老调用方是加法（老值语义不变），再改这里；
+        * 改了或删了已有值 → **那是毁约**，走契约号 +1，不要改这里。
+        """
+        assert {t.value for t in C.Tier} == {"T1", "T2", "T1P", "T3", "none"}
+
+    def test_none_tier_means_no_schema_at_all(self):
+        """``none`` 与 T3 不能混。
+
+        两者都"不给结构保证"，但代价不同：T3 仍然把 schema 塞进提示词（占 token、
+        影响输出），``none`` 什么都不做。调用方按 tier 估成本时这是两个数。
+        """
+        assert C.Tier.NONE.value == "none"
+        assert C.Tier.NONE is not C.Tier.T3
 
     def test_tier_detection_uses_structured_outputs_only(self):
         """实测今天 424 个模型里 response_format 365 个、structured_outputs 340 个 ——
@@ -631,7 +648,7 @@ class TestExplicitChannelIsWiderThanImplicit:
 
 
 def test_contract_module_has_no_internal_imports():
-    """契约处在依赖图最底层，不 import 任何 xingcha 模块（开发计划 §6 标准 1）。
+    """契约处在依赖图最底层，不 import 任何 xingcha 模块（见 ARCHITECTURE.md）。
 
     一旦它 import 了别的模块，就会出现"契约依赖实现"的倒挂，而契约必须是实现去
     对齐的对象。

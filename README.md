@@ -85,10 +85,12 @@ cd xingcha
 
 | 档 | 做法 | 代价 |
 |---|---|---|
-| T1 | 上游原生 schema 约束 | 只有部分模型支持 |
-| T2 | schema 进提示词或工具，校验失败后重试 | 每次违规多花一次调用 |
-| T1+ | 原生约束 + 服务端再校验 | 同 T1 |
-| T3 | 两次独立生成后比对 | 费用翻倍 |
+| T1 | 上游解码时就不让模型写出不合 schema 的 token | 只有部分模型支持；**可选字段会被提升为必填**，且格式约束会削弱推理（对齐税） |
+| T2 | 模型自由作答，服务端拿 schema 校验，不合规打回重写 | 违规时多调几次，最坏 1+重试次数 倍 |
+| T1+ | 先不带任何格式约束自由推理，再单独调一次只做格式化 | **两次模型调用**，约两倍的钱，慢一倍 |
+| T3 | schema 只写进提示词，**输出不做校验** | 没有任何保证，字段缺了得调用方自己兜 |
+
+不填 schema 就是纯文本，`x_xingcha.tier` 报 `none`——它不是一个档，是"不适用"。
 
 需要原生支持的档碰上不支持的模型会**自动降级到 T2**，保存时会明说降了。
 上游没有 tools 通道时（如 DeepSeek 思考模式），把 T2 的 schema 送达方式换成提示词。
@@ -215,24 +217,24 @@ $DC exec xingcha xingcha doctor    # 权限、schema、磁盘、代理环境变�
 
 ## 本地开发
 
+代码怎么分层、一次调用怎么走、哪些约束由测试机械地守着——见
+[ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ```bash
 uv venv --python 3.13 .venv
 uv pip install --python .venv/bin/python -e . --group dev
 
 .venv/bin/python -m pytest          # 全套测试，离线可跑，不需要任何 API key
-.venv/bin/python -m pytest -m browser   # 浏览器端到端（Playwright + 系统 chromium）
 .venv/bin/ruff check src tests
 .venv/bin/pyright
 ```
 
 LLM 相关行为用 pydantic-ai 的 `FunctionModel` / `TestModel` 构造，上游用一个本地假服务器。
 
-CI 里有三层别处看不到的断言：
+CI 里有两层别处看不到的断言：
 
 - **代理指黑洞时再跑一遍全套测试**——「代理不进代码」的唯一自动化保证。星槎自建的
   HTTP 客户端一律 `trust_env=False`。
-- **浏览器端到端**——起真服务、点真按钮、读真控制台。CSP 挡掉内联脚本那次，ASGI 层
-  全套测试是绿的，而复制密钥按钮无反应。
 - **构建镜像并真的把整栈起起来**——断言容器 healthy、默认只绑回环、`/v1` 无凭据 401、
   纯 HTTP 下 cookie 不带 `Secure`。这类跨文件问题不会让任何单测变红。
 
