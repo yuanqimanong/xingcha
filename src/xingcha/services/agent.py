@@ -500,6 +500,17 @@ async def rename_group(session: AsyncSession, keyring: Any, old: str, new: str) 
     return len(rows)
 
 
+async def current_group(session: AsyncSession, slug: str) -> str | None:
+    """某个 Agent 现在在哪个分组。不存在或在默认组都返回 ``None``。
+
+    给 CLI 用：``save`` 把分组当**表单里的一项**处理（不传 = 挪回默认组），而命令行
+    里"这次没提这一项"不等于"把它挪走"。所以 ``agent apply`` 先问一次现值再传回去。
+    """
+    return (
+        await session.execute(select(Agent.group_name).where(Agent.slug == slug))
+    ).scalar_one_or_none()
+
+
 async def slug_available(session: AsyncSession, slug: str) -> bool:
     taken = (await session.execute(select(Agent.id).where(Agent.slug == slug))).scalar_one_or_none()
     if taken is not None:
