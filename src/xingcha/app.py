@@ -47,7 +47,7 @@ from .services.quota import QuotaService
 from .services.ratelimit import RateLimiter
 from .services.run import RuntimeCache
 from .services.runlog import UsageBuffer
-from .web import routes as web_routes
+from .web import admin as web_admin
 from .web.flash import OneShotFlash
 
 log = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class AppState:
     """进程级共享状态。挂在 ``app.state.xc`` 上。
 
     显式持有而不是散落成模块级全局：一次调用的生命周期要能用一张图讲完
-    （开发计划 §6 标准 6），而全局变量很难说清"该在哪儿失效它"。
+    （见 ARCHITECTURE.md），而全局变量很难说清"该在哪儿失效它"。
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -329,14 +329,14 @@ async def _denied_handler(request: Request, exc: Exception) -> Response:
 
     不走 /v1 的错误契约——那是给 SDK 分支用的 JSON，而这里的读者是浏览器前的人。
     """
-    assert isinstance(exc, web_routes.Denied)
+    assert isinstance(exc, web_admin.Denied)
     if exc.status == 401:
         return RedirectResponse("/admin/login", status_code=303)
-    return web_routes.security_headers(
+    return web_admin.security_headers(
         HTMLResponse(
             f"<!doctype html><meta charset=utf-8>"
             f"<title>操作被拒绝</title>"
-            f'<link rel=stylesheet href="{web_routes.asset("style.css")}">'
+            f'<link rel=stylesheet href="{web_admin.asset("style.css")}">'
             # 带上与 base.html 相同的 data: favicon。不带的话浏览器会去要
             # /favicon.ico，而那是一条 404——每一次"操作被拒绝"都在控制台留一条
             # 红色错误，把真正的问题淹掉。
@@ -411,8 +411,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _mount_probes(app)
     app.include_router(v1_api.build_router())
-    web_routes.mount(app)
-    app.add_exception_handler(web_routes.Denied, _denied_handler)
+    web_admin.mount(app)
+    app.add_exception_handler(web_admin.Denied, _denied_handler)
 
     # 必须在路由之前归一化 /v1 路径。见 api/normalize.py：不做这一步，
     # GET /v1/models/ 会静默落进 catch-all 被反代出去。
@@ -444,9 +444,7 @@ def _mount_probes(app: FastAPI) -> None:
         307 而不是 303：303 会把方法改成 GET，而根路径只接 GET，两者等价；但 307
         语义上是"这个资源就在那边"，更贴近这里的意思。用 302 会被某些客户端缓存。
         """
-        from .web.routes import security_headers
-
-        return security_headers(RedirectResponse("/admin", status_code=307))
+        return web_admin.security_headers(RedirectResponse("/admin", status_code=307))
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

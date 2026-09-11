@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import posix_only
 from xingcha import contract as C
 from xingcha.app import create_app
 from xingcha.config import Settings
@@ -241,6 +242,7 @@ class TestStartupAssertions:
 
         assert migrate.current_revision(settings.db_path) == migrate.head_revision()
 
+    @posix_only
     def test_data_dir_permissions(self, settings: Settings):
         """共享 VPS 上 0755 的数据目录 + 0644 的库文件，等于把 token hash 与
         Fernet 密文交给任意本地账号。"""

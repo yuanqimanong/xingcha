@@ -43,8 +43,6 @@ dev = [
   "pytest-cov",
   "ruff",
   "pyright",
-  "playwright>=1.62.0",
-  "pytest-playwright>=0.9.0",
 ]
 
 [build-system]
@@ -73,7 +71,14 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Depends / Query 放在参数默认值里是 FastAPI 的标准写法，不是 B008 想抓的可变默认值。
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Path"]
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.Header",
+  "fastapi.Path",
+  "fastapi.Form",
+  "fastapi.File",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -83,13 +88,6 @@ markers = [
   # 干净环境的导出验收要建 venv 装包，慢但必须真跑——它是「低锁定」的唯一证明。
   # 赶时间时用：pytest -m "not slow"
   "slow: 需要建虚拟环境或装包的测试",
-  # 浏览器端到端：起真服务 + 开真 chromium。比其余测试慢一个数量级，但它是唯一能
-  # 证明"页面在浏览器里真能用"的一层——CSP 挡掉内联脚本那次，ASGI 层的测试全绿。
-  # 赶时间时用：pytest -m "not browser"
-  "browser: 需要真浏览器（/usr/bin/chromium）的端到端测试",
-  # 故意触发失败请求的用例用它豁免控制台断言（参数是允许出现的子串）。
-  # 豁免必须逐条显式——把断言整体放宽会让所有用例失去这层保护。
-  "expect_console_errors: 该用例预期出现的浏览器控制台错误（子串匹配）",
 ]
 
 [tool.pyright]

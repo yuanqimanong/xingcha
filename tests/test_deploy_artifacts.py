@@ -37,6 +37,7 @@ from typing import ClassVar
 import pytest
 import yaml
 
+from conftest import git_file_mode, posix_only
 from xingcha import contract as C
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +62,19 @@ XC_BAT = WINDOWS / "xc.bat"
 CADDYFILE = EDGE / "Caddyfile"
 EDGE_SH = EDGE / "edge"
 EDGE_BAT = EDGE / "edge.bat"
+EDGE_PS1 = EDGE / "edge.ps1"
+XC_PS1 = WINDOWS / "xc.ps1"
+COMMON_PS1 = DEPLOY / "_common.ps1"
+
+
+def _ps1_code(path: Path) -> str:
+    """``.ps1`` 里真正会执行的部分：剥掉 ``<# ... #>`` 块注释与 ``#`` 行注释。
+
+    这些脚本的注释里会**提到** docker、``??`` 之类的字眼——那正是在解释"为什么不用
+    它"。拿整份文本做断言的话，写得越清楚越容易被自己的测试抓住。
+    """
+    body = re.sub(r"<#.*?#>", "", path.read_text(encoding="utf-8-sig"), flags=re.S)
+    return "\n".join(ln for ln in body.splitlines() if not ln.strip().startswith("#"))
 
 
 @pytest.fixture(scope="module")
@@ -228,6 +242,7 @@ class TestContainerUid:
     def test_drill_uses_the_same_uid(self):
         assert str(C.CONTAINER_UID) in DRILL_SH.read_text(encoding="utf-8")
 
+    @posix_only
     def test_error_message_names_the_uid_and_the_command(self, tmp_path: Path):
         """数据目录不可写时，报错要给出**可以直接粘贴执行**的命令。
 
@@ -418,7 +433,9 @@ class TestOpsScripts:
 
     def test_the_script_exists_and_is_executable(self, sh: str):
         assert sh
-        assert XC.stat().st_mode & 0o111, "deploy/linux/xc 没有执行位"
+        # 问 git 索引而不是工作区：要保证的是"Linux 上 clone 下来能直接跑"，
+        # 而 Windows 的文件系统不带执行位，stat() 在那里必然失败。见 git_file_mode。
+        assert git_file_mode("deploy/linux/xc") == "100755", "deploy/linux/xc 没有执行位"
 
     @pytest.mark.parametrize("verb", ["start", "redeploy", "stop", "logs", "status"])
     def test_the_script_offers_every_documented_verb(self, sh: str, verb: str):
@@ -534,7 +551,9 @@ class TestWindowsEntry:
         """
         assert bat
         found = sorted(q.name for q in DEPLOY.rglob("*") if q.suffix.lower() in (".bat", ".ps1"))
-        assert found == ["edge.bat", "xc.bat"], f"deploy/ 下的 Windows 入口与闭集不符：{found}"
+        assert found == ["_common.ps1", "edge.bat", "edge.ps1", "xc.bat", "xc.ps1"], (
+            f"deploy/ 下的 Windows 入口与闭集不符：{found}"
+        )
 
     def test_it_uses_crlf_and_no_bom(self):
         r"""必须 CRLF、不带 BOM。
@@ -554,7 +573,8 @@ class TestWindowsEntry:
         不 cd 的话 ``.env`` 找不到、``data\`` 会建在 ``deploy\`` 下面——症状是
         "服务起来了，后台却是空的"，而两处 data 目录都真实存在。
         """
-        assert 'cd /d "%~dp0..\\.."' in self._code(bat)
+        # 真正 cd 的是 .ps1（.bat 只把活交出去），所以断言落在那边。
+        assert "Join-Path $Here" in XC_PS1.read_text(encoding="utf-8-sig")
 
     def test_it_does_not_reach_for_docker(self, bat: str):
         """这条路的**全部意义**就是不装 docker。
@@ -562,8 +582,10 @@ class TestWindowsEntry:
         哪天有人"顺手"把 compose 调用加回来，这台机器就又需要 Docker Desktop 了，
         而那正是 data 不能放宿主目录的那条路。
         """
-        code = self._code(bat).lower()
-        assert "docker" not in code, "xc.bat 里出现了 docker 调用"
+        # 只看真正会执行的行。注释里解释"为什么这条路不用 docker"是正当的，
+        # 那正是这个脚本存在的理由，不该被自己抓住。
+        code = (self._code(bat) + _ps1_code(XC_PS1)).lower()
+        assert "docker" not in code, "Windows 这条路上出现了 docker 调用"
 
     def test_dependencies_are_locked(self, bat: str):
         """``uv sync`` 与 ``uv run`` 都要带 ``--frozen``。
@@ -571,7 +593,7 @@ class TestWindowsEntry:
         少了它 uv 会就地更新 uv.lock：代码一个字没动，跑的却是另一组依赖版本——
         和镜像那边 A12 是同一条理由（见 test_image_build_is_locked）。
         """
-        code = self._code(bat)
+        code = XC_PS1.read_text(encoding="utf-8-sig")
         assert "uv sync --frozen" in code
         assert "uv run --frozen" in code
 
@@ -581,7 +603,7 @@ class TestWindowsEntry:
         两份必然各自漂移，而症状是"我在 Windows 上跑的那套和 Linux 上不是一个
         东西"：两边都能用，但配置来源不同。
         """
-        assert "deploy\\.env.example" in self._code(bat)
+        assert ".env.example" in XC_PS1.read_text(encoding="utf-8-sig")
         strays = sorted(q.name for q in DEPLOY.rglob(".env*") if q.name != ".env.example")
         assert not strays, f"deploy/ 下出现了第二份 env 模板：{strays}"
 
@@ -591,7 +613,7 @@ class TestWindowsEntry:
         传了就是第二个来源，而两个来源必然有一天不一致——症状是"我在 .env 里改了
         端口却不生效"，而两处配置单看都对。
         """
-        code = self._code(bat)
+        code = XC_PS1.read_text(encoding="utf-8-sig")
         assert "xingcha serve" in code
         serve_line = next(ln for ln in code.splitlines() if "xingcha serve" in ln)
         assert "--host" not in serve_line and "--port" not in serve_line
@@ -602,9 +624,11 @@ class TestWindowsEntry:
         双击起来的窗口在脚本结束时立刻消失——不 pause 的话用户看到的是"闪一下就
         没了"，报错一个字都读不到。
         """
-        code = self._code(bat)
-        assert "goto :fail" in code and ":fail" in code
-        assert "pause" in code
+        # pause 在**启动器**里（它才是那个窗口的主人），失败路径在 .ps1 里。
+        assert "pause" in self._code(bat), "xc.bat 失败时不 pause，窗口会闪一下就没"
+        assert "exit 1" in XC_PS1.read_text(encoding="utf-8-sig"), (
+            "xc.ps1 没有非零退出，启动器判断不出失败"
+        )
 
     def test_it_warns_about_the_windows_firewall(self, bat: str):
         """绑 0.0.0.0 之后第一次启动会弹防火墙窗。
@@ -612,21 +636,45 @@ class TestWindowsEntry:
         点了取消的话：本机一切正常，网关那边一直 502——那个现象指不到防火墙，
         所以脚本必须在启动前把这句话说出来。
         """
-        assert "防火墙" in bat
+        assert "防火墙" in XC_PS1.read_text(encoding="utf-8-sig")
 
-    def test_the_env_template_documents_the_no_docker_settings(self):
-        """这条路上的三项，模板里必须都在（注释掉也算）。
+    def test_the_address_settings_are_derived_not_asked_for(self):
+        """这四项**不该再出现在模板里让用户填**——它们是推出来的。
 
-        Caddy 单文件就在**同一台机器上**，所以：
+        以前要用户自己填 XINGCHA_HOST / PORT / PUBLIC_URL / TRUSTED_PROXIES，
+        代价有两个，都很安静：
 
-        · XINGCHA_HOST            → 保持 127.0.0.1；改成 0.0.0.0 等于多开一条
-                                    绕过 TLS 的明文入口，而功能完全正常
-        · XINGCHA_PUBLIC_URL 不填 → 后台印出打不开的 127.0.0.1:8720 地址
-        · XINGCHA_TRUSTED_PROXIES 不填 → 会话 cookie 不带 Secure，而功能全正常
+        · ``XINGCHA_WEB_HOST`` 与 ``XINGCHA_HOST`` 名字像、作用完全不同（**应用根本
+          不读前者**）。想"让别人能访问"而只改了前者，是个空操作，而页面上印的地址
+          看起来完全正确。
+        · "挂了网关"这件事要在四个地方分别表达一遍。只改一处的后果同样安静——
+          PUBLIC_URL 写了 https 而 TRUSTED_PROXIES 没配，于是会话 cookie 不带
+          Secure，功能全正常。
+
+        现在三项输入（GATEWAY / WEB_HOST / WEB_PORT）推出这四项，推导在
+        ``deploy/_common.ps1``（Windows）与 ``deploy/linux/xc``（docker）。
         """
         text = ENV_EXAMPLE.read_text(encoding="utf-8")
+        for name in ("XINGCHA_HOST", "XINGCHA_PORT", "XINGCHA_PUBLIC_URL"):
+            assert not re.search(rf"^#?\s*{name}=", text, re.M), (
+                f".env.example 又把 {name} 列成待填项了。它是推出来的，见 deploy/_common.ps1"
+            )
+        # 但必须讲清楚它们去哪了，否则读者只会以为功能少了。
         for name in ("XINGCHA_HOST", "XINGCHA_PUBLIC_URL", "XINGCHA_TRUSTED_PROXIES"):
-            assert re.search(rf"^#?\s*{name}=", text, re.M), f".env.example 没提到 {name}"
+            assert name in text, f".env.example 没解释 {name} 是怎么来的"
+
+    def test_both_paths_derive_the_bind_address_the_same_way(self):
+        """两条路的推导规则必须逐条对齐。
+
+        对不上的症状是"我在 Windows 上跑的和 Linux 上不是一个东西"：两边都能用，
+        但绑的地址、印的地址不一样，而没有任何一处会报错。
+        """
+        ps = COMMON_PS1.read_text(encoding="utf-8-sig")
+        sh = XC.read_text(encoding="utf-8")
+        for token in ("127.0.0.1", "0.0.0.0", "localhost"):
+            assert token in ps and token in sh, f"{token} 只在一条路里出现"
+        assert "8443" in ps, "_common.ps1 里没有网关端口"
+        assert "XINGCHA_WEB_HOST" in ps and "XINGCHA_GATEWAY" in ps
 
     def test_the_env_template_does_not_hand_out_a_wildcard_proxy(self):
         """``XINGCHA_TRUSTED_PROXIES`` 在这条路上**不能**示范 ``*``。
@@ -714,13 +762,13 @@ class TestEdgeGateway:
         另设一个变量则是第二个来源——两个来源必然有一天不一致，而那时页面上印的
         地址和证书上的名字对不上。
         """
-        for path in (EDGE_SH, EDGE_BAT):
-            text = path.read_text(encoding="utf-8")
+        for path in (EDGE_SH, EDGE_PS1):
+            text = path.read_text(encoding="utf-8-sig")
             assert "EDGE_HOST" in text, f"{path.name} 没传 EDGE_HOST"
             assert "XINGCHA_WEB_HOST" in text, f"{path.name} 没从 .env 读 XINGCHA_WEB_HOST"
 
     def test_the_shell_script_is_executable_with_a_shebang(self):
-        assert EDGE_SH.stat().st_mode & 0o111, "deploy/edge/edge 没有可执行位"
+        assert git_file_mode("deploy/edge/edge") == "100755", "deploy/edge/edge 没有可执行位"
         assert EDGE_SH.read_text(encoding="utf-8").startswith("#!"), "缺 shebang"
 
     def test_the_shell_script_does_not_use_grep_dash_capital_p(self):
@@ -735,11 +783,84 @@ class TestEdgeGateway:
 
     def test_the_bat_uses_crlf_and_no_bom(self):
         r"""cmd.exe 的 ``goto`` 按字节偏移找标签，行尾少一个字节就可能跳飞；
-        UTF-8 BOM 会让第一行变成一条不认识的命令。两种都不会给出像样的报错。"""
-        raw = EDGE_BAT.read_bytes()
-        assert not raw.startswith(b"\xef\xbb\xbf"), "edge.bat 带了 UTF-8 BOM"
-        assert b"\r\n" in raw, "edge.bat 不是 CRLF —— cmd 的 goto 会跳飞"
-        assert b"\n" not in raw.replace(b"\r\n", b""), "edge.bat 里混了裸 LF"
+        UTF-8 BOM 会让第一行变成一条不认识的命令——实测 ``'﻿@echo' 不是命令``，
+        而且 ``@echo off`` 因此失效，之后每一行都回显。两种都不会给出像样的报错。"""
+        for path in (EDGE_BAT, XC_BAT):
+            raw = path.read_bytes()
+            assert not raw.startswith(b"\xef\xbb\xbf"), f"{path.name} 带了 UTF-8 BOM"
+            assert b"\r\n" in raw, f"{path.name} 不是 CRLF —— cmd 的 goto 会跳飞"
+            assert b"\n" not in raw.replace(b"\r\n", b""), f"{path.name} 里混了裸 LF"
+
+    @pytest.mark.parametrize("path", [EDGE_BAT, XC_BAT], ids=lambda p: p.name)
+    def test_the_bat_is_pure_ascii(self, path: Path):
+        """``.bat`` 里**一个非 ASCII 字节都不许有**，注释里也不行。
+
+        cmd.exe 在 ``chcp 65001`` 下按**字节偏移**回溯文件位置，而偏移记账按字符算。
+        于是它会从一个多字节字符**中间**接着读：前半截字节留在上一行，后半截落单
+        （控制台显示成两个替换符），而**后半行被当成一条新命令执行**。
+
+        这不是显示问题。``rem uv run xingcha admin reset-password  忘了密码`` 那一行
+        真的被执行过一次，"忘了密码"成了命令行参数。注释里要是记着一条破坏性命令，
+        后果就不只是难看。
+
+        更糟的是它**时有时无**：只在文件不在系统页缓存里（刚改过、刚开机）时才容易
+        撞上，下一次跑又"好了"——是那种偶发一次、复现不了的故障。
+
+        所以逻辑与中文全在同名的 ``.ps1`` 里，``.bat`` 只剩一个纯 ASCII 的启动器。
+        """
+        raw = path.read_bytes()
+        bad = [i for i, b in enumerate(raw) if b > 127]
+        assert not bad, (
+            f"{path.name} 里有 {len(bad)} 个非 ASCII 字节（首个在偏移 {bad[0]}）。"
+            f"中文放进同名 .ps1，或放进旁边的 .md。"
+        )
+
+    @pytest.mark.parametrize("path", [EDGE_PS1, XC_PS1], ids=lambda p: p.name)
+    def test_the_ps1_has_a_bom(self, path: Path):
+        """``.ps1`` **必须**带 UTF-8 BOM。**和 .bat 正好相反。**
+
+        Windows PowerShell 5.1（Windows 自带的那个）读无 BOM 的 ``.ps1`` 会按系统
+        ANSI 代码页解码——中文全成乱码，而脚本照常运行，所以只有输出是坏的，
+        看起来像"终端编码没设对"，指不到文件本身。
+        """
+        raw = path.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf"), (
+            f"{path.name} 没有 UTF-8 BOM —— PowerShell 5.1 会按 ANSI 读，中文乱码"
+        )
+
+    @pytest.mark.parametrize("path", [EDGE_PS1, XC_PS1], ids=lambda p: p.name)
+    def test_the_ps1_avoids_powershell7_only_syntax(self, path: Path):
+        """只用 Windows PowerShell 5.1 认的语法。
+
+        ``?.``、``??``、三元 ``? :`` 都是 PowerShell 7 才有的。5.1 上它们是**解析
+        错误**——整个脚本一行都不跑，而 5.1 正是 Windows 自带的那个版本，也就是
+        双击时真正执行这些脚本的那个。
+        """
+        code = _ps1_code(path)
+        for token, why in ((")?.", "null-conditional ?."), ("??", "null-coalescing ??")):
+            assert token not in code, f"{path.name} 用了 {why}，PowerShell 5.1 不认"
+
+    def test_the_bat_delegates_to_the_ps1(self):
+        """启动器要真的把活交出去，而不是自己又长回去。
+
+        没有这一条的话，"顺手在 .bat 里加一行"是很自然的动作，而加的那一行迟早会
+        带中文——于是绕一圈回到上面那个 bug。
+        """
+        for bat, ps1 in ((EDGE_BAT, "edge.ps1"), (XC_BAT, "xc.ps1")):
+            text = bat.read_text(encoding="ascii")
+            assert ps1 in text, f"{bat.name} 没有指向 {ps1}"
+            assert "-ExecutionPolicy Bypass" in text, (
+                f"{bat.name} 没传 -ExecutionPolicy Bypass —— 默认策略会挡下未签名的 "
+                f".ps1，而那个报错读起来像安全课，不像「双击我」"
+            )
+            code = [
+                ln
+                for ln in text.splitlines()
+                if ln.strip() and not ln.strip().lower().startswith(("rem", "@echo", ":"))
+            ]
+            assert len(code) <= 12, (
+                f"{bat.name} 有 {len(code)} 行实际代码 —— 启动器应当很薄，逻辑归 {ps1}"
+            )
 
     def test_the_binary_is_not_committed(self):
         """caddy 二进制**不进版本库**：45 MB，而且每台机器的平台/架构不同。

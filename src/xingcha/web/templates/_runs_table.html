@@ -3,7 +3,7 @@
   <table>
     <thead>
       <tr>
-        <th>时间</th><th>模型</th><th>状态</th>
+        <th>时间</th><th>模型</th><th>状态</th><th>调用方</th>
         <th class="num">入</th><th class="num">出</th><th class="num">缓存</th>
         <th class="num">费用 USD</th><th class="num">耗时</th>
       </tr>
@@ -17,6 +17,10 @@
           {% if r.status == 'ok' %}<span class="badge ok">成功</span>
           {% else %}<span class="badge danger" title="{{ r.error_type or '' }}">{{ r.status }}</span>{% endif %}
         </td>
+        {# IP 与 User-Agent 一直都记着（run.client_ip / run.user_agent），
+           只是从来没在页面上露过面。排查"这条是谁打的"只能去翻库。
+           UA 放 title 里：它常常一两百个字符，摊在表格里会把别的列挤没。 #}
+        <td class="mono dim small nowrap" title="{{ r.user_agent }}">{{ r.client_ip }}</td>
         <td class="num">{{ r.input_tokens }}</td>
         <td class="num">{{ r.output_tokens }}</td>
         <td class="num dim">{{ r.cache_read_tokens or '' }}</td>

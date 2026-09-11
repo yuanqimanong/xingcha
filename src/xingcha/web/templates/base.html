@@ -10,6 +10,26 @@
 </head>
 <body>
 {% block body %}{% endblock %}
+
+{# 危险操作的二次确认。**全站共用这一个**，由 app.js 的 data-confirm 驱动。
+   放在 base 而不是各页自己写：确认框长什么样属于全站一致的东西，抄七份就会漂。
+   没有 JS 时它永远不显示，而 data-confirm 的表单照常提交——和原生 confirm() 被
+   禁用时的行为一致，不会把功能锁死。 #}
+<dialog id="confirm-dialog" class="modal narrow">
+  <div class="card">
+    <div class="card-head">
+      <h2 id="confirm-title">确认操作</h2>
+    </div>
+    <div class="card-body">
+      <p id="confirm-text" class="confirm-text"></p>
+      <div class="row end mt4">
+        <button class="btn" type="button" data-confirm-cancel>取消</button>
+        <button class="btn danger" type="button" data-confirm-ok>确定</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
 <script src="{{ asset('app.js') }}" defer></script>
 </body>
 </html>

@@ -7,7 +7,11 @@
     <p>把提示词配置成一个可调用的 model id。调用方把 <code>model</code> 填成标识就能用，不需要知道背后是什么模型。</p>
   </div>
   <div class="row">
+    {# 指南放在这一页的入口处：新人第一次进来就是奔着"怎么用"来的，
+       而那件事跨了密钥页、这一页和他自己的代码三处。 #}
+    <a class="btn" href="/admin/guide">调用指南</a>
     <button class="btn" type="button" data-open-dialog="#new-group-dialog">新建分组</button>
+    <button class="btn" type="button" data-open-dialog="#import-dialog">导入</button>
     <a class="btn primary" href="/admin/agents/new">新建 Agent</a>
   </div>
 </div>
@@ -35,6 +39,49 @@
     </div>
   </form>
 </dialog>
+
+  {# 「导出」的反向操作。只有导出没有导入的话那扇门是单向的，而「可带走」这个
+     卖点要求两个方向都通——CLI 早有 `xingcha agent apply`，后台一直没有。
+
+     两个入口对应两种真实用法：整包传回来（导出给的就是个 zip，不用先解压再翻
+     文件），或者贴一段 YAML（在别处改过的、从 agent show 拷出来的）。 #}
+  <dialog id="import-dialog" class="modal">
+    <form class="card" method="post" action="/admin/agents/import" enctype="multipart/form-data">
+      <div class="card-head">
+        <h2>导入 Agent</h2>
+        <div class="head-actions">
+          <button class="btn primary sm" type="submit">导入</button>
+          <a class="btn sm" href="#" data-close-dialog>取消</a>
+        </div>
+      </div>
+      <div class="card-body">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="field">
+          <label for="import-bundle">导出的 zip</label>
+          <input id="import-bundle" type="file" name="bundle" accept=".zip,.yaml,.yml">
+          <div class="hint">
+            就是「导出」下载的那个包。里面的目录名会被当作标识，
+            <code class="mono">schema.json</code> 一并读进来。
+          </div>
+        </div>
+        <div class="field">
+          <label for="import-yaml">或者，直接贴 agent.yaml</label>
+          <textarea id="import-yaml" name="yaml_text" rows="8"
+                    placeholder="model: openai/gpt-5&#10;name: ...&#10;instructions: ..."></textarea>
+          <div class="hint">
+            标准的 pydantic-ai AgentSpec。<strong>两个都填时以文件为准。</strong>
+          </div>
+        </div>
+        <div class="field">
+          <label for="import-slug">标识 <span class="dim small">可选</span></label>
+          <input id="import-slug" type="text" name="slug" placeholder="不填就用 zip 里的目录名或 spec 的 name">
+          <div class="hint">
+            标识已存在时<strong>不是覆盖，是给它加一个新版本</strong>——旧版本留着，随时能回滚。
+          </div>
+        </div>
+      </div>
+    </form>
+  </dialog>
 
 {% if stale_total %}
 {# 只有目录真的拉到东西时才会走到这里（见 routes.agents_page 里的 catalog_known）。
@@ -193,27 +240,30 @@
          想改一句提示词再试，那属于编辑页的「试运行」。 #}
       <dialog id="trial-{{ a.slug }}" class="modal wide">
         <div class="card">
-          <div class="card-head">
+          {# 动作按钮放标题栏右上角，位置固定：结果区会越长越高，按钮跟在表单
+             下面的话，跑过一次之后就被顶到看不见的地方，得滚回去才能再跑。 #}
+          <form class="card-head" hx-post="/admin/agents/{{ a.slug }}/trial"
+                hx-target="#trial-result-{{ a.slug }}" hx-swap="innerHTML"
+                hx-headers='{"x-csrf-token": "{{ csrf }}"}'
+                id="trial-form-{{ a.slug }}">
             <h2>测试 <code class="mono">{{ a.slug }}</code></h2>
-            <span class="small muted">跑已保存的 v{{ a.version }}</span>
-          </div>
+            <div class="head-actions">
+              <span class="badge neutral">跑已保存的 v{{ a.version }}</span>
+              <button class="btn primary sm" type="submit" data-lock>
+                跑一次 <span class="htmx-indicator">…</span>
+              </button>
+              <a class="btn sm" href="#" data-close-dialog>关闭</a>
+            </div>
+          </form>
           <div class="card-body">
-            <form hx-post="/admin/agents/{{ a.slug }}/trial"
-                  hx-target="#trial-result-{{ a.slug }}" hx-swap="innerHTML"
-                  hx-headers='{"x-csrf-token": "{{ csrf }}"}'>
-              <div class="field">
-                <label for="trial-input-{{ a.slug }}">测试输入</label>
-                <textarea id="trial-input-{{ a.slug }}" name="test_input" rows="3"
-                          placeholder="调用方会发来的那条 user 消息"></textarea>
-              </div>
-              <div class="row">
-                <button class="btn primary" type="submit" data-lock>
-                  跑一次 <span class="htmx-indicator">…</span>
-                </button>
-                <a class="btn" href="#" data-close-dialog>关闭</a>
-                <span class="hint">会<strong>真实调用上游并产生费用</strong>。</span>
-              </div>
-            </form>
+            <div class="field">
+              {# 输入框留在 body 里，但归属上面那个 form —— form= 属性让它跨越
+                 DOM 层级参与提交，省得为了排版把表单拆成两个。 #}
+              <label for="trial-input-{{ a.slug }}">测试输入</label>
+              <textarea id="trial-input-{{ a.slug }}" name="test_input" rows="3"
+                        form="trial-form-{{ a.slug }}"
+                        placeholder="调用方会发来的那条 user 消息"></textarea>
+            </div>
             <div id="trial-result-{{ a.slug }}" class="mt4">
               {% with ok = false, message = '', rows = none, history = a.trials %}
               {% include "_agent_test.html" %}

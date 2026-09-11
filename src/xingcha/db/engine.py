@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import sqlite3
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from sqlalchemy import event, text
@@ -27,6 +28,32 @@ from .. import contract as C
 from ..config import StartupRefused
 
 log = logging.getLogger(__name__)
+
+
+@contextmanager
+def sqlite_conn(target: str | Path, *, uri: bool = False) -> Iterator[sqlite3.Connection]:
+    """一次同步 sqlite3 连接，**用完真的关掉**。
+
+    存在的理由是 ``sqlite3`` 的一个反直觉设计：
+
+        with sqlite3.connect(p) as conn:   # ← 这句**不关连接**
+
+    ``Connection.__exit__`` 只提交或回滚事务，连接本身留着，等 GC。POSIX 上看不出
+    毛病（打开的文件照样能 unlink），于是这个泄漏可以活很久；Windows 上立刻变成
+    ``WinError 32：另一个程序正在使用此文件``——备份演练里 ``rmtree(data/)`` 直接
+    失败，而报错完全指不到"上一次 backup() 没关连接"。
+
+    同步 sqlite3 用在异步引擎起来之前或之外的几处：启动前探密文、备份、校验、恢复。
+    这些都在关键路径上（每次启动都跑），一次漏一个 fd 不是可以忽略的量级。
+
+    只关不提交：这里的用法要么是只读，要么是自带事务语义的 ``VACUUM INTO``。
+    需要提交的调用方自己 ``conn.commit()``。
+    """
+    conn = sqlite3.connect(target if uri else str(target), uri=uri)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # 定义在 config.py（比这一层更早、且只依赖 contract）。这里导出，保持既有 import 可用。

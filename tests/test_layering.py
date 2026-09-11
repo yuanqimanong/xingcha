@@ -4,10 +4,9 @@
 架构标准 1 的守卫
 ------------------------------------------------------------------------------
 
-开发计划 §6 标准 1 写着「单向依赖，无循环：``api → services → core → db``，
-``core`` 不 import ``services``/``api``」，「怎么查」那一栏写的是
-**「一个 import 方向检查脚本进 CI」**——那个脚本此前不存在，所以这条标准一直只是
-一句形容词。
+架构标准 1（现记在 ARCHITECTURE.md 里）写着「单向依赖，无循环」，「怎么查」
+那一栏写的是**「一个 import 方向检查脚本进 CI」**——那个脚本此前不存在，
+所以这条标准一直只是一句形容词。
 
 写成测试而不是独立脚本：脚本要有人记得运行，测试跟着全套一起跑。
 
@@ -43,6 +42,10 @@ LAYERS = ["contract", "db", "obs", "core", "services", "api", "web"]
 #:
 #: ``app`` 与 ``cli`` 是装配点（把各层接起来正是它们的职责）；``config`` /
 #: ``crypto`` / ``errors`` / ``bootstrap`` / ``contract_doc`` 是跨层基础件。
+#:
+#: **这个集合是白名单，由 :meth:`TestDependencyDirection.test_every_module_is_placed`
+#: 强制执行。** 它此前只是一段注释——定义了却没有任何断言读它，于是新加一个顶层
+#: 模块既不会落进某一层、也不会被要求登记在这里，方向检查就静悄悄地漏掉了它。
 UNLAYERED = {
     "app",
     "cli",
@@ -57,7 +60,7 @@ UNLAYERED = {
 
 
 def module_layer(path: Path) -> str | None:
-    """这个文件属于哪一层。不属于分层的返回 None。"""
+    """这个文件属于哪一层。不属于分层的返回 None（它们必须登记在 :data:`UNLAYERED`）。"""
     rel = path.relative_to(SRC)
     head = rel.parts[0]
     if head in LAYERS:
@@ -65,6 +68,12 @@ def module_layer(path: Path) -> str | None:
     if head == "contract.py":
         return "contract"
     return None
+
+
+def unlayered_name(path: Path) -> str:
+    """不属于分层的那些模块的登记名：``app.py`` → ``app``，``cli/db.py`` → ``cli``。"""
+    head = path.relative_to(SRC).parts[0]
+    return head.removesuffix(".py")
 
 
 def internal_imports(path: Path) -> set[str]:
@@ -128,6 +137,23 @@ class TestDependencyDirection:
         got = internal_imports(SRC / "services" / "run.py")
         assert "core" in got, f"services/run.py 明显 import 了 core，探针却只看到 {got}"
         assert "contract" in got
+
+    @pytest.mark.parametrize("path", all_sources(), ids=lambda p: str(p.relative_to(SRC)))
+    def test_every_module_is_placed(self, path: Path):
+        """每个文件要么在某一层里，要么显式登记为"不分层"。
+
+        没有这一条的话 :data:`UNLAYERED` 就只是一段注释——而下面那条方向断言对
+        "既不在 LAYERS 里、也没人登记"的模块是直接 return 的，**新加的顶层模块
+        会静默豁免掉整个方向检查**。守卫漏查比没有守卫更糟：它还挂着一盏绿灯。
+        """
+        if module_layer(path) is not None:
+            return
+        name = unlayered_name(path)
+        assert name in UNLAYERED, (
+            f"{path.relative_to(SRC)} 既不属于 {LAYERS} 中的任何一层，"
+            f"也没有登记在 UNLAYERED 里。它是装配点/跨层基础件就加进 UNLAYERED，"
+            f"否则把它挪进对应的层。"
+        )
 
     @pytest.mark.parametrize("path", all_sources(), ids=lambda p: str(p.relative_to(SRC)))
     def test_no_module_imports_a_higher_layer(self, path: Path):

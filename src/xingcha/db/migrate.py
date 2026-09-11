@@ -24,6 +24,7 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 
 from .. import contract as C
+from .engine import sqlite_conn
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def backup(db_path: Path, backup_dir: Path, *, tag: str = "") -> Path | None:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     suffix = f"-{tag}" if tag else ""
     dest = backup_dir / f"xingcha-{stamp}{suffix}.db"
-    with sqlite3.connect(db_path) as conn:
+    with sqlite_conn(db_path) as conn:
         # VACUUM INTO 的目标必须不存在
         if dest.exists():
             dest.unlink()
@@ -81,7 +82,7 @@ def restore(backup_path: Path, db_path: Path) -> None:
     if not backup_path.exists():
         raise FileNotFoundError(f"备份文件不存在：{backup_path}")
     # 先验证备份本身能打开，别用一个坏文件覆盖好库
-    with sqlite3.connect(backup_path) as conn:
+    with sqlite_conn(backup_path) as conn:
         result = conn.execute("PRAGMA integrity_check").fetchone()
         if not result or result[0] != "ok":
             raise RuntimeError(f"备份文件损坏（integrity_check = {result}），拒绝恢复")
@@ -133,7 +134,7 @@ def verify_backup(backup_path: Path, *, expect_tables: tuple[str, ...] = ()) -> 
     ciphertext = 0
 
     try:
-        with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as conn:
+        with sqlite_conn(f"file:{backup_path}?mode=ro", uri=True) as conn:
             row = conn.execute("PRAGMA integrity_check").fetchone()
             integrity_ok = bool(row and row[0] == "ok")
             if not integrity_ok:
@@ -222,8 +223,7 @@ def prune_runs(db_path: Path, *, older_than_days: int, dry_run: bool = True) -> 
         f"{cut.year:04d}-{cut.month:02d}-{cut.day:02d}"
         f"T{cut.hour:02d}:{cut.minute:02d}:{cut.second:02d}Z"
     )
-    conn = sqlite3.connect(db_path)
-    try:
+    with sqlite_conn(db_path) as conn:
         conn.execute("PRAGMA foreign_keys=ON")
         doomed = conn.execute(
             "SELECT COUNT(*) FROM run WHERE started_at < ?", (cutoff,)
@@ -233,5 +233,3 @@ def prune_runs(db_path: Path, *, older_than_days: int, dry_run: bool = True) -> 
             conn.commit()
         kept = conn.execute("SELECT COUNT(*) FROM run").fetchone()[0]
         return doomed, kept
-    finally:
-        conn.close()

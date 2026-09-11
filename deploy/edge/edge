@@ -67,7 +67,20 @@ edge_host() {
       printf 'localhost'
       ;;
     0.0.0.0 | :: | "[::]")
-      die "XINGCHA_WEB_HOST=$h 是监听地址，不是能敲的主机名。在 $ROOT/.env 里改成这台机器的内网 IP"
+      # 不拒绝，替他把名字找出来。**证书签不给 0.0.0.0**，浏览器里也没人敲它：
+      # 那是监听地址，而监听本来就由 Caddyfile 的 `bind 0.0.0.0` 负责，这个变量
+      # 只决定证书上的名字。写死 IP 的代价是 DHCP 换一次地址就"证书警告点不过去"，
+      # 而 .env 看起来完全正常。
+      #
+      # 取默认路由那张网卡的地址：docker0 / virbr0 / veth 那些也有 IP、也 up，
+      # 但局域网里的别人根本到不了。
+      local ip
+      ip=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*//p' | head -1)
+      [ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | tr ' ' '
+' | grep -v '^127\.' | head -1)
+      [ -n "$ip" ] || die "XINGCHA_WEB_HOST=$h 是监听地址，不是能敲的主机名，而且没探到内网 IP。在 $ROOT/.env 里填这台机器的内网 IP"
+      warn "XINGCHA_WEB_HOST=$h 是监听地址，已自动改用探测到的内网 IP：$ip"
+      printf '%s' "$ip"
       ;;
     *) printf '%s' "$h" ;;
   esac

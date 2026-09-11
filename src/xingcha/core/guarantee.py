@@ -235,7 +235,10 @@ def resolve_tier(requested: Tier | None, *, has_schema: bool, native_ok: bool) -
     未知模型一律当作不支持：宁可降级到 T2 多花点重试成本，也不能谎称有保证。
     """
     if not has_schema:
-        return TierChoice(Tier.T3, reason="没有配置输出 schema，按纯文本处理")
+        # **不能报 T3。** T3 的含义是"schema 只进提示词、不做校验"——那至少还有一份
+        # schema；纯文本 Agent 一份都没有。调用方读 x_xingcha.tier 是为了知道这次
+        # 调用有没有结构保证、代价是什么，而 T3 对纯文本是个错误答案。
+        return TierChoice(Tier.NONE, reason="没有配置输出 schema，按纯文本处理")
 
     if requested in (Tier.T1, Tier.T1P) and not native_ok:
         return TierChoice(
@@ -285,6 +288,18 @@ TIER_INFO: dict[Tier, dict[str, str]] = {
         "content": "最低：先自由推理再格式化，格式约束不参与推理那一步",
         "cost": "约两倍（两次模型调用）",
         "needs_native": "yes",
+    },
+    # 纯文本。**不在 AVAILABLE_TIERS 里**（表单的"纯文本"是不选档位，不是选它），
+    # 但按档位取说明的地方会拿到它，所以这条必须在。
+    Tier.NONE: {
+        "name": "纯文本",
+        "pick": "不需要结构化输出",
+        "how": "没有配置 schema，模型返回什么就原样给调用方。",
+        "catch": "没有任何结构保证——本来也没要。",
+        "shape": "不适用",
+        "content": "纯文本，不做任何校验",
+        "cost": "单次",
+        "needs_native": "no",
     },
     Tier.T3: {
         "name": "仅提示",

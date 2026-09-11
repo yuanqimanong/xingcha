@@ -725,6 +725,10 @@ details.card > summary h2 {
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
+  /* 显式定高。不写的话 <a class=btn> 继承 body 的 line-height，而 <button> 用
+   * 浏览器默认的 normal——两者并排时差 4px，看起来像没对齐。后台里 a 与 button
+   * 混排的地方很多（列表的操作列、弹窗的按钮组），所以定在这里一次解决。 */
+  line-height: 1.5;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
   white-space: nowrap;
@@ -1905,4 +1909,270 @@ textarea {
 .trial-body {
   padding: var(--s3);
   border-top: 1px solid var(--rule);
+}
+
+/* =============================================================================
+ * 表格单元格里的一组操作
+ * =========================================================================== */
+
+/* <form> 是块级的，直接摆进 <td> 会把它挤到前一个按钮的下一行——两个按钮上下
+ * 摞着，看起来像两件不相干的事。包一层 flex 就横排了。 */
+.cell-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s2);
+  /* 不换行。允许换行的话表格布局会把这一列压到比按钮还窄（实测 70px 装 124px
+   * 的内容），于是又摞回去了——而"允许换行"看起来像是在防溢出，实际是在制造它。 */
+  flex-wrap: nowrap;
+}
+.cell-actions form {
+  margin: 0;
+}
+
+/* 操作列按内容定宽。`width:1%` + `nowrap` 是让表格布局把这一列收到"刚好装下"
+ * 的老办法：不写的话它会被按比例分配到一个装不下按钮的宽度。 */
+td:has(> .cell-actions) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* =============================================================================
+ * 卡片标题栏右侧的一组动作
+ * =========================================================================== */
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+/* 可折叠卡片的箭头推到最右：summary 里除了标题往往还有一段状态文字，
+ * 继承 .card-head 的 space-between 会把那段文字甩到中间，看起来像没对齐。 */
+details.card > summary {
+  justify-content: flex-start;
+}
+details.card > summary::after {
+  margin-left: auto;
+}
+
+/* =============================================================================
+ * 确认弹窗
+ * =========================================================================== */
+
+.modal.narrow {
+  width: min(28rem, 92vw);
+}
+.confirm-text {
+  margin: 0;
+  line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.row.end {
+  justify-content: flex-end;
+}
+
+/* =============================================================================
+ * 试运行历史：两行，度量各自带标签
+ * =========================================================================== */
+
+/* 原先状态/时间/输入/度量全挤在一行：输入被压成很窄的一条，而右边是一串没有
+ * 表头的 `20.0s · 950 → 1596 · —`——那个箭头是"入 token → 出 token"，页面上
+ * 没有任何地方说过。拆成两行，每个数字自带标签。 */
+.trial > summary {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s1);
+}
+.trial-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+.trial-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s4);
+  font-size: 11px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.trial-meta i {
+  font-style: normal;
+  color: var(--ink-3);
+  margin-right: 2px;
+}
+
+/* =============================================================================
+ * Agent 编辑页的三列布局
+ * =========================================================================== */
+
+/* 左边两列是四张"这个 Agent 是什么、怎么干活"的卡，右边整整一列留给试运行。
+ *
+ * 试运行单独占一列，是因为它的结果会很长（完整收发链路 + 最近三次历史），而使用
+ * 方式是"改一句提示词、跑一次、看输出"——表单和结果得能同时在屏幕上。混在同一条
+ * 流里的话，跑完一次页面被结果顶下去，想再改提示词要滚回上面。 */
+.agent-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--s4);
+  align-items: start;
+}
+.agent-main {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s4);
+  align-items: start;
+  min-width: 0;
+}
+.agent-side {
+  min-width: 0;
+  /* 跟着滚。表单很长，而"跑一次"这个动作在改完任何一处之后都可能要用。 */
+  position: sticky;
+  top: var(--s4);
+}
+
+/* 窄屏先把试运行落到下面（它最宽），再把四张卡落成一列。
+ * 写死多列的话笔记本上每格只剩三百来像素，schema 那个框会挤成一条缝。 */
+@media (max-width: 1400px) {
+  .agent-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-side {
+    position: static;
+  }
+}
+@media (max-width: 900px) {
+  .agent-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 卡片内部的分隔线（模型参数 / 能力之间）。 */
+hr.soft {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: var(--s4) 0;
+}
+
+/* 一行里并排的几个字段，在窄列里要能换行。
+ *
+ * 「输出保证」那张卡有三个并排的控件（档位 / 重试次数 / 送达方式），挤在三分之一
+ * 宽的列里时会互相压住——下拉框的文字溢出到隔壁格子上。给最小宽度 + 允许换行，
+ * 装不下就自己换一行，而不是叠在一起。 */
+.card .form-row {
+  flex-wrap: wrap;
+}
+.card .form-row > .field {
+  min-width: 12rem;
+}
+
+/* =============================================================================
+ * 调用指南
+ * =========================================================================== */
+
+/* 两列。原来是 max-width:60rem 一列铺开——宽屏上右边一大片空白，而左边那列里
+ * 代码块还要横向滚动，两头都不舒服。
+ *
+ * 「签密钥」「配 Agent」是两段并列的准备工作，并排读正好；代码与 FAQ 跨整行——
+ * 代码块一窄就得横着拖，而这一页的全部用途是"抄走能跑"。 */
+.guide {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s4);
+  align-items: start;
+}
+.guide > .wide-span {
+  grid-column: 1 / -1;
+}
+.guide > .card {
+  margin: 0;
+}
+@media (max-width: 1100px) {
+  .guide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.guide .step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-right: var(--s2);
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.guide .sub {
+  margin: var(--s4) 0 var(--s2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.guide .sub:first-child {
+  margin-top: 0;
+}
+.steps {
+  margin: 0 0 var(--s3);
+  padding-left: 1.4rem;
+  line-height: 1.9;
+  color: var(--ink-2);
+}
+.steps li + li {
+  margin-top: var(--s1);
+}
+
+/* 代码块。横向滚动而不是换行：命令换了行就不能整条复制，而这一页的全部用途
+ * 就是"抄走能跑"。 */
+.guide .code {
+  margin: 0;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r2);
+  background: var(--surface-2);
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.guide .code code {
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+}
+
+/* FAQ 在跨整行的卡片里分两列：六条各自独立，单列铺开会把页面拉得很长，
+ * 而读者是来找某一条的，不是从头读到尾。 */
+.faq {
+  margin: 0;
+  columns: 2;
+  column-gap: var(--s5);
+}
+.faq > div {
+  break-inside: avoid;
+}
+@media (max-width: 1100px) {
+  .faq {
+    columns: 1;
+  }
+}
+.faq dt {
+  margin-top: var(--s4);
+  font-weight: 600;
+  color: var(--ink);
+}
+.faq dt:first-child {
+  margin-top: 0;
+}
+.faq dd {
+  margin: var(--s1) 0 0;
+  color: var(--ink-2);
+  line-height: 1.8;
 }

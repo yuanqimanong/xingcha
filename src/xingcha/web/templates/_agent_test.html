@@ -61,13 +61,27 @@
 {% if history %}
 <div class="trials">
   <div class="obs-head">最近 {{ history | length }} 次试运行</div>
+  {# 两行：第一行是"哪一次"（状态 / 时间 / 输入摘要），第二行是那一次的度量，
+     每个数字**自带标签**。
+     原先挤在一行里，输入被压成很窄的一条，而右边是一串没有表头的
+     `20.0s · 950 → 1596 · —`——那个箭头是"入 token → 出 token"，
+     但页面上没有任何地方说过，只能猜。 #}
   {% for h in history %}
   <details class="trial">
     <summary>
-      {% if h.ok %}<span class="badge ok">成功</span>{% else %}<span class="badge danger">失败</span>{% endif %}
-      <span class="mono dim">{{ h.when }}</span>
-      <span class="trial-input">{{ h.input }}</span>
-      <span class="dim mono">{{ h.elapsed }}s · {{ h.tokens }} · {{ h.cost }}</span>
+      <div class="trial-line">
+        {% if h.ok %}<span class="badge ok">成功</span>{% else %}<span class="badge danger">失败</span>{% endif %}
+        <span class="mono dim small">{{ h.when }}</span>
+        <span class="trial-input">{{ h.input }}</span>
+      </div>
+      <div class="trial-meta">
+        <span><i>耗时</i> {{ h.elapsed }}s</span>
+        <span><i>入 token</i> {{ h.input_tokens }}</span>
+        <span><i>出 token</i> {{ h.output_tokens }}</span>
+        <span><i>费用 USD</i> {{ h.cost }}</span>
+        <span><i>档位</i> {{ h.tier }}</span>
+        {% if h.violations %}<span class="warn-text"><i>校验退回</i> {{ h.violations }} 次</span>{% endif %}
+      </div>
     </summary>
     <div class="trial-body">
       <table class="mini mb4">

@@ -10,6 +10,7 @@ SQLite 的 ``ALTER TABLE`` 能力有限：事后给一列加 ``NOT NULL`` 或 ``
 - ``agent.slug`` 的 **UNIQUE**（slug 是全局命名空间，见契约 §3.3）
 - ``token.hash_alg`` / ``kdf_params``（换哈希算法时盐与参数要随行走）
 - ``agent_version.tier`` 的 CHECK 里**四档全列**，尽管 v1 只实现 T2
+  （后来加了第五个 ``none``：纯文本，见迁移 0004）
 - ``run_usage.cost_usd`` 声明为 **TEXT**（存 Decimal 的 str；float 存不住，
   且 NULL「无法定价」必须与真实的 0 费用可区分）
 
@@ -257,7 +258,8 @@ class AgentVersion(Base):
     __table_args__ = (
         sa.UniqueConstraint("agent_id", "version", name="uq_agent_version"),
         sa.CheckConstraint(
-            "tier IN ('T1','T2','T1P','T3')",
+            # 'none' = 没有 schema 的纯文本。0004 加的，见那份迁移里的理由。
+            "tier IN ('T1','T2','T1P','T3','none')",
             name="ck_agent_version_tier",
         ),
     )

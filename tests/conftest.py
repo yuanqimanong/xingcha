@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Iterator
@@ -26,10 +27,31 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from xingcha.config import Settings
 
-#: 浏览器端到端那一层的夹具单独一个文件（它拖着 playwright 依赖，混在这里会让
-#: 每次收集都 import 一遍浏览器驱动）。用 plugins 挂进来而不是 import *，
-#: 这样 fixture 的作用域与 conftest 里的一致。
-pytest_plugins = ["conftest_web"]
+#: 只在 POSIX 上成立的断言用它。
+#:
+#: 权限位（``0o600``/``0o700``）、``os.geteuid``、``chmod 0o500`` 真的挡住写——
+#: 这些在 Windows 上**不存在等价物**，不是"暂时没实现"。让它们 fail 的代价不是
+#: 少查一条，而是本地全套长期红着，于是没人再看那片红——真出问题时也不会被发现。
+#: CI 在 Linux 上跑，这些照常执行，保护一点没少。
+posix_only = pytest.mark.skipif(os.name != "posix", reason="断言的是 POSIX 权限语义")
+
+
+def git_file_mode(path: str) -> str:
+    """这个文件在 **git 索引里**的模式，形如 ``100755``。
+
+    可执行位要断言的是"Linux 上 clone 下来能直接 ``./deploy/linux/xc``"，而那取决
+    于**索引里存的模式**，不是工作区。Windows 的文件系统压根不带这一位，用
+    ``Path.stat()`` 去问必然失败——不是脚本坏了，是问错了地方。
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "--", path],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out.strip(), f"{path} 不在 git 索引里"
+    return out.split()[0]
 
 
 @dataclass

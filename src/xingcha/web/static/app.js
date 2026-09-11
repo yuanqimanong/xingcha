@@ -94,20 +94,94 @@
     if (dlg && !dlg.open) dlg.showModal();
   });
 
+  // --- summary 里的按钮不要顺手把卡片折起来 ---
+  //
+  // <summary> 内任何位置的点击都会切换 details，包括点在按钮或链接上。「输出保证」
+  // 那张卡的标题栏里有「检查字段命名」——不拦的话点一次 lint 就把整张卡折叠了，
+  // 而结果正好渲染在被折起来的那半边，看起来像"点了没反应"。
+  //
+  // **只挡 button[type=button]。** 更宽的选择器（a / input / label / submit）会
+  // 连带取消它们自己的默认动作——preventDefault 取消的是整个激活行为，不是只取消
+  // 折叠。拿 submit 按钮举例：卡片不折了，表单也不提交了。type=button 没有默认
+  // 动作可丢，是唯一一类挡了没有副作用的。
+  document.addEventListener('click', (e) => {
+    const hit = e.target.closest('button[type=button]');
+    if (hit && hit.closest('summary')) e.preventDefault();
+  });
+
   // --- 危险操作二次确认 ---
   //
   // 用 data-confirm 而不是 onsubmit=：后者是内联处理器，被 CSP 挡掉之后表单会**静默
   // 直接提交**——比没有确认更糟，因为界面看起来像是有保护。
   //
+  // 用站内的 <dialog> 而不是 window.confirm()：原生框长得不像这个后台、文案不能
+  // 排版、在自动化里被静默当成"取消"，而且 Chrome 允许用户勾"不再显示"——**勾掉
+  // 之后所有危险操作就再没有确认了，而界面上看不出区别**。
+  //
+  // 原生 confirm 是同步的，这个不是，所以流程变成三步：拦下提交 → 弹窗 → 用户点
+  // 确定后**用原来的提交者重新提交一次**。重新提交会再触发一次 submit，靠 armed
+  // 这个集合放行——不放行的话就是一个永远弹窗的死循环。
+  //
   // **必须注册在防重复提交之前**：同一事件的监听器按注册顺序执行，用户点"取消"时
   // 这里 preventDefault，下面那个看到 defaultPrevented 就不会去禁用按钮。
   // 顺序反了的话，取消一次之后按钮就永久禁用了。
+  const dlg = document.getElementById('confirm-dialog');
+  const armed = new WeakSet();
+
   document.addEventListener('submit', (e) => {
-    const form = e.target.closest('form[data-confirm]');
+    const form = e.target.closest('form');
     if (!form) return;
-    if (!window.confirm(form.dataset.confirm)) {
-      e.preventDefault();
+
+    // **两个位置都认：表单上的，和被点那个按钮上的。**
+    //
+    // 只认 form[data-confirm] 的时候，写在 <button data-confirm> 上的那些会被
+    // 静默忽略——没有报错、没有确认框，按钮直接生效。上游切换页就是这么漏的，
+    // 而那是全站最危险的一个动作（它能让所有 Agent 一起开始报错）。
+    const text =
+      (e.submitter && e.submitter.dataset && e.submitter.dataset.confirm) ||
+      form.dataset.confirm;
+    if (!text) return;
+
+    // 已经确认过的那一次，放行并把标记清掉（下次再点还要再确认一遍）。
+    if (armed.has(form)) {
+      armed.delete(form);
+      return;
     }
+
+    e.preventDefault();
+
+    // 没有弹窗节点（老模板、或 JS 先于 DOM 跑）就退回原生的，别把功能锁死。
+    if (!dlg) {
+      if (window.confirm(text)) {
+        armed.add(form);
+        form.requestSubmit(e.submitter || undefined);
+      }
+      return;
+    }
+
+    // **记住提交者**。表单里有多个 submit 时，提交的 name=value 来自被点的那个，
+    // requestSubmit() 不带它就会丢掉——症状是"点了另一个按钮的效果"。
+    const submitter = e.submitter;
+    dlg.querySelector('#confirm-text').textContent = text;
+    dlg.dataset.pending = '1';
+
+    const done = (go) => {
+      dlg.removeEventListener('close', onClose);
+      delete dlg.dataset.pending;
+      dlg.close();
+      if (!go) return;
+      armed.add(form);
+      form.requestSubmit(submitter || undefined);
+    };
+    const onClose = () => done(false);          // Esc 或点 backdrop 关掉 = 取消
+    dlg.addEventListener('close', onClose, { once: true });
+
+    dlg.querySelector('[data-confirm-ok]').onclick = () => done(true);
+    dlg.querySelector('[data-confirm-cancel]').onclick = () => done(false);
+
+    dlg.showModal();
+    // 焦点落在"取消"上：危险操作的默认答案是"不做"，一个回车不该把东西删掉。
+    dlg.querySelector('[data-confirm-cancel]').focus();
   });
 
   // --- 防重复提交 ---
@@ -205,5 +279,44 @@
   });
   // bfcache：后退回来时 DOM 是缓存的，按钮还禁着
   window.addEventListener('pageshow', unlockAll);
+
+  // --- 给 schema 框填一个样板 ---
+  //
+  // 从零手写 JSON Schema 是 Agent 编辑页最劝退的一步：空框 + 一句"顶层必须是
+  // object"，不写过的人不知道从哪儿下第一笔。给一段能直接改的，比再写三行说明有用。
+  //
+  // **不覆盖已有内容**：手滑点一下就把写好的 schema 冲掉，那是不可撤销的。
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-fill-schema]');
+    if (!btn) return;
+    const ta = document.getElementById('output_schema');
+    if (!ta) return;
+    if (ta.value.trim()) {
+      btn.textContent = '框里已经有内容了';
+      setTimeout(() => { btn.textContent = '填一个样板'; }, 2000);
+      return;
+    }
+    ta.value = JSON.stringify(
+      {
+        type: 'object',
+        properties: {
+          标题: { type: 'string', description: '一句话概括，25 字以内' },
+          标签: {
+            type: 'array',
+            description: '2 到 3 个',
+            items: { type: 'string', enum: ['分析', '竞争', '监管', '市场'] },
+            minItems: 2,
+            maxItems: 3,
+          },
+        },
+        required: ['标题', '标签'],
+        additionalProperties: false,
+      },
+      null,
+      2,
+    );
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.focus();
+  });
 
 })();

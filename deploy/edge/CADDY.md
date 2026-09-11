@@ -36,13 +36,58 @@
 deploy\edge\edge.bat get
 ```
 
+> Windows 这边是**一对文件**：`edge.bat` 是个纯 ASCII 的启动器，真正的逻辑与中文
+> 输出都在同名的 `edge.ps1` 里。
+>
+> 分开是被逼的。cmd.exe 在 `chcp 65001` 下**按字节偏移回溯文件位置**，而偏移记账
+> 按字符算——它会从一个汉字**中间**接着读，后半截字节落单（控制台显示成两个方块），
+> 而**后半行被当成一条新命令执行**。这不是显示问题：`rem ... reset-password  忘了密码`
+> 那行注释真的被跑过一次。而且它**时有时无**，只在文件不在系统页缓存里（刚改过、
+> 刚开机）时才容易撞上，下一次又「好了」。
+>
+> 所以 `.bat` 里**一个非 ASCII 字节都不许有**，`.ps1` 反过来**必须带 UTF-8 BOM**
+> （PowerShell 5.1 读无 BOM 的会按 ANSI 解码）。两条都有测试盯着，见
+> `tests/test_deploy_artifacts.py`。
+
 然后**双击 `edge.bat`**——窗口开着就是跑着，关掉就是停止，和 `deploy\windows\xc.bat`
-同一个心智。装根证书那条要提权：右键 `edge.bat` →「以管理员身份运行」，或在管理员
-cmd 里 `edge.bat trust`。
+同一个心智。
+
+装根证书是**单独一步**（`edge.bat trust`），不会在起服务时偷偷发生：Caddyfile 里有
+`skip_install_trust`。少了它，非管理员起服务时 Caddy 会去装全机信任库，弹一个 UAC
+对话框然后**整个进程停在那里**——8443 一直没人听，日志最后一行是
+`installing root certificate (you might be prompted for password)`，而没人会从这句话
+想到"去点一下那个弹窗"。无人值守起服务时就是永久挂起。
+
+`edge.bat trust` 会先试全机（要提权），失败退回**只装当前用户**（不要提权，对单人
+开发机效果一样）。它会明说装的是哪一本。
 
 > 第一次跑，Windows 防火墙会弹窗问要不要放行（它要监听 8443）：**要允许，勾「专用
 > 网络」**。点了取消的话本机 `https://127.0.0.1:8443` 完全正常，而别的机器一直连不上
 > ——那个现象指不到防火墙。
+>
+> 后台启动（`edge.bat start`）时那个弹窗**不一定出得来**，于是"允许"这一步被跳过而你
+> 不知道。别的设备连不上时先查这两样（都要管理员）：
+>
+> ```powershell
+> # 1. 网络类型。「公用」下防火墙最严，改成「专用」
+> Get-NetConnectionProfile
+> Set-NetConnectionProfile -InterfaceAlias WLAN -NetworkCategory Private
+>
+> # 2. 放行 8443 入站
+> New-NetFirewallRule -DisplayName 'xingcha edge 8443' -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Private
+> ```
+
+## 证书上的名字从哪来
+
+`XINGCHA_WEB_HOST`（仓库根的 `.env`）。它**只决定证书上的名字与你在浏览器里敲的地址**，
+不决定绑哪个网口——那是 Caddyfile 里的 `bind 0.0.0.0`。
+
+留空或填 `0.0.0.0` 时，脚本会**自动探测本机内网 IP**（取有默认网关、网卡 Up 的那一张，
+跳过 VMware / VirtualBox / WSL 那些别人到不了的虚拟网卡）。给局域网用时可以不填，
+DHCP 换地址也不用改。
+
+> 证书签不给 `0.0.0.0`，浏览器里也没人敲它。写死 IP 的代价是换一次地址就"证书警告点
+> 不过去"，而 `.env` 看起来完全正常。
 
 ## 然后星槎那边
 
@@ -69,7 +114,7 @@ cmd 里 `edge.bat trust`。
 | `edge start` / `edge run` | 后台起 / 前台起（前台看得见日志，Ctrl-C 停） |
 | `edge stop` | 停 |
 | `edge reload` | 零中断重载配置。**验不过会保留旧配置**，不会让所有站点一起躺下 |
-| `edge trust` | 把根证书装进**本机**信任库 |
+| `edge trust` | 把根证书装进**本机**信任库（Windows 上全机失败会退回当前用户） |
 | `edge ca` | 导出 `root.crt` + 印出别的设备（手机 / Windows / 另一台 Linux）怎么装 |
 | `edge status` | 8443 上有没有人在听 |
 
