@@ -32,7 +32,7 @@ cd "$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")"
 # 契约里读一个值。用 sed 而不是 `grep -oP ... \K`：这台机器上 `grep` 是 ugrep
 # 的 shim，PCRE 的 \K 不生效、返回 1，配上 set -e 就是**整个脚本静默退出**——
 # 没有任何输出，看起来像脚本坏了。
-from_contract() { sed -n "s/^$1[^=]*=[[:space:]]*\([0-9]\+\).*/\1/p" src/xingcha/contract.py | head -1; }
+from_contract() { sed -n "s/^$1[^=]*=[[:space:]]*\([0-9]\+\).*/\1/p" src/xingcha/contract/__init__.py | head -1; }
 from_env()      { sed -n "s/^$1=\(.*\)/\1/p" .env 2>/dev/null | head -1; }
 
 # 容器里的 UID。**从契约里读**，不写死——写死的那一刻它就会和 Dockerfile 漂移。

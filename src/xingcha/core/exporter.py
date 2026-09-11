@@ -2,7 +2,7 @@
 
 这是"低锁定"的唯一证明。**不是承诺，是可执行的验收**：干净虚拟环境里只装
 ``pydantic-ai-slim[openai,spec]`` 与 ``jsonschema``，用导出物跑通并**复现校验行为**
-（见 ``tests/test_exporter.py::TestCleanEnvironment``）。
+——验证方式是建一个干净 venv、只装 pydantic-ai，直接跑 ``run.py``。
 
 产出：
 
@@ -14,9 +14,7 @@
     ├── run.py         ~40 行校验 runner，只依赖 pydantic-ai + jsonschema
     └── README.md      如实写清保留了什么、丢失了什么
 
-------------------------------------------------------------------------------
-为什么导出物与线上不是同一条代码路径
-------------------------------------------------------------------------------
+**为什么导出物与线上不是同一条代码路径**
 
 线上：``builder`` 显式把 ``output_type=NativeOutput/ToolOutput(...)`` 传进
 ``from_spec``，档位是强制的。
