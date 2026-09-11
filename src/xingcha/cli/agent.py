@@ -39,6 +39,10 @@ def agent_apply(
     tier: Annotated[
         str | None, typer.Option("--tier", help=f"请求档位：{'/'.join(t.value for t in C.Tier)}。")
     ] = None,
+    group: Annotated[
+        str | None,
+        typer.Option("--group", help="分组名。不传保持原样；传空串挪回默认组。"),
+    ] = None,
     changelog: Annotated[str, typer.Option("--changelog", help="这一版的说明。")] = "",
 ) -> None:
     """从 AgentSpec 文件新建或更新一个 Agent。
@@ -120,11 +124,17 @@ def agent_apply(
                     await client.aclose()
 
             async with session_scope(maker) as s:  # type: ignore[arg-type]
+                # 不传 --group 时**保持原样**。save() 把分组当表单里的一项处理
+                # （不传 = 挪回默认组），那对后台的表单是对的；但命令行里"这次没提
+                # 这一项"不等于"把它挪走"。照搬表单语义的话，每次 apply 都会静默把
+                # Agent 踢回默认组，而 apply 的输出一个字都不提分组。
+                group_name = await agent_svc.current_group(s, slug) if group is None else group
                 result = await agent_svc.apply_bundle(
                     s,
                     bundle,
                     native_ok=native_ok,
                     requested_tier=C.Tier(tier) if tier else None,
+                    group_name=group_name,
                     changelog=changelog,
                 )
                 await s.commit()
