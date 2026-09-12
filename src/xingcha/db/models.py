@@ -434,7 +434,3 @@ class WebSession(Base):
     created_at: Mapped[str] = mapped_column(sa.Text, nullable=False, default=utcnow)
 
     __table_args__ = (sa.Index("idx_web_session_expires", "expires_at"),)
-
-
-#: 供迁移与测试引用的全部表名。
-ALL_TABLES: tuple[str, ...] = tuple(Base.metadata.tables)

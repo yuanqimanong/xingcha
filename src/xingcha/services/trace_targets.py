@@ -51,10 +51,6 @@ class Target:
     public_key: str = ""
     secret_key: str = ""
 
-    @property
-    def masked_secret(self) -> str:
-        return setting_svc.mask(self.secret_key) if self.secret_key else ""
-
 
 def _parse(raw: str | None) -> list[Target]:
     if not raw:

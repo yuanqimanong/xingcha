@@ -67,28 +67,6 @@ class RateLimiter:
             if b is not None and b.inflight > 0:
                 b.inflight -= 1
 
-    async def prune(self, *, max_idle_seconds: float = 3600.0) -> None:
-        """清掉长期不活跃的桶，避免字典无限增长。
-
-        只在没有在飞请求时才清——否则会把 inflight 计数一起丢掉，导致并发上限失效。
-        """
-        cutoff = time.monotonic() - max_idle_seconds
-        async with self._lock:
-            for k in [
-                k
-                for k, b in self._buckets.items()
-                if b.inflight == 0 and (not b.hits or b.hits[-1] < cutoff)
-            ]:
-                del self._buckets[k]
-
-    def snapshot(self, key: str) -> tuple[int, int]:
-        """``(最近一分钟的请求数, 在飞数)``。供 /readyz 与管理面展示。"""
-        b = self._buckets.get(key)
-        if b is None:
-            return 0, 0
-        cutoff = time.monotonic() - 60.0
-        return sum(1 for t in b.hits if t >= cutoff), b.inflight
-
 
 class _Guard:
     def __init__(self, limiter: RateLimiter, key: str) -> None:

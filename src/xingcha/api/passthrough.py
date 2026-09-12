@@ -259,7 +259,7 @@ async def forward_streaming(
     url: str,
     headers: dict[str, str],
     body: bytes,
-    tracker: RunTracker | None = None,
+    tracker: RunTracker,
 ) -> Response:
     """流式转发。
 
@@ -307,8 +307,6 @@ async def forward_streaming(
         async for chunk in gen:
             yield chunk
 
-    stream: AsyncIterator[bytes] = full()
-    if tracker is not None:
-        # 流式的用量在最后一帧里，所以记录要等流耗尽才提交
-        stream = tracker.wrap_stream(stream)
+    # 流式的用量在最后一帧里，所以记录要等流耗尽才提交
+    stream: AsyncIterator[bytes] = tracker.wrap_stream(full())
     return StreamingResponse(stream, status_code=status, headers=hdrs)

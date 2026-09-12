@@ -759,25 +759,6 @@ class SSEFrames:
         )
 
 
-def to_sse_frames(outcome: RunOutcome, *, model: str, run_id: str | None = None) -> list[str]:
-    """伪流式的帧序列：一次性把已有结果切成合法的帧序列。
-
-    结构化 Agent 对 ``stream=true`` 直接 400，所以走到这里的只有**真流式失败后的
-    回落**与纯文本以外的情形。纯文本 Agent 自 v0.4 起走真 delta。
-
-    为什么当初就发伪流式而不是对流式请求返回 400：虽然 400→200 是加法，但客户端
-    会为那个 400 **写死绕过逻辑**（探测到就改走非流式），等真流式上线时反而打断它们。
-    """
-    f = SSEFrames(model=model)
-    return [
-        f.role(),
-        f.content(outcome.content),
-        f.finish(),
-        f.summary(outcome, run_id),
-        C.SSE_DONE,
-    ]
-
-
 # =============================================================================
 # 真流式
 # =============================================================================

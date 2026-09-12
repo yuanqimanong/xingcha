@@ -72,7 +72,3 @@ class OneShotFlash:
         now = time.monotonic()
         for k in [k for k, (exp, _) in self._items.items() if exp <= now]:
             self._items.pop(k, None)
-
-    def __len__(self) -> int:
-        self._prune()
-        return len(self._items)

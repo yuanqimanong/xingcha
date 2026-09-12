@@ -352,13 +352,3 @@ FORMAT_INSTRUCTIONS = (
 
 def format_prompt(draft: str) -> str:
     return f"{FORMAT_INSTRUCTIONS}\n\n---\n\n{draft}"
-
-
-def two_stage_request_budget(max_retries: int, max_tool_steps: int) -> int:
-    """两阶段的 ``request_limit``。
-
-    两个阶段各自会发请求，而 ``UsageLimits`` 是**按次运行**给的——所以每一阶段的
-    预算要分别算，不能把两阶段的总和塞给其中一个。这里返回的是**单阶段**的值，
-    由 RunService 给两个 agent 各设一份。
-    """
-    return (max_retries + 1) + max_tool_steps

@@ -36,7 +36,6 @@ from ..db.models import User, WebSession, utcnow
 log = logging.getLogger(__name__)
 
 SESSION_COOKIE = "xc_session"
-CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
 
 _hasher = PasswordHasher()
@@ -249,11 +248,6 @@ async def destroy(session: AsyncSession, token: str | None) -> None:
     if not token:
         return
     await session.execute(delete(WebSession).where(WebSession.id == _sha(token)))
-
-
-async def purge_expired(session: AsyncSession) -> int:
-    result = await session.execute(delete(WebSession).where(WebSession.expires_at <= utcnow()))
-    return getattr(result, "rowcount", 0) or 0
 
 
 async def revoke_all(session: AsyncSession) -> int:

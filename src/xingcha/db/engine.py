@@ -107,21 +107,6 @@ async def assert_wal(engine: AsyncEngine) -> None:
     log.debug("journal_mode = %s", mode)
 
 
-def assert_single_worker(workers: int) -> None:
-    """星槎只能跑一个 worker。
-
-    进程级 ConcurrencyLimiter、内存用量缓冲、SQLite 单写者**全都**依赖这个前提。
-    改成 2 会同时：静默打破上游并发封顶、丢掉一半用量缓冲、引入
-    ``database is locked``——三个症状互不相关，排查成本极高。所以宁可起不来。
-    """
-    if workers != C.REQUIRED_WORKERS:
-        raise StartupRefused(
-            f"星槎只支持 {C.REQUIRED_WORKERS} 个 worker，收到 {workers}。\n"
-            "并发上限、用量缓冲与 SQLite 单写者都依赖单进程；多 worker 会让三者同时失效"
-            "且症状互不相关。需要更高吞吐请先看 XINGCHA_MAX_CONCURRENCY。"
-        )
-
-
 def apply_umask() -> None:
     """收紧本进程创建文件的默认权限。
 

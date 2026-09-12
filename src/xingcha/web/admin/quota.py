@@ -98,7 +98,6 @@ async def _quota_context(request: Request, error: str | None = None) -> dict[str
         ),
     ]
     subject_groups = [(g, items) for g, items in subject_groups if items]
-    subjects = [item for _, items in subject_groups for item in items]
 
     label_of = {("user", 1): admin.username if admin else "admin"}
     label_of |= {("token", t.id): t.name for t in tokens}
@@ -132,7 +131,6 @@ async def _quota_context(request: Request, error: str | None = None) -> dict[str
 
     return {
         "rules": rules,
-        "subjects": subjects,
         "subject_groups": subject_groups,
         "error": error,
     }

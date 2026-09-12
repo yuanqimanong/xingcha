@@ -50,14 +50,6 @@ class ResolvedAgent:
         return self.out_schema is not None
 
 
-class SlugTaken(ValueError):
-    def __init__(self, slug: str) -> None:
-        super().__init__(
-            f"标识 {slug!r} 已被占用。标识是全局唯一的，而且**发布后不能改名**——"
-            "调用方的代码里写着它。换一个名字，或者停用那个 Agent。"
-        )
-
-
 async def resolve(
     session: AsyncSession, slug: str, *, include_inactive: bool = False
 ) -> ResolvedAgent:

@@ -1422,18 +1422,6 @@ textarea {
 }
 .danger-text { color: var(--danger); font-weight: 600; }
 
-/* --- Agent 表单：三个次要分区并排 --- */
-/*
- * 模型参数 / 能力 / 可观测 大多数时候都不用改。各占一整行只会把「保存」推得更远，
- * 而它们展开后的高度差很大，所以是 auto-fit 而不是固定三列——放不下就自己换行。
- */
-.tri {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: var(--s4);
-  align-items: start;
-}
-
 /* --- 少样本示例的一组 --- */
 .example {
   border: 1px solid var(--rule);
@@ -1850,18 +1838,6 @@ textarea {
 .cap.unknown .cap-mark { color: var(--ink-3); }
 .cap.no .cap-label,
 .cap.unknown .cap-label { color: var(--ink-3); }
-
-/* --- 三列栅格（Agent 表单的两排） --- */
-/*
- * auto-fit + minmax 而不是写死 `repeat(3, 1fr)`：写死的话笔记本上每格只剩三百来
- * 像素，schema 那个 textarea 会挤成一条缝。宽屏三列，窄了自动落成两列、一列。
- */
-.grid-3 {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--s4);
-  align-items: start;
-}
 
 /* 可观测并进「试运行」卡片之后的分隔 */
 .obs-in-test {

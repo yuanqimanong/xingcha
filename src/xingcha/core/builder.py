@@ -24,7 +24,6 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-from .. import contract as C
 from ..contract import Tier
 from ..foundation.errors import AgentBuildFailed, AgentSpecInvalid
 from .costsink import CostSink, make_hook
@@ -135,23 +134,6 @@ def declarable_capabilities() -> list[str]:
     from pydantic_ai.capabilities import CAPABILITY_TYPES
 
     return sorted(CAPABILITY_TYPES)
-
-
-def capability_params_schema() -> dict[str, Any]:
-    """每个 capability 的参数 schema，供表单生成字段。
-
-    **不能用 ``inspect.signature`` 或 ``dataclasses.fields``**（实测）：
-    有 4 个 capability 覆写了 ``from_spec`` 且签名与 ``__init__`` 不同——
-    ``PrefixTools`` 的 ``__init__`` 参数叫 ``wrapped``、spec 里叫 ``capability``，
-    照 ``__init__`` 生成表单 100% 报错；``dataclasses.fields`` 还会把有默认值的
-    参数报成必填并暴露私有字段。唯一正确的来源是官方 schema 的 ``$defs``。
-    """
-    defs = _spec_schema().get("$defs", {})
-    return {
-        name.removeprefix("spec_params_"): body
-        for name, body in defs.items()
-        if name.startswith("spec_params_")
-    }
 
 
 # =============================================================================
@@ -1054,8 +1036,3 @@ def form_view(spec: dict[str, Any]) -> dict[str, Any]:
         "examples": list(prompting.examples),
         "output_channel": prompting.output_channel,
     }
-
-
-#: 供 doctor 与设置页显示。
-UPSTREAM_MODEL_PREFIX = "openrouter:"
-CONTRACT_TIER_VALUES = tuple(t.value for t in C.Tier)

@@ -40,7 +40,6 @@ class ModelInfo:
     prompt_price: Decimal | None = None
     completion_price: Decimal | None = None
     cache_read_price: Decimal | None = None
-    cache_write_price: Decimal | None = None
 
     #: ``architecture.input_modalities``。实测取值有 text / image / file / audio / video。
     input_modalities: frozenset[str] = field(default_factory=frozenset)
@@ -115,7 +114,6 @@ def parse_models(payload: dict) -> dict[str, ModelInfo]:
             prompt_price=_dec(pricing.get("prompt")),
             completion_price=_dec(pricing.get("completion")),
             cache_read_price=_dec(pricing.get("input_cache_read")),
-            cache_write_price=_dec(pricing.get("input_cache_write")),
         )
     return out
 

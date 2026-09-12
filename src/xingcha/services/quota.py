@@ -44,7 +44,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -387,23 +387,3 @@ async def remove(session: AsyncSession, *, subject_type: str, subject_id: int, w
         return False
     await session.delete(row)
     return True
-
-
-async def list_rules(session: AsyncSession) -> list[Quota]:
-    return list(
-        (
-            await session.execute(
-                select(Quota).order_by(Quota.subject_type, Quota.subject_id, Quota.window)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-
-@dataclass
-class Overview:
-    """总览页上的配额提示。"""
-
-    rules: int = 0
-    nearest: list[dict[str, object]] = field(default_factory=list)

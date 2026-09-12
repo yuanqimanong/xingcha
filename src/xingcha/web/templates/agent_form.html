@@ -21,7 +21,7 @@
   {# 新建页的动作也在页头，和编辑页一致：一页里只有一处放"提交"的地方，
      不用先滚到底才知道按钮在哪。靠 form= 跨节点关联到下面那个表单。 #}
   <div class="row">
-    <button class="btn primary" type="submit" form="agent-form" data-save>创建</button>
+    <button class="btn primary" type="submit" form="agent-form">创建</button>
     <a class="btn ghost" href="/admin/agents">取消</a>
   </div>
   {% else %}
@@ -38,10 +38,7 @@
     </button>
     <a class="btn" href="/admin/agents/{{ agent.slug }}/export" download
        title="打包带走这个 Agent：提示词、模型、输出约定、用户模板与少样本全在里面，外加一个能直接跑的示例脚本。通用格式，不锁在这里；改完从 Agent 页「导入」放回来。">导出</a>
-    {# data-save：保存按钮在编辑页位于表单**外面**（靠 form= 关联），在新建页位于
-       里面。按位置定位（"#agent-form 里的 submit"）在其中一页必然落空——名字才是
-       稳定的那个。这一页已经因为按位置定位坏过两次。 #}
-    <button class="btn primary" type="submit" form="agent-form" data-save>保存为新版本</button>
+    <button class="btn primary" type="submit" form="agent-form">保存为新版本</button>
   </div>
   {% endif %}
 </div>
