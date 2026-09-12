@@ -41,8 +41,9 @@ def token_issue(
     issued: auth_svc.IssuedToken = run_async(run())
     ok(f"已签发「{issued.name}」（{issued.display_prefix}）")
     typer.secho("  下面这行是明文，只显示这一次：", fg=typer.colors.YELLOW, err=True)
-    # 明文单独走 stdout 且不带任何装饰，方便 `| tail -1` 直接取用；
-    # 提示语走 stderr，这样管道里不会混进人类可读的文字。
+    # 明文是 stdout 的**最后一行**且不带任何装饰，方便 `| tail -1` 直接取用。
+    # 上面那句提示走 stderr；`已签发…` 那行走的是 stdout（ok() 不带 err=True），
+    # 所以管道里不是只有明文，取用时别用 `| head`。
     typer.echo(issued.plaintext)
 
 

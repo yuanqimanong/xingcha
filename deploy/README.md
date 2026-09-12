@@ -88,8 +88,9 @@ Docker 用 root 重建挂载点（容器里 UID 10001 写不进去，直接重�
 `uv sync --frozen --no-dev` → `uv run xingcha serve`。窗口开着就是跑着，关掉就是停止。
 更新是 `git pull` 之后再双击一次。
 
-要 HTTPS / 局域网访问，再双击 `deploy\edge\edge.bat` 起网关，并在 `.env` 里手写第一节
-那两项（`XINGCHA_TRUSTED_PROXIES=127.0.0.1`、`XINGCHA_PUBLIC_URL=https://<内网 IP>:8443`）。
+要 HTTPS / 局域网访问，再双击 `deploy\edge\edge.bat` 起网关，并在 `.env` 第一节写一行
+`XINGCHA_GATEWAY=edge`——`XINGCHA_PUBLIC_URL` 与 `XINGCHA_TRUSTED_PROXIES` 由 `xc.ps1`
+据此推出来（推导在 `deploy/_common.ps1`），自己写会被它覆盖。
 **`XINGCHA_HOST` 不用动**——Caddy 就在同一台机器上，改成 `0.0.0.0` 等于在局域网上多开一条
 绕过 TLS 的明文入口。
 
@@ -163,12 +164,13 @@ Caddy 自己的内部 CA，而浏览器不认识那个 CA。不装的话只能�
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `XINGCHA_GATEWAY` | 空 | 空 = 自己发布端口、明文 HTTP；`edge` = 挂到本机那个 Caddy 上。**只对 docker 那条路生效** |
+| `XINGCHA_GATEWAY` | 空 | 空 = 自己发布端口、明文 HTTP；`edge` = 挂到本机那个 Caddy 上。**docker 与 Windows 两条路都读**（Linux 上裸跑 `uv run` 那条不读，见第一节） |
 | `XINGCHA_WEB_HOST` | `localhost` | 你在浏览器里敲的主机名或 IP，也是证书上的名字 |
 | `XINGCHA_WEB_PORT` | `8720` | **独立跑时**发布的宿主端口；走网关时你敲的是网关的 8443 |
 | `XINGCHA_ADMIN_PASSWORD` | 空 | 留空 = 首次访问 `/admin` 引导设定 |
 
-`XINGCHA_WEB_HOST` 同时决定 docker 那条路绑哪个接口（`localhost` → 只绑回环，其它 → `0.0.0.0`）。
+`XINGCHA_WEB_HOST` 同时决定绑哪个接口（空 / `localhost` / `127.0.0.1` → 只绑回环，
+其它 → `0.0.0.0`；挂网关时不看这一项，一律绑回环）。
 合成一个变量是因为分成两个最容易出的错是二者对不上：页面上显示局域网 IP、实际只绑了回环，
 于是别人打不开而那个地址看起来完全正确。
 

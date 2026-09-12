@@ -3,7 +3,8 @@
 # 两阶段：builder 装依赖，runtime 只带运行时——最终镜像里没有编译器、没有 git、
 # 没有构建缓存。攻击面小一圈，`docker save | zstd` 传上 VPS 也快。
 #
-# 这个镜像**不映射任何宿主端口**（见 docker-compose.yml）：对外只有 Caddy。
+# 宿主那一侧的端口映射**默认只绑 127.0.0.1**（见 deploy/linux/docker-compose.yml
+# 的 ports）：挂网关时对外只有宿主上那个 Caddy。
 
 FROM python:3.13-slim-bookworm AS builder
 
@@ -16,7 +17,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /uvx /bin/
 
 WORKDIR /build
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
 COPY src ./src
 
 # `uv sync --frozen` 而不是 `uv pip install .`：**按锁文件装，不重新解析依赖。**
@@ -55,8 +56,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
     XINGCHA_DATA_DIR=/data \
     XINGCHA_HOST=0.0.0.0
 
-# 容器内监听 0.0.0.0 是安全的：它不映射宿主端口，只有同一 docker 网络里的 Caddy
-# 能连上。宿主上的默认值仍然是 127.0.0.1（见 config.py），两者不冲突。
+# 容器内监听 0.0.0.0 是安全的：宿主那一侧的端口映射默认只绑 127.0.0.1，挂网关时还
+# 被 deploy/linux/xc 的 derive_bind_addr 强制成回环（网关是**宿主进程**，从回环连
+# 进来，不在 docker 网络里）。宿主上直接跑时的默认值仍然是 127.0.0.1（见 config.py）。
 
 # 构建期自检。一个装坏了的镜像必须在**构建时**失败，而不是等它上了 VPS、
 # healthcheck 红了才发现——上面那条 --no-editable 就是这样被发现的。

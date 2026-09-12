@@ -1,7 +1,8 @@
 """``xingcha db`` —— 迁移、备份与恢复。
 
-``downgrade`` 与 ``restore`` 都会先自动备份；``restore`` 前还跑一次
-``PRAGMA integrity_check``。这一组的每条命令都可能是运维在事故中执行的，
+``upgrade`` / ``downgrade`` / ``prune`` 都会先自动备份。``restore`` **不备份当前
+库**——它只在覆盖前对那份备份文件跑一次 ``PRAGMA integrity_check``，坏文件拒绝恢复；
+覆盖之后没有回头路。这一组的每条命令都可能是运维在事故中执行的，
 所以宁可多做一步慢的，也不要让人手滑丢数据。
 """
 

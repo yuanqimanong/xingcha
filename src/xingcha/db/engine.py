@@ -1,10 +1,11 @@
 """SQLite 引擎、PRAGMA 与启动断言。
 
-两条断言在这里，都是**拒绝启动**而不是警告：
+一条断言在这里，是**拒绝启动**而不是警告：WAL 必须真的生效。bind mount 落在网络盘
+或异常文件系统上时 WAL 会静默降级，症状是零星的 ``database is locked``——最难查的
+一类问题。宁可起不来。
 
-1. WAL 必须真的生效。bind mount 落在网络盘或异常文件系统上时 WAL 会静默降级，
-   症状是零星的 ``database is locked``——最难查的一类问题。宁可起不来。
-2. 单 worker。见 :func:`assert_single_worker`。
+单 worker 是同一级别的硬约束，但不靠运行期断言：:func:`cli.serve` 直接把
+``C.REQUIRED_WORKERS`` 传给 uvicorn，没有可配之处。
 """
 
 from __future__ import annotations
