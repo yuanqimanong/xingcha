@@ -17,7 +17,7 @@
 既没有异常也没有内容，是最难排查的一种失败。
 
 所以自己发。代价是失去 StreamingResponse 那个监听断开的子任务，用帧间的
-``is_disconnected()` `轮询补上——SSE 帧很密，两者的响应速度差别可以忽略。
+``is_disconnected()`` 轮询补上——SSE 帧很密，两者的响应速度差别可以忽略。
 """
 
 from __future__ import annotations
@@ -46,7 +46,8 @@ class SameTaskEventStream(Response):
         # （``init_headers`` 里是 ``getattr(self, "body", None)``），这里照做。
         #
         # 注意 TestClient 不检查 content-length，这个 bug 只有真服务器 + 真客户端
-        # 才暴露——所以 test_openai_sdk 那组用真 uvicorn 跑不是多余的。
+        # 才暴露——守着它的 test_openai_sdk 在 e298423 随 tests/ 一起没了，改这里
+        # 要手动用 uvicorn + OpenAI SDK 验一遍。
         self.status_code = 200
         self.background = None
         self.init_headers(None)

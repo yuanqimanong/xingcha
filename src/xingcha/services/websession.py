@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import contract as C
@@ -256,8 +256,6 @@ async def revoke_all(session: AsyncSession) -> int:
     改密码与重置密码都要调。不调的话，一个已登录的浏览器仍然握着完整权限——
     而这两个操作的场景往往正是"我不确定还有谁登着"。
     """
-    from sqlalchemy import delete, func, select
-
     n = (await session.execute(select(func.count()).select_from(WebSession))).scalar() or 0
     await session.execute(delete(WebSession))
     return int(n)

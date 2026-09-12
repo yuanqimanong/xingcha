@@ -9,6 +9,9 @@
 
 **新加一个整页路由时用 :func:`page`。** 用 :func:`render` 也能出页面，
 但那样就又回到了"每个人自己记得种 cookie"。
+
+（总览与调用记录两页至今仍走 :func:`render`，所以它们不补种 CSRF cookie——
+浏览器重启后在这两页上点主题切换会 403。那是待修的例外，不是许可。）
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from fastapi.templating import Jinja2Templates
 from ... import __version__
 from ... import contract as C
 from .assets import TEMPLATES_DIR, asset
-from .security import ensure_csrf_cookie, read_theme, security_headers
+from .security import CSRF_COOKIE, ensure_csrf_cookie, read_theme, security_headers
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["asset"] = asset
@@ -61,7 +64,7 @@ def render(request: Request, template: str, ctx: dict[str, Any]) -> HTMLResponse
     # 而 xc_session 有 7 天——重启浏览器之后会话还在、CSRF cookie 已经没了，
     # 于是侧栏表单拿到空串，点主题直接 403。而同一页里那些自己传了 csrf 的表单
     # 照常工作，所以症状是"只有切主题不好使"。
-    merged["csrf_theme"] = merged.get("csrf") or request.cookies.get("xc_csrf", "")
+    merged["csrf_theme"] = merged.get("csrf") or request.cookies.get(CSRF_COOKIE, "")
     resp = templates.TemplateResponse(request, template, merged)
     return security_headers(resp)  # type: ignore[return-value]
 

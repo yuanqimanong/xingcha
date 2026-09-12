@@ -15,6 +15,7 @@ from ...services import trace_targets
 from ...services import websession as ws
 from .render import page
 from .security import (
+    COOKIE_PATH,
     Denied,
     guard_mutation,
     require_admin,
@@ -147,7 +148,7 @@ async def change_password(
 
     resp = security_headers(RedirectResponse("/admin/login", status_code=303))
     # 会话已经在库里被吊销，cookie 留着只会让下一次请求白跑一遍鉴权
-    resp.delete_cookie("xc_session", path="/admin")
+    resp.delete_cookie(ws.SESSION_COOKIE, path=COOKIE_PATH)
     return resp
 
 
@@ -281,6 +282,8 @@ async def delete_trace_target(
 
     async with state.sessionmaker() as s:
         admin = await ws.get_admin(s)
+        # 必须走 verify_admin_password：密码由环境变量托管时库里根本没有哈希，
+        # verify_password 会对任何输入都返回 False（原委见 web/admin/upstreams.py）。
         if admin is None or not ws.verify_admin_password(
             admin.password_hash, password, state.settings.admin_password
         ):

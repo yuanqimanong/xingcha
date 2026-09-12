@@ -71,10 +71,6 @@
 <form id="agent-form" method="post" action="{{ action }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
 
-  {# 两行三列。
-     上排是「这个 Agent 是什么」（身份 / 参数 / 能力），下排是「它怎么干活」
-     （提示词 / 输出约定 / 试一次）。三列在窄屏上自动落成两列、一列——写死三列的话
-     笔记本上每格只剩三百来像素，schema 那个框会挤成一条缝。 #}
   {# 三列：左中两列是「这个 Agent 是什么、怎么干活」的四张卡，右边整整一列留给
      试运行。
 
@@ -207,9 +203,6 @@
                "换模型之后哪些东西变了"。 #}
             <p class="muted small mb4">
               <strong>能力</strong>：只列<strong>这条 API 通道上能用的</strong>，随所选模型变化。
-            </p>
-            <p class="muted small mb4">
-              只列<strong>这条 API 通道上能用的</strong>能力，随所选模型变化。
             </p>
             {# 这一块随模型变——见 _model_report.html 末尾的 hx-swap-oob。 #}
             <div id="cap-list">

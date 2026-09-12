@@ -182,8 +182,8 @@ async def rename_agent_group(
 ) -> Response:
     """给一个分组改名，或（``new`` 为空时）把它整组挪回默认分组。
 
-    没有"新建空分组"这个动作：分组不是一张表，就是 Agent 上的一个字符串，而一个
-    没有成员的分组没有任何意义。要新建就在某个 Agent 的表单里写一个新名字。
+    分组不是一张表，就是 Agent 上的一个字符串；还没有成员的分组名另存一份，
+    新建走 :func:`create_agent_group`。
     """
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
@@ -535,8 +535,9 @@ async def agent_import(
 async def agent_export(slug: str, request: Request) -> Response:
     """把 bundle 打成 zip 下载。
 
-    在内存里打包而不是落临时文件：这些文件很小，而临时文件要考虑清理、并发同名、
-    以及"进程被 kill 之后残留"——为一个几 KB 的下载引入那些不值得。
+    zip 在内存里装配：几 KB 的下载不值得为一个临时 zip 管清理、并发同名、以及
+    "进程被 kill 之后残留"。bundle 那几个文件仍要落盘——``exporter.export`` 的接口
+    是写进一个目录，所以用 ``TemporaryDirectory`` 接住，``with`` 退出即清。
     """
 
     await require_admin(request)

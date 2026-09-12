@@ -155,8 +155,9 @@ class Settings(BaseSettings):
     #: 而单用户自托管没有第二个管理员能帮你找回。把它交给 ``.env`` 意味着"这台机器
     #: 的文件系统已经是我的信任边界"——对自托管来说这个前提通常成立。
     #:
-    #: 安全上仍然守住三件事（见 web/admin/login.py 与 services/websession）：
-    #: 登录限流照旧生效、页面绝不回显、低于长度下限一律拒用（而不是降级放过）。
+    #: 安全上仍然守住两件事（见 web/admin/login.py 与 services/websession）：
+    #: 登录限流照旧生效、页面绝不回显。**短于长度下限照用，不拒**——放宽的理由见
+    #: :func:`services.websession.env_password_usable`。
     admin_password: str | None = None
 
     # --- 运行护栏 ---
@@ -214,7 +215,7 @@ class Settings(BaseSettings):
     #: catalog 缓存的 TTL（秒）。过期且刷新失败时走 stale-while-error。
     catalog_ttl_seconds: int = Field(default=3600, ge=60)
 
-    # --- 可观测 ---
+    # --- 日志 ---
     log_level: str = "INFO"
 
     # ---------------------------------------------------------------- paths

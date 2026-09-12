@@ -2,7 +2,8 @@
 
 一次 Agent 调用的生命周期：
 
-    解析 slug → 取（或建）运行时 → 转换 messages → run → 转成 OpenAI 响应
+    解析 slug → 转换 messages → 预留配额 → 取（或建）运行时 → 套模板与示例
+    → run → 转成 OpenAI 响应
 
 **运行时按 ``(agent_id, version)`` 缓存。** 版本不可变，所以编辑 Agent 会产生新版本号、
 旧条目自然不再命中——不需要任何失效逻辑。缓存失效是这类系统最容易出错的地方，
@@ -50,6 +51,7 @@ from ..foundation.errors import (
     UpstreamError,
     UpstreamTimeout,
     XingchaError,
+    usage_block,
 )
 from ..obs import tracing as tracing_mod
 from .agent import ResolvedAgent
@@ -353,7 +355,7 @@ def apply_prompting(conv: Conversation, prompting: builder.Prompting) -> Convers
 # =============================================================================
 
 
-async def get_runtime(
+def get_runtime(
     resolved: ResolvedAgent,
     *,
     cache: RuntimeCache,
@@ -670,11 +672,7 @@ def to_openai_response(
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": outcome.input_tokens,
-            "completion_tokens": outcome.output_tokens,
-            "total_tokens": outcome.input_tokens + outcome.output_tokens,
-        },
+        "usage": usage_block(outcome),
         C.EXT_KEY: extension_block(outcome, run_id),
     }
 
@@ -701,7 +699,7 @@ def extension_block(outcome: RunOutcome, run_id: str | None = None) -> dict[str,
 class SSEFrames:
     """一次流式响应的帧工厂。
 
-    **帧形状是契约冻结的**（见 CONTRACT §6），所以它只能有一个来源。真流式与
+    **帧形状是契约冻结的**（契约 §6），所以它只能有一个来源。真流式与
     伪流式都从这里取帧——两条路径各写一份的话，"把伪流式升级成真 delta 对客户端
     不可见"这个承诺就没有任何东西在守。
 
@@ -749,11 +747,7 @@ class SSEFrames:
             {
                 **self._base,
                 "choices": [],
-                "usage": {
-                    "prompt_tokens": outcome.input_tokens,
-                    "completion_tokens": outcome.output_tokens,
-                    "total_tokens": outcome.input_tokens + outcome.output_tokens,
-                },
+                "usage": usage_block(outcome),
                 C.EXT_KEY: extension_block(outcome, run_id),
             }
         )

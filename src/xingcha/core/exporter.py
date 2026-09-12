@@ -11,7 +11,7 @@
     extract/
     ├── agent.yaml     纯 AgentSpec，pydantic-ai 直接可读，零星槎依赖
     ├── schema.json    输出 JSON Schema
-    ├── run.py         ~40 行校验 runner，只依赖 pydantic-ai + jsonschema
+    ├── run.py         校验 runner，只依赖 pydantic-ai + jsonschema
     └── README.md      如实写清保留了什么、丢失了什么
 
 **为什么导出物与线上不是同一条代码路径**

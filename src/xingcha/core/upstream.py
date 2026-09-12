@@ -19,7 +19,7 @@
     不出跟代理有关。那个坑现在由 :func:`make_client` 的兜底接住——构造失败就退回不
     读环境并留一条 warning，而不是把整个服务拖死。
 
-``max_retries=0``（openai SDK 侧）
+``max_retries=0``（openai SDK 侧，设在 :func:`builder.make_provider`）
     SDK 默认会重试 2 次。实测 timeout=0.3 时墙钟被放大到 2.17 秒，并且**把中转打了
     三遍**。重试策略应该只有一层，交给 pydantic-ai 的 retries / guarantee。
 

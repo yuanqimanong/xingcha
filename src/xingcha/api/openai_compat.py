@@ -162,7 +162,8 @@ async def chat_completions(request: Request) -> Response:
     """按 ``model`` 字段分派。
 
     - 含 ``/`` → 上游裸模型，透明转发（**v1 的核心价值**）
-    - 不含 ``/`` → Agent slug；M1 还没有 Agent 面，一律 404
+    - 不含 ``/`` → Agent slug，交给 :func:`_run_agent`；slug 不存在时由
+      ``agent_svc.resolve`` 抛 ModelNotFound
 
     404 而不是"猜测性地当上游模型转发"：那样一个拼错的 slug 会静默变成一次真实的
     付费调用，而调用方以为自己在调 Agent。
@@ -289,7 +290,7 @@ async def _run_agent(
             agent_id=resolved.agent_id,
         )
 
-    rt = await run_svc.get_runtime(
+    rt = run_svc.get_runtime(
         resolved,
         cache=state.runtimes,
         provider=state.provider,

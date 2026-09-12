@@ -1,6 +1,6 @@
 """FastAPI 应用装配与启动序列。
 
-**启动顺序是有意的**，每一步都可能拒绝启动：
+**启动顺序是有意的**，第 2–5 步任一失败都会拒绝启动：
 
 1. 未知配置项告警 —— 让拼错的环境变量被看见
 2. umask + 数据目录权限 —— 在任何文件被创建之前
@@ -231,10 +231,9 @@ async def load_upstream(state: AppState) -> None:
     await state.upstream.set_config(cfg)
 
     # provider 换了，缓存里那些 Agent 还指着旧的 client——必须整体丢弃。
-    # 这是 RuntimeCache.clear() 唯一该被调用的地方。
-    from .core.builder import make_provider
-
-    state.provider = make_provider(
+    # 后台改上游、停用 Agent、换 trace 目标时也各自 clear 一次（web/admin 下三处），
+    # 理由各不相同。
+    state.provider = builder.make_provider(
         cfg, timeout=state.settings.request_timeout, cost_sink=state.cost_sink
     )
     state.runtimes.clear()
