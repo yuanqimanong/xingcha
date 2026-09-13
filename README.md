@@ -102,13 +102,19 @@ cd xingcha
 ### 导出
 
 Agent 编辑页的「导出」给你一个目录：`agent.yaml` 是标准的 pydantic-ai AgentSpec
-（不是私有格式），`run.py` 零星槎依赖。改完能用 `xingcha agent apply` 导回来。
+（不是私有格式），外加一份 `README.md` 写清保留了什么、丢失了什么。带 schema 或
+用户模板、少样本示例时才多一份零星槎依赖的 `run.py`（结构化再多一份
+`schema.json`）。
+改完能用 `xingcha agent apply` 导回来。
 
 ### 客户端兼容
 
-已用真实 `openai` Python SDK 3.7.0 在 CI 里逐条验证：`models.list()` /
-`models.retrieve()` / 裸模型 / Agent / 流式 / 错误分派。`/v1` 下所有非自有路径
-**字节级反代**到上游，所以 OpenRouter 有的能力星槎都有。
+`/v1` 下所有非自有路径**字节级反代**到上游，所以 OpenRouter 有的能力星槎都有。
+
+但 `models.list()` / `models.retrieve()` / 裸模型 / Agent / 流式 / 错误分派这几条
+当前**没有自动验证**。`openai` SDK 本身一直装着（它是 `pydantic-ai-slim[openai]` 的
+传递依赖，uv.lock 锁到 3.8.0，`core/builder.py` 每次都 import 它），缺的是拿它当
+**客户端**去跑一遍这些端点——守着那件事的测试随 `e298423` 一起没了。
 
 业务代码要改的就是两行：
 
@@ -127,7 +133,7 @@ client = OpenAI(base_url="https://<地址>:8443/v1", api_key="sk-xc-1-...")
   放开：`XINGCHA_CORS_ORIGINS=https://webui.example.com`。
 
 Cherry Studio / Continue / Cursor 这类桌面与 IDE 客户端**没有实测过**——它们走的
-两个端点已被真实 SDK 验证，但依据不等于验证。
+两个端点也在上面那批没有自动验证的路径里。
 
 ---
 
@@ -170,15 +176,21 @@ $DC exec xingcha ls /data/backups
 $DC exec xingcha xingcha db restore /data/backups/xingcha-<时间戳>.db --yes
 ```
 
-`downgrade` 与 `restore` 都会先备份；`restore` 前跑一次 `PRAGMA integrity_check`。
+真要动数据时才备份：`downgrade` 总是备，`upgrade` 只在确实有迁移可跑且库非空时备，
+`prune` 只在带 `--yes` 真删时备。**`restore` 不备份当前库**——它只在覆盖前对那份
+备份文件跑一次 `PRAGMA integrity_check`，坏文件拒绝恢复。
 
 升级前想在真实数据的副本上演练（空库上的 `upgrade` 通过，证明不了有真实数据时也无感）：
 
 ```bash
 $DC exec xingcha xingcha db backup --tag pre-upgrade-drill
-cp data/backups/xingcha-<时间戳>-pre-upgrade-drill.db /tmp/drill.db
+mkdir -p /tmp/drill-dir
+cp data/backups/xingcha-<时间戳>-pre-upgrade-drill.db /tmp/drill-dir/xingcha.db
 XINGCHA_DATA_DIR=/tmp/drill-dir xingcha db upgrade
 ```
+
+整套「备份 → 体检 → 挪走 data/ → 从备份重建 → 复原」的演练见
+`./deploy/linux/drill.sh`（用法在 deploy/README.md）。
 
 ### 密钥环
 
@@ -373,7 +385,7 @@ slug 是**全局**唯一命名空间（`agent.slug` 有 UNIQUE 约束），不�
 | schema 上限 | 64 KB · 深度 8 · 字段 120 · enum 200 |
 | schema 禁用关键字 | `pattern` · `patternProperties`（ReDoS：一条 `(a+)+$` 就能打满一核，而整个服务是单进程） |
 | `$ref` 限制 | 只允许 `#/` 开头（远程 `$ref` 是校验期 SSRF），并传入空 registry |
-| worker 数 | 1，**启动时断言** |
+| worker 数 | 1，**由 serve 写死传给 uvicorn** |
 | journal_mode | `wal`，**启动时断言，否则拒绝启动** |
 
 ### 10 · 数据目录与权限
@@ -388,7 +400,7 @@ slug 是**全局**唯一命名空间（`agent.slug` 有 UNIQUE 约束），不�
 密钥环缺失**而库里已有密文** → **拒绝启动**。静默重新生成会让 setting 表的
 上游 key 永久解不开，且当时不报任何错。这是一扇单向门。
 
-上游 key 来源优先级：`setting` 表（Fernet 加密）> `XINGCHA_OPENROUTER_API_KEY`（仅首次启动导入一次并告警）。
+上游 key 来源优先级：`setting` 表（Fernet 加密）> `XINGCHA_API_KEY`（旧名 `XINGCHA_OPENROUTER_API_KEY` 仍然认；仅首次启动导入一次并告警）。
 
 ### 11 · 计量
 
@@ -397,7 +409,7 @@ slug 是**全局**唯一命名空间（`agent.slug` 有 UNIQUE 约束），不�
 | 输出保证档（`tier`） | `T1` · `T1P` · `T2` · `T3` · `none` |
 | 判档依据 | 上游 catalog 的 `structured_outputs`（**不能看 `response_format`**——两者不等价，混用会把 T2 误判成 T1） |
 
-四态与四档从第一天就写进数据库的 CHECK 约束，尽管 v1 只实现 T2 与前三种来源。
+四态与四档从第一天就写进数据库的 CHECK 约束。四档现已全开；四种来源里 `genai_prices` 仍是预留位，实际写入的只有另外三种。
 没预留的话，补齐时就是一次需要重建表的迁移。
 
 ### 12 · 演进与协商
@@ -473,7 +485,7 @@ import 任何层。它们登记在 `tests/test_layering.py` 的 `UNLAYERED` 白�
 POST /v1/chat/completions
   │
   ├─ NormalizeV1Path ······· 折叠斜杠。不做这步，/v1/models/ 会被反代出去
-  ├─ deps.authenticate ····· sk-xc- → token 行；失败即 401，上游一个字节都不发
+  ├─ deps.require_auth ····· sk-xc- → token 行；失败即 401，上游一个字节都不发
   ├─ ratelimit ············· 按令牌的速率与并发
   ├─ classify_model ········ 这个 model 是 Agent 的 slug 还是裸模型？
   │
@@ -565,7 +577,7 @@ src/xingcha/
 |---|---|
 | `v1.py` | 装配。顺序在这里 |
 | `normalize.py` | 路径归一化中间件，必须在路由之前 |
-| `deps.py` | 请求级依赖：鉴权、限流、上下文 |
+| `deps.py` | 请求级依赖：鉴权、限流 |
 | `openai_compat.py` | `/v1/models` 与 `/v1/chat/completions` |
 | `passthrough.py` | 其余全部字节级反代。**刻意做得很笨**：不解析任何东西 |
 | `runlog_mw.py` / `sse.py` | 记账链路（两条路径共用）；流式响应 |
@@ -575,7 +587,7 @@ src/xingcha/
 一页一个模块，各自带一个 `router`，由 `web/admin/__init__.py` 按顺序接起来。
 
 跨页共用三件：`security.py`（会话 / CSRF / 同源 / 安全头）、`render.py`
-（模板渲染的唯一出口）、`runs.py`（调用记录的查询与聚合，三页共用）。
+（模板渲染的唯一出口）、`runs.py`（调用记录的查询与聚合，总览 / 密钥详情 / 调用记录 / Agent 列表四页共用）。
 
 **`agent_trial` 的路由必须先于 `agents` 注册**：后者有 `/agents/{slug}`，
 会把 `/agents/model-report` 这类固定路径吞掉，而症状是页面上出现
@@ -598,6 +610,7 @@ src/xingcha/
 | 网关/应用端口在 6 处产物间相等 | `tests/test_deploy_artifacts.py` |
 | 宿主端口默认只绑回环、网关叠加层两项齐全 | 同上 |
 | 出站客户端都读环境代理，且只有一个建法 | `tests/test_outbound_proxy.py` |
+| `agent apply` 不改 Agent 的分组 | `tests/test_agent_apply_group.py` |
 | Windows 与 Linux 推出同一个绑定地址 | `tests/test_bind_addr_parity.py` |
 | 容器 healthy、`/v1` 无凭据 401 | CI：真起整栈 |
 
@@ -606,10 +619,12 @@ src/xingcha/
 期望值写死在测试文件里，不从 `contract` 反向读取——从常量读的"测试"只能证明常量
 等于它自己，改一个闭集照样绿。
 
-> 上一轮重构把整个 `tests/` 清空了（`e298423`）。目前恢复的是上面这三份**静态守卫**：
-> 不需要建库、不需要起服务、不碰网络，所以跑一遍是秒级的。尚未恢复的运行时测试有
-> 配额、流式、直通反代、导出物零依赖、代理指黑洞——CI 里对应的步骤仍然注释着，
-> 那几条约束当前**没有任何自动检查**。
+> 上一轮重构把整个 `tests/` 清空了（`e298423`）。上表里的守卫是之后一条条补回来的：
+> 先是契约、分层、部署产物三份**静态守卫**（不建库、不起服务、不碰网络，跑一遍是
+> 秒级的），之后每修一个 bug 补一条回归测试。尚未恢复的运行时测试有配额、流式、
+> 直通反代、导出物零依赖，以及后台页面那一组（模板不写内联脚本、深浅两套主题
+> token 同步）——那几条约束当前**没有任何自动检查**。「模板引用的静态文件都在」
+> 只在镜像那一层有守卫（CI 的「镜像里的静态资源齐不齐」），源码树那一层没有。
 
 ---
 
@@ -623,8 +638,6 @@ uv pip install --python .venv/bin/python -e . --group dev
 .venv/bin/ruff check src tests
 .venv/bin/pyright
 ```
-
-LLM 相关行为用 pydantic-ai 的 `FunctionModel` / `TestModel` 构造，上游用一个本地假服务器。
 
 CI 里有两层别处看不到的断言：
 

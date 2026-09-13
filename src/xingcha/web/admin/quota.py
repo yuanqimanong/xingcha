@@ -98,7 +98,6 @@ async def _quota_context(request: Request, error: str | None = None) -> dict[str
         ),
     ]
     subject_groups = [(g, items) for g, items in subject_groups if items]
-    subjects = [item for _, items in subject_groups for item in items]
 
     label_of = {("user", 1): admin.username if admin else "admin"}
     label_of |= {("token", t.id): t.name for t in tokens}
@@ -132,7 +131,6 @@ async def _quota_context(request: Request, error: str | None = None) -> dict[str
 
     return {
         "rules": rules,
-        "subjects": subjects,
         "subject_groups": subject_groups,
         "error": error,
     }
@@ -165,8 +163,8 @@ async def quota_save(
     # 里面那一层（quota_svc）的接口仍然是 ``(type, id)``，那是库里的形状，不该被 UI
     # 的表达方式带偏。
     #
-    # 校验对着**页面自己渲染出来的那份选项**做，而不是只查一遍格式。格式对但对象
-    # 不存在（`token:999`）会存下一条永远匹配不上的规则，表格里显示成 `#999`，
+    # 这里只查类型与 id 形状，**不查主体是否真的存在**——下拉是唯一入口。手工构造
+    # 一个 `token:999` 仍然能存下一条永远匹配不上的规则，表格里显示成 `#999`，
     # 而人看不出它为什么不生效。
     subject_type, _, raw_id = subject.partition(":")
     subject_id = int(raw_id) if raw_id.isdigit() else 0

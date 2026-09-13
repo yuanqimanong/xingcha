@@ -20,7 +20,7 @@ app = typer.Typer(
 config_app = typer.Typer(help="读写服务端配置（上游 key 等）。", no_args_is_help=True)
 db_app = typer.Typer(help="数据库迁移与备份。", no_args_is_help=True)
 token_app = typer.Typer(help="签发、查看与吊销 API 令牌。", no_args_is_help=True)
-agent_app = typer.Typer(help="查看与导出 Agent。", no_args_is_help=True)
+agent_app = typer.Typer(help="查看、导出与导入 Agent。", no_args_is_help=True)
 quota_app = typer.Typer(help="设置与查看配额。", no_args_is_help=True)
 admin_app = typer.Typer(help="管理后台账号。", no_args_is_help=True)
 

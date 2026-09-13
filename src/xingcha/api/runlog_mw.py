@@ -181,10 +181,7 @@ def sniff_stream(
 
 def _scan_sse_tail(tail: bytes, rec: RunRecord, catalog: ModelsCatalog) -> None:
     """在 SSE 尾部倒着找第一个带 usage 的帧。"""
-    try:
-        text = tail.decode("utf-8", errors="ignore")
-    except Exception:  # pragma: no cover
-        return
+    text = tail.decode("utf-8", errors="ignore")
     for line in reversed(text.splitlines()):
         line = line.strip()
         if not line.startswith("data:"):
@@ -248,15 +245,6 @@ class RunTracker:
     def attach_reservation(self, reservation: Any) -> None:
         """把配额预留交给 tracker，由它在提交时结算。"""
         self._reservation = reservation
-
-    def release_reservation(self) -> None:
-        """调用没有发生（早期拒绝），把名额还回去。
-
-        不释放的话，一次 stream_unsupported 之类的拒绝也会白吃一个名额，
-        而那类拒绝根本没打到上游、没花钱。
-        """
-        if self._reservation is not None:
-            self._reservation.release()
 
     def finish_ok(self) -> None:
         self.rec.status = C.RunStatus.OK.value

@@ -224,7 +224,7 @@ def render() -> str:
         "就能打满一核，而整个服务是单进程） |",
         f"| `$ref` 限制 | 只允许 `{C.SCHEMA_REF_ALLOWED_PREFIX}` 开头"
         "（远程 `$ref` 是校验期 SSRF），并传入空 registry |",
-        f"| worker 数 | {C.REQUIRED_WORKERS}，**启动时断言** |",
+        f"| worker 数 | {C.REQUIRED_WORKERS}，**由 serve 写死传给 uvicorn** |",
         f"| journal_mode | `{C.REQUIRED_JOURNAL_MODE}`，**启动时断言，否则拒绝启动** |",
         "",
         "### 10 · 数据目录与权限",
@@ -240,7 +240,8 @@ def render() -> str:
         "上游 key 永久解不开，且当时不报任何错。这是一扇单向门。",
         "",
         "上游 key 来源优先级："
-        "`setting` 表（Fernet 加密）> `XINGCHA_OPENROUTER_API_KEY`（仅首次启动导入一次并告警）。",
+        f"`setting` 表（Fernet 加密）> `{C.ENV_DEFAULT_API_KEY}`"
+        f"（旧名 `{C.ENV_API_KEY_ALIASES[-1]}` 仍然认；仅首次启动导入一次并告警）。",
         "",
         "### 11 · 计量",
         "",
@@ -250,7 +251,8 @@ def render() -> str:
         f"| 判档依据 | 上游 catalog 的 `{C.CATALOG_NATIVE_SCHEMA_PARAM}`"
         "（**不能看 `response_format`**——两者不等价，混用会把 T2 误判成 T1） |",
         "",
-        "四态与四档从第一天就写进数据库的 CHECK 约束，尽管 v1 只实现 T2 与前三种来源。",
+        "四态与四档从第一天就写进数据库的 CHECK 约束。四档现已全开；四种来源里 "
+        "`genai_prices` 仍是预留位，实际写入的只有另外三种。",
         "没预留的话，补齐时就是一次需要重建表的迁移。",
         "",
         "### 12 · 演进与协商",
@@ -312,7 +314,7 @@ def extract(text: str) -> str:
 def splice(text: str) -> str:
     """把生成结果换进 README 的生成区，节外的文字一个字节都不动。"""
     i, j = _bounds(text)
-    return f"{text[:i]}\n\n{render().strip(chr(10))}\n\n{text[j:]}"
+    return f"{text[:i]}\n\n{render().strip('\n')}\n\n{text[j:]}"
 
 
 def write(path: Path | None = None) -> Path:

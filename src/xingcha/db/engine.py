@@ -1,10 +1,11 @@
 """SQLite 引擎、PRAGMA 与启动断言。
 
-两条断言在这里，都是**拒绝启动**而不是警告：
+一条断言在这里，是**拒绝启动**而不是警告：WAL 必须真的生效。bind mount 落在网络盘
+或异常文件系统上时 WAL 会静默降级，症状是零星的 ``database is locked``——最难查的
+一类问题。宁可起不来。
 
-1. WAL 必须真的生效。bind mount 落在网络盘或异常文件系统上时 WAL 会静默降级，
-   症状是零星的 ``database is locked``——最难查的一类问题。宁可起不来。
-2. 单 worker。见 :func:`assert_single_worker`。
+单 worker 是同一级别的硬约束，但不靠运行期断言：:func:`cli.serve` 直接把
+``C.REQUIRED_WORKERS`` 传给 uvicorn，没有可配之处。
 """
 
 from __future__ import annotations
@@ -105,21 +106,6 @@ async def assert_wal(engine: AsyncEngine) -> None:
             "把 data/ 换到宿主本地磁盘（ext4/xfs）再启动。"
         )
     log.debug("journal_mode = %s", mode)
-
-
-def assert_single_worker(workers: int) -> None:
-    """星槎只能跑一个 worker。
-
-    进程级 ConcurrencyLimiter、内存用量缓冲、SQLite 单写者**全都**依赖这个前提。
-    改成 2 会同时：静默打破上游并发封顶、丢掉一半用量缓冲、引入
-    ``database is locked``——三个症状互不相关，排查成本极高。所以宁可起不来。
-    """
-    if workers != C.REQUIRED_WORKERS:
-        raise StartupRefused(
-            f"星槎只支持 {C.REQUIRED_WORKERS} 个 worker，收到 {workers}。\n"
-            "并发上限、用量缓冲与 SQLite 单写者都依赖单进程；多 worker 会让三者同时失效"
-            "且症状互不相关。需要更高吞吐请先看 XINGCHA_MAX_CONCURRENCY。"
-        )
 
 
 def apply_umask() -> None:

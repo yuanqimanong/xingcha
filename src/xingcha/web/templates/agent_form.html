@@ -21,7 +21,7 @@
   {# 新建页的动作也在页头，和编辑页一致：一页里只有一处放"提交"的地方，
      不用先滚到底才知道按钮在哪。靠 form= 跨节点关联到下面那个表单。 #}
   <div class="row">
-    <button class="btn primary" type="submit" form="agent-form" data-save>创建</button>
+    <button class="btn primary" type="submit" form="agent-form">创建</button>
     <a class="btn ghost" href="/admin/agents">取消</a>
   </div>
   {% else %}
@@ -38,10 +38,7 @@
     </button>
     <a class="btn" href="/admin/agents/{{ agent.slug }}/export" download
        title="打包带走这个 Agent：提示词、模型、输出约定、用户模板与少样本全在里面，外加一个能直接跑的示例脚本。通用格式，不锁在这里；改完从 Agent 页「导入」放回来。">导出</a>
-    {# data-save：保存按钮在编辑页位于表单**外面**（靠 form= 关联），在新建页位于
-       里面。按位置定位（"#agent-form 里的 submit"）在其中一页必然落空——名字才是
-       稳定的那个。这一页已经因为按位置定位坏过两次。 #}
-    <button class="btn primary" type="submit" form="agent-form" data-save>保存为新版本</button>
+    <button class="btn primary" type="submit" form="agent-form">保存为新版本</button>
   </div>
   {% endif %}
 </div>
@@ -74,10 +71,6 @@
 <form id="agent-form" method="post" action="{{ action }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
 
-  {# 两行三列。
-     上排是「这个 Agent 是什么」（身份 / 参数 / 能力），下排是「它怎么干活」
-     （提示词 / 输出约定 / 试一次）。三列在窄屏上自动落成两列、一列——写死三列的话
-     笔记本上每格只剩三百来像素，schema 那个框会挤成一条缝。 #}
   {# 三列：左中两列是「这个 Agent 是什么、怎么干活」的四张卡，右边整整一列留给
      试运行。
 
@@ -210,9 +203,6 @@
                "换模型之后哪些东西变了"。 #}
             <p class="muted small mb4">
               <strong>能力</strong>：只列<strong>这条 API 通道上能用的</strong>，随所选模型变化。
-            </p>
-            <p class="muted small mb4">
-              只列<strong>这条 API 通道上能用的</strong>能力，随所选模型变化。
             </p>
             {# 这一块随模型变——见 _model_report.html 末尾的 hx-swap-oob。 #}
             <div id="cap-list">

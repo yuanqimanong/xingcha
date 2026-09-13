@@ -1,8 +1,10 @@
 """上游模型目录。
 
-两个用途：
+三个用途：
 1. ``GET /v1/models`` 里混入上游模型行
 2. **价格**——这是 v1 的主价源
+3. **判档与能力**——``supported_parameters`` 里的 ``structured_outputs`` 决定 T1
+   敢不敢给，其余几项喂 ``builder.model_report``
 
 为什么 catalog 是主价源而不是 genai-prices：实测拿今天 OpenRouter 在售的 424 个模型
 逐个跑 ``calc_price``，成功 283 个（66.7%），141 个抛 ``LookupError``；跑在线更新后
@@ -40,7 +42,6 @@ class ModelInfo:
     prompt_price: Decimal | None = None
     completion_price: Decimal | None = None
     cache_read_price: Decimal | None = None
-    cache_write_price: Decimal | None = None
 
     #: ``architecture.input_modalities``。实测取值有 text / image / file / audio / video。
     input_modalities: frozenset[str] = field(default_factory=frozenset)
@@ -115,7 +116,6 @@ def parse_models(payload: dict) -> dict[str, ModelInfo]:
             prompt_price=_dec(pricing.get("prompt")),
             completion_price=_dec(pricing.get("completion")),
             cache_read_price=_dec(pricing.get("input_cache_read")),
-            cache_write_price=_dec(pricing.get("input_cache_write")),
         )
     return out
 

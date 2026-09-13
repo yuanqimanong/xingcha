@@ -24,7 +24,6 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-from .. import contract as C
 from ..contract import Tier
 from ..foundation.errors import AgentBuildFailed, AgentSpecInvalid
 from .costsink import CostSink, make_hook
@@ -137,23 +136,6 @@ def declarable_capabilities() -> list[str]:
     return sorted(CAPABILITY_TYPES)
 
 
-def capability_params_schema() -> dict[str, Any]:
-    """每个 capability 的参数 schema，供表单生成字段。
-
-    **不能用 ``inspect.signature`` 或 ``dataclasses.fields``**（实测）：
-    有 4 个 capability 覆写了 ``from_spec`` 且签名与 ``__init__`` 不同——
-    ``PrefixTools`` 的 ``__init__`` 参数叫 ``wrapped``、spec 里叫 ``capability``，
-    照 ``__init__`` 生成表单 100% 报错；``dataclasses.fields`` 还会把有默认值的
-    参数报成必填并暴露私有字段。唯一正确的来源是官方 schema 的 ``$defs``。
-    """
-    defs = _spec_schema().get("$defs", {})
-    return {
-        name.removeprefix("spec_params_"): body
-        for name, body in defs.items()
-        if name.startswith("spec_params_")
-    }
-
-
 # =============================================================================
 # 上游 model
 # =============================================================================
@@ -235,7 +217,7 @@ def make_provider(
 
 
 def enable_instrumentation(tracing: Any) -> None:
-    """装配 pydantic-ai 的埋点，但**默认不开**。
+    """装配 pydantic-ai 的埋点。没有上报目标时全体关闭；配了目标之后它就是全局默认值。
 
     这是本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
 
@@ -246,9 +228,11 @@ def enable_instrumentation(tracing: Any) -> None:
     跑内部分类的 Agent，对"对话内容能不能离开这台机器"的回答不该被一个全局开关
     统一。
 
-    ``instrument_all(settings)`` 设的是**默认值**——它只作用于没有单独声明
-    ``Instrumentation`` 能力的 Agent。所以这里传 ``False``：默认谁都不上报，
-    想上报的 Agent 在 spec 里声明那个 capability。
+    ``instrument_all`` 设的是**默认值**，只作用于没有单独声明 ``Instrumentation``
+    能力的 Agent。**两个分支的含义不同**：没有上报目标时传 ``False``，谁都不上报；
+    一旦配了上报目标，默认值就是这份 settings——那时候是**默认全体上报**，声明了
+    能力的 Agent 用自己那一份。要做到"配了地址也仍然按 Agent 开"，得改下面那次
+    传参，那是一次行为变更。
 
     ``instrument_all`` 仍然要调（而不是完全不调）：pydantic-ai 需要一个
     tracer_provider 才知道往哪儿发，而那是全局基础设施——**地址是全局的，
@@ -336,22 +320,9 @@ FORM_CHOICE_SETTINGS: Final[tuple[tuple[str, str, str, str, tuple[str, ...]], ..
 #: "把这个 Agent 的对话发到外部"，与"给模型加个能力"不该并列在同一个勾选框列表里）。
 #:
 #: MCP 也不在这里：它需要服务器地址与鉴权，得先有一个配置页。
-#: 每一条的说明都是**实测**出来的，不是照官方清单抄的。五个勾看起来等价，
-#: 实际可用性差得很远，而失败全都发生在调用那一刻、不在保存那一刻：
 #:
-#: * ``Thinking`` —— 纯参数，任何上游都收。实测 DeepSeek 直连与 OpenRouter 都通。
-#: * ``WebSearch`` —— 要两个条件同时成立：provider 侧的
-#:   ``openai_chat_supports_web_search``（**OpenRouter 全放行、厂商直连全不放行**），
-#:   以及模型自己支持 ``WebSearchTool``。实测 glm-5.3-flash 经 OpenRouter 可用，
-#:   同一个能力经 DeepSeek 直连直接被拒。
-#: * ``WebFetch`` / ``ImageGeneration`` —— 要模型支持对应的原生工具，支持面很窄
-#:   （实测 glm-5.3-flash 两个都不支持，它只支持 WebSearchTool）。
-#: * ``ToolSearch`` —— 纯本地、不需要上游点头，但它做的是"工具很多时先检索再调用"，
-#:   而星槎现在**一个工具都注册不了**（唯一入口是 MCP，还没接）。所以它现在是空转。
+#: 每一条的说明都是**实测**出来的，不是照官方清单抄的。
 #:
-#: 上游还提供 ``local=`` 回退（``WebSearch(local='duckduckgo')`` / ``WebFetch(local=True)``），
-#: 那会让抓取发生在**星槎自己的进程里**。没有开放：那等于给服务端开一个由模型
-#: 决定目标地址的出网原语，也就是 SSRF；要开得先过 urlguard，而那是一次单独的决定。
 #: **这条通道原生只认一个工具。** 实测 pydantic-ai 2.35.3：
 #:
 #:     class OpenAIChatModel:
@@ -367,15 +338,18 @@ FORM_CHOICE_SETTINGS: Final[tuple[tuple[str, str, str, str, tuple[str, ...]], ..
 #:
 #: 所以这个列表只放**真的能用**的：
 #:
-#: * ``Thinking`` —— 纯本地，不碰这道闸。
-#: * ``WebSearch`` —— 唯一能交给上游做的，且还要 provider 侧
-#:   ``openai_chat_supports_web_search``（OpenRouter 一类放行，厂商直连不放行）。
+#: * ``Thinking`` —— 纯本地，不碰这道闸。实测 DeepSeek 直连与 OpenRouter 都通。
+#: * ``WebSearch`` —— 唯一能交给上游做的，且要两个条件同时成立：provider 侧的
+#:   ``openai_chat_supports_web_search``（**OpenRouter 全放行、厂商直连全不放行**），
+#:   以及模型自己支持 ``WebSearchTool``。实测 glm-5.3-flash 经 OpenRouter 可用，
+#:   同一个能力经 DeepSeek 直连直接被拒。
 #:
 #: 拿掉的三个与理由：
 #:
 #: * ``WebFetch`` —— 原生做不到；本地回退（``local=True``）能跑，但那是**星槎自己
 #:   出网去抓**，覆盖范围取决于这台机器能到哪，而不是取决于配置。用户的判断是
-#:   "模型没有抓取能力，本地也就别抓"——一个时灵时不灵的能力比没有更糟。
+#:   "模型没有抓取能力，本地也就别抓"——一个时灵时不灵的能力比没有更糟。而且那等于
+#:   开一个由模型决定目标地址的出网原语，也就是 SSRF：要开得先过 urlguard。
 #: * ``ImageGeneration`` —— 原生做不到，本地回退要传一个 Python 函数，网页表单
 #:   表达不了。
 #: * ``ToolSearch`` —— 不碰这道闸，但它做的是"工具很多时先检索再调用"，而星槎
@@ -487,8 +461,8 @@ def capabilities_from_form(raw: Any) -> list[Any]:
     :func:`validate_spec` 的官方 schema 与 ``from_spec`` **同时**接受的形状
     （交集，见 :func:`runnable_capabilities`）。
 
-    参数不是可选的花活：网页抓取只有带上 ``local=True`` 才可能工作，不带就是一个
-    勾了必然报错的开关。
+    现在 FORM_CAPABILITIES 两项都不带参数，所以实际只会走裸字符串那一支；带参数
+    那一支留着是给将来加回需要参数的能力用的（``WebFetch(local=True)`` 就是那种）。
     """
     #: 扫 ``cap_*`` 前缀，而不是只遍历 FORM_CAPABILITIES。
     #:
@@ -584,7 +558,7 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
 
     ``info`` 是 :class:`ModelInfo` 或 ``None``（目录里没有这个 id）。
     """
-    # 绑成一个变量而不是 bool：`known` 为真时 info 一定不是 None 这件事，
+    # 绑成一个变量而不是 bool：`declared` 不是 None 时 info 一定不是 None 这件事，
     # 类型检查器看不出来——于是下面每一处 info.xxx 都被报成"None 没有这个属性"。
     declared = info if info is not None and info.declares_capabilities else None
     profile: Any = {}
@@ -651,8 +625,8 @@ def make_model(model_id: str, provider: Provider) -> OpenAIChatModel:
     代价是拿不到上游的 prompt-cache 计价优化，但那只影响费用**预估精度**，
     而费用主价源已经改成模型目录的单价，影响被补偿掉了。
 
-    别好心改回 OpenRouterModel。`xingcha doctor` 里有一条体检项会告诉你上游到底
-    带不带 provider 字段。
+    别好心改回 OpenRouterModel——中转到底回不回传 ``provider``，只能自己抓一次
+    上游响应看，没有现成的体检项。
     """
     return OpenAIChatModel(_strip_prefix(model_id), provider=provider)
 
@@ -1012,9 +986,10 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
 def capability_names(caps: list[Any]) -> set[str]:
     """从 spec 的 capabilities 里取出能力名。**三种形状都要认。**
 
-    ``validate_spec`` 会把 ``["Thinking"]`` **规范化成**
-    ``[{"name": "Thinking"}]``，而手写的 agent.yaml 里还可能是
-    ``[{"Thinking": {...参数}}]``。
+    ``AgentSpec.model_dump()`` 会把 ``["Thinking"]`` 规范化成
+    ``[{"name": "Thinking"}]``——:func:`validate_spec` 随后用
+    :func:`runnable_capabilities` 把它降回裸字符串，但库里那些没被重写过的旧行
+    还留着这个形状；手写的 agent.yaml 里则还可能是 ``[{"Thinking": {...参数}}]``。
 
     只认一种的下场：反填时把 ``{"name": "Thinking"}`` 的第一个 key 当成能力名，
     于是每个 Agent 都被读成开了一个叫 ``name`` 的能力——**编辑页所有勾都是空的，
@@ -1054,8 +1029,3 @@ def form_view(spec: dict[str, Any]) -> dict[str, Any]:
         "examples": list(prompting.examples),
         "output_channel": prompting.output_channel,
     }
-
-
-#: 供 doctor 与设置页显示。
-UPSTREAM_MODEL_PREFIX = "openrouter:"
-CONTRACT_TIER_VALUES = tuple(t.value for t in C.Tier)

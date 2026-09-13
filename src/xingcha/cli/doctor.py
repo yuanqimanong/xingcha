@@ -96,7 +96,7 @@ def doctor() -> None:
     # --- 运行约束 ---
     typer.echo()
     typer.secho("运行约束", bold=True)
-    typer.echo(f"  worker      {C.REQUIRED_WORKERS}（硬约束，启动时断言）")
+    typer.echo(f"  worker      {C.REQUIRED_WORKERS}（硬约束，serve 写死传给 uvicorn）")
     typer.echo(f"  journal     {C.REQUIRED_JOURNAL_MODE}（启动时断言，否则拒绝启动）")
     typer.echo(f"  监听        {settings.host}:{settings.port}")
     typer.echo(f"  请求体上限  {C.MAX_BODY_BYTES // 1024 // 1024} MB")

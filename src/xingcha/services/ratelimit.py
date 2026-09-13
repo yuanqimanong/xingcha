@@ -1,12 +1,13 @@
 """按令牌的速率与并发限制。
 
-**必须同时作用于 Agent 路径与直通路径。** 直通路径绕开了配额（v1 不做配额），
+**必须同时作用于 Agent 路径与直通路径。** 直通路径默认不执行配额
+（``quota_on_passthrough`` 默认关，契约 §8 冻结了这一条），
 如果连速率限制也没有，那它就是一个不计量、不限并发的付费 key 放大器：一把泄漏的
 key 能按线速抽干余额。
 
 进程内内存实现，不落库——这依赖单 worker（契约 §9 的 ``REQUIRED_WORKERS``）。
-多 worker 下每个进程各有一份计数，限流会变成 N 倍，这是启动时断言单 worker 的
-理由之一。
+多 worker 下每个进程各有一份计数，限流会变成 N 倍——这是 ``serve`` 把 worker 数
+写死成 1 的理由之一。
 """
 
 from __future__ import annotations
@@ -66,28 +67,6 @@ class RateLimiter:
             b = self._buckets.get(key)
             if b is not None and b.inflight > 0:
                 b.inflight -= 1
-
-    async def prune(self, *, max_idle_seconds: float = 3600.0) -> None:
-        """清掉长期不活跃的桶，避免字典无限增长。
-
-        只在没有在飞请求时才清——否则会把 inflight 计数一起丢掉，导致并发上限失效。
-        """
-        cutoff = time.monotonic() - max_idle_seconds
-        async with self._lock:
-            for k in [
-                k
-                for k, b in self._buckets.items()
-                if b.inflight == 0 and (not b.hits or b.hits[-1] < cutoff)
-            ]:
-                del self._buckets[k]
-
-    def snapshot(self, key: str) -> tuple[int, int]:
-        """``(最近一分钟的请求数, 在飞数)``。供 /readyz 与管理面展示。"""
-        b = self._buckets.get(key)
-        if b is None:
-            return 0, 0
-        cutoff = time.monotonic() - 60.0
-        return sum(1 for t in b.hits if t >= cutoff), b.inflight
 
 
 class _Guard:

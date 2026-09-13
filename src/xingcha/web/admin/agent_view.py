@@ -120,7 +120,7 @@ def empty_form() -> Any:
     )
 
 
-async def model_choices(state: Any) -> tuple[list[Any], int]:
+def model_choices(state: Any) -> tuple[list[Any], int]:
     models = state.catalog.all()
     return models, sum(1 for m in models if m.supports_native_schema)
 
@@ -133,7 +133,7 @@ async def form_shell(request: Request) -> dict[str, Any]:
     """
 
     state = request.app.state.xc
-    models, native = await model_choices(state)
+    models, native = model_choices(state)
     tracing = state.tracing
     async with state.sessionmaker() as s:
         groups = await agent_svc.all_groups(s, state.keyring)

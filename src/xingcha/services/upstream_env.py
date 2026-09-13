@@ -64,11 +64,6 @@ class EnvUpstream:
     #: 这个上游有没有 /models 端点。没有 → 目录为空 → 费用与判档退化。
     has_catalog: bool
 
-    @property
-    def ready(self) -> bool:
-        """不用再填任何东西就能切过去。"""
-        return bool(self.base_url)
-
 
 def discover(environ: Mapping[str, str] | None = None) -> list[EnvUpstream]:
     """扫出环境里所有已知厂商的上游 key。

@@ -9,8 +9,9 @@ SQLite 的 ``ALTER TABLE`` 能力有限：事后给一列加 ``NOT NULL`` 或 ``
 - 所有主体表的 ``user_id NOT NULL``（v1 单用户，但 v2 加多用户不能停机）
 - ``agent.slug`` 的 **UNIQUE**（slug 是全局命名空间，见契约 §3）
 - ``token.hash_alg`` / ``kdf_params``（换哈希算法时盐与参数要随行走）
-- ``agent_version.tier`` 的 CHECK 里**四档全列**，尽管 v1 只实现 T2
-  （后来加了第五个 ``none``：纯文本，见迁移 0004）
+- ``agent_version.tier`` 的 CHECK 里**四档全列**——当初只跑 T2，预留是为了免掉
+  一次重建表的迁移；四档现已全开（见 core/guarantee.AVAILABLE_TIERS）。后来加了
+  第五个 ``none``：纯文本，见迁移 0004
 - ``run_usage.cost_usd`` 声明为 **TEXT**（存 Decimal 的 str；float 存不住，
   且 NULL「无法定价」必须与真实的 0 费用可区分）
 
@@ -239,7 +240,7 @@ class AgentVersion(Base):
     version: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     spec_json: Mapped[str] = mapped_column(sa.Text, nullable=False)
 
-    #: 四档全列，尽管 v1 只实现 T2。没预留的话补 T1 时就是一次重建表的迁移。
+    #: 四档全列。当初只跑 T2，不预留的话补 T1 时就是一次重建表的迁移；现已全开。
     tier: Mapped[str] = mapped_column(sa.Text, nullable=False, default=C.Tier.T2.value)
 
     #: 输出 JSON Schema，NULL = 纯文本。
@@ -377,15 +378,16 @@ class RunUsage(Base):
 
 
 # =============================================================================
-# 配额（表在 0001 就建，执行逻辑在 v0.4）
+# 配额
 # =============================================================================
 
 
 class Quota(Base):
     """三级主体 × 三种窗口。
 
-    表结构在 0001 就位，但 v1 **不执行**配额（契约 §8）。建表不花什么成本，而
-    v0.4 加执行逻辑时不用再动 schema——这正是 expand-contract 想要的形状。
+    表结构在 0001 就位，执行逻辑后来才加（services/quota.py）——建表不花什么成本，
+    而补执行逻辑时不用再动 schema，这正是 expand-contract 想要的形状。契约 §8
+    冻结的是另一件事：**直通路径**默认不执行配额。
 
     窗口口径一律 **UTC**。用本地时区会让"今天"的边界随部署机时区变化，跨时区对账
     时对不上。
@@ -434,7 +436,3 @@ class WebSession(Base):
     created_at: Mapped[str] = mapped_column(sa.Text, nullable=False, default=utcnow)
 
     __table_args__ = (sa.Index("idx_web_session_expires", "expires_at"),)
-
-
-#: 供迁移与测试引用的全部表名。
-ALL_TABLES: tuple[str, ...] = tuple(Base.metadata.tables)

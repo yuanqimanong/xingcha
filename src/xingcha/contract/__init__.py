@@ -649,7 +649,7 @@ SCHEMA_FORBIDDEN_KEYWORDS: Final[frozenset[str]] = frozenset({"pattern", "patter
 #: 不可能发生。
 SCHEMA_REF_ALLOWED_PREFIX: Final = "#/"
 
-#: 单进程 worker 数。**启动时断言，不是建议。**
+#: 单进程 worker 数。**``serve`` 直接把它传给 uvicorn，不是一条建议。**
 #:
 #: 进程级 ConcurrencyLimiter、内存用量缓冲、SQLite 单写者全都依赖它。任何人为了
 #: "提高性能"改成 2，会同时静默打破上游并发封顶、丢一半用量缓冲、并引入
@@ -781,13 +781,6 @@ UPSTREAM_ENV_CANDIDATES: Final[dict[str, str]] = {
 #: 判档一律回落 T2。管理面要把这句话说出来，否则用户会以为是星槎坏了。
 UPSTREAM_ENV_WITHOUT_CATALOG: Final[frozenset[str]] = frozenset({"PERPLEXITY_API_KEY"})
 
-#: 星槎自己的默认上游变量名。**这一对优先于上面任何一个。**
-#:
-#: 用 ``XINGCHA_API_KEY`` / ``XINGCHA_BASE_URL`` 这样的通用名，而不是把厂商名写进
-#: 变量名：上游是可切换的，名字里带 ``OPENROUTER`` 会在切到别家之后变成谎言。
-#:
-#: 旧名 ``XINGCHA_OPENROUTER_API_KEY`` 仍然认（见 config.Settings）——改配置名是
-#: 破坏性变更，而"升级对用户无感"是这个项目的头号承诺。
 #: 主题 cookie 的名字。
 #:
 #: 用 cookie 而不是 localStorage：**服务端渲染时就得知道选了哪个**，否则
@@ -828,6 +821,11 @@ ORCHESTRATION_ENV_NAMES: Final = frozenset(
 )
 
 
+#: 星槎自己的默认上游变量名。**这一对优先于 ``UPSTREAM_ENV_CANDIDATES`` 里的任何
+#: 一个厂商名。**
+#:
+#: 用通用名而不是把厂商名写进变量名：上游是可切换的，名字里带 ``OPENROUTER``
+#: 会在切到别家之后变成谎言。
 ENV_DEFAULT_API_KEY: Final = "XINGCHA_API_KEY"
 ENV_DEFAULT_BASE_URL: Final = "XINGCHA_BASE_URL"
 
@@ -948,7 +946,8 @@ class CostSource(StrEnum):
 
 
 class Tier(StrEnum):
-    """输出保证档位。**四档从第一天就进 DB 的 CHECK 约束**，v1 只实现 T2。
+    """输出保证档位。**四档从第一天就进 DB 的 CHECK 约束**，现已全部实现
+    （见 core/guarantee.AVAILABLE_TIERS）。
 
     后补 T1 / T1P 是纯加法；但如果 CHECK 里没有预留这两个值，补的时候就是一次
     需要重建表的迁移。
@@ -963,7 +962,7 @@ class Tier(StrEnum):
     """
 
     T1 = "T1"  # 原生约束解码（strict=True 提交 schema）
-    T2 = "T2"  # 校验后重试（v1 唯一实现）
+    T2 = "T2"  # 校验后重试（默认档）
     T1P = "T1P"  # 两阶段：自由推理 → 格式化
     T3 = "T3"  # 仅提示词，不校验
     NONE = "none"  # 没有 schema，纯文本；不适用任何保证

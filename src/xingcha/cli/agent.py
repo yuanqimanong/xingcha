@@ -65,7 +65,7 @@ def agent_apply(
         if slug is None:
             err("从标准输入读取时必须显式给 --slug。")
             raise typer.Exit(1)
-        schema_text = None
+        schema_text = schema.read_text(encoding="utf-8") if schema is not None else None
     else:
         if not path.exists():
             err(f"文件不存在：{path}")
@@ -84,9 +84,6 @@ def agent_apply(
         slug = slug or path.parent.name
         schema_path = schema or (path.parent / "schema.json")
         schema_text = schema_path.read_text(encoding="utf-8") if schema_path.exists() else None
-
-    if schema is not None and str(path) == "-":
-        schema_text = schema.read_text(encoding="utf-8")
 
     # 解析与校验的规矩在 services/agent.parse_bundle 里，后台的「导入」走同一条。
     try:

@@ -11,12 +11,11 @@ from fastapi.responses import RedirectResponse, Response
 
 from ... import contract as C
 from ...core.urlguard import UnsafeUpstreamURL, check_upstream_url
-from ...db import migrate
-from ...services import setting as setting_svc
 from ...services import trace_targets
 from ...services import websession as ws
 from .render import page
 from .security import (
+    COOKIE_PATH,
     Denied,
     guard_mutation,
     require_admin,
@@ -46,19 +45,11 @@ async def _settings_ctx(
     state = request.app.state.xc
 
     async with state.sessionmaker() as s:
-        raw_key = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_API_KEY)
-        base_url = await setting_svc.get(s, state.keyring, C.SETTING_KEY_OPENROUTER_BASE_URL)
         targets = await trace_targets.list_all(s, state.keyring)
         active = await trace_targets.active_name(s, state.keyring)
         has_db_password = await ws.has_password(s)
 
     return {
-        "masked_key": setting_svc.mask(raw_key) if raw_key else "",
-        "base_url": base_url or C.OPENROUTER_DEFAULT_BASE_URL,
-        "catalog_count": len(state.catalog.all()),
-        "catalog_stale": state.catalog.is_stale,
-        "data_dir": str(state.settings.data_dir.resolve()),
-        "db_revision": migrate.current_revision(state.settings.db_path) or "—",
         # 表单是**新增用的**，所以默认全空，只在提交失败时回填这一次填的内容。
         #
         # 曾经把已保存的地址与 public key 灌回表单，于是它同时是"新增"和"编辑"，
@@ -75,7 +66,6 @@ async def _settings_ctx(
             )
             for t in targets
         ],
-        "trace_service_name": state.settings.trace_service_name,
         "trace_on": state.tracing is not None,
         "trace_include_content": state.settings.trace_include_content,
         "password_error": password_error,
@@ -158,7 +148,7 @@ async def change_password(
 
     resp = security_headers(RedirectResponse("/admin/login", status_code=303))
     # 会话已经在库里被吊销，cookie 留着只会让下一次请求白跑一遍鉴权
-    resp.delete_cookie("xc_session", path="/admin")
+    resp.delete_cookie(ws.SESSION_COOKIE, path=COOKIE_PATH)
     return resp
 
 
@@ -292,6 +282,8 @@ async def delete_trace_target(
 
     async with state.sessionmaker() as s:
         admin = await ws.get_admin(s)
+        # 必须走 verify_admin_password：密码由环境变量托管时库里根本没有哈希，
+        # verify_password 会对任何输入都返回 False（原委见 web/admin/upstreams.py）。
         if admin is None or not ws.verify_admin_password(
             admin.password_hash, password, state.settings.admin_password
         ):

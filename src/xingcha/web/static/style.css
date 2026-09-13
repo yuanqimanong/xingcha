@@ -61,7 +61,7 @@
   --auth-card-bg: rgba(255, 255, 255, 0.86);
   --auth-card-rule: var(--rule);
   --auth-card-sheen: rgba(255, 255, 255, 0.9);
-  /* 银河的 token 只在暗色里定义——**登录页恒为暗色**（见 routes.login_page）。
+  /* 银河的 token 只在暗色里定义——**登录页恒为暗色**（见 web/admin/login.py 的 login_page）。
      亮色不画银河不是"简化"，是因为白底上的星点不像星、像页面没渲染干净；
      与其做一套注定难看的亮色，不如让那一页只有一种样子。
      这里留的只是兜底：万一有人手动给登录页强制亮色，至少还有底色。 */
@@ -159,8 +159,8 @@
   --auth-card-sheen: rgba(255, 255, 255, 0.06);
   /* 银河：星点近白微偏青；核心是主色调亮之后的一层薄雾。
      **这一套必须与上面 @media 那份逐字一致**——两处是 CSS 逼出来的重复
-     （一个在 @media 里，没法合并），所以由 tests/test_admin.py 的
-     TestThemeTokensStayInSync 断言两边的 token 名字集合相同。
+     （一个在 @media 里，没法合并），而**没有测试盯着两边相等**：加或删一个
+     token 必须手工同步两处。
      漏一个的后果实测过：登录页强制 data-theme="dark"，而 --star-opacity 只在
      @media 那份里定义 → 回落到 :root 的 0 → **星星全没了，页面一片黑**。 */
   --star-opacity: 1;
@@ -1422,18 +1422,6 @@ textarea {
 }
 .danger-text { color: var(--danger); font-weight: 600; }
 
-/* --- Agent 表单：三个次要分区并排 --- */
-/*
- * 模型参数 / 能力 / 可观测 大多数时候都不用改。各占一整行只会把「保存」推得更远，
- * 而它们展开后的高度差很大，所以是 auto-fit 而不是固定三列——放不下就自己换行。
- */
-.tri {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: var(--s4);
-  align-items: start;
-}
-
 /* --- 少样本示例的一组 --- */
 .example {
   border: 1px solid var(--rule);
@@ -1850,18 +1838,6 @@ textarea {
 .cap.unknown .cap-mark { color: var(--ink-3); }
 .cap.no .cap-label,
 .cap.unknown .cap-label { color: var(--ink-3); }
-
-/* --- 三列栅格（Agent 表单的两排） --- */
-/*
- * auto-fit + minmax 而不是写死 `repeat(3, 1fr)`：写死的话笔记本上每格只剩三百来
- * 像素，schema 那个 textarea 会挤成一条缝。宽屏三列，窄了自动落成两列、一列。
- */
-.grid-3 {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--s4);
-  align-items: start;
-}
 
 /* 可观测并进「试运行」卡片之后的分隔 */
 .obs-in-test {

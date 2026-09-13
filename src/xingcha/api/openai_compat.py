@@ -162,7 +162,8 @@ async def chat_completions(request: Request) -> Response:
     """按 ``model`` 字段分派。
 
     - 含 ``/`` → 上游裸模型，透明转发（**v1 的核心价值**）
-    - 不含 ``/`` → Agent slug；M1 还没有 Agent 面，一律 404
+    - 不含 ``/`` → Agent slug，交给 :func:`_run_agent`；slug 不存在时由
+      ``agent_svc.resolve`` 抛 ModelNotFound
 
     404 而不是"猜测性地当上游模型转发"：那样一个拼错的 slug 会静默变成一次真实的
     付费调用，而调用方以为自己在调 Agent。
@@ -289,7 +290,7 @@ async def _run_agent(
             agent_id=resolved.agent_id,
         )
 
-    rt = await run_svc.get_runtime(
+    rt = run_svc.get_runtime(
         resolved,
         cache=state.runtimes,
         provider=state.provider,
@@ -318,7 +319,7 @@ async def _run_agent(
         # 结算 None 意味着**这条最贵的路径完全不占金额配额**，钱刹车没落在要刹的
         # 地方。用量来自 map_errors 挂在异常上的累加器（见 services/run.execute）。
         if e.usage is not None:
-            _absorb_usage(tracker, e.usage, rt, state.catalog, state.cost_sink)
+            _absorb_usage(tracker, e.usage, rt, state.catalog)
         await tracker.submit()
 
     if wants_streaming:
@@ -397,7 +398,7 @@ async def _stream_agent(
     return SameTaskEventStream(body(), request=request)
 
 
-def _absorb_usage(tracker: RunTracker, usage: Any, rt: Any, catalog: Any, cost_sink: Any) -> None:
+def _absorb_usage(tracker: RunTracker, usage: Any, rt: Any, catalog: Any) -> None:
     """把**失败路径**的用量与费用写进 run 记录。
 
     与成功路径共用 ``price()``（一处定价），但拿不到 ``provider_response_id``——
@@ -434,9 +435,7 @@ def _status_for(e: XingchaError) -> str:
     }.get(e.error_type, RunStatus.UPSTREAM_ERROR.value)
 
 
-def _absorb(
-    tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any, cost_sink: Any = None
-) -> None:
+def _absorb(tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any, cost_sink: Any) -> None:
     """把运行结果写进 run 记录，并结算费用。
 
     费用优先用**上游自己报的**（经 CostSink），拿不到才回落目录价。

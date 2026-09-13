@@ -116,7 +116,7 @@ class BackupReport:
         return not self.problems
 
 
-def verify_backup(backup_path: Path, *, expect_tables: tuple[str, ...] = ()) -> BackupReport:
+def verify_backup(backup_path: Path) -> BackupReport:
     """体检一份备份，不改动任何东西。
 
     检查的顺序按"越致命越先"排：文件在不在 → 打不打得开 → 完整性 → schema 版本
@@ -149,10 +149,7 @@ def verify_backup(backup_path: Path, *, expect_tables: tuple[str, ...] = ()) -> 
             if revision is None:
                 problems.append("没有 alembic_version——这不像是星槎的库")
 
-            for name in expect_tables or tuple(sorted(tables - {"alembic_version"})):
-                if name not in tables:
-                    problems.append(f"缺表：{name}")
-                    continue
+            for name in sorted(tables - {"alembic_version"}):
                 counts[name] = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
 
             if "setting" in tables:

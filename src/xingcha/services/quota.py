@@ -2,7 +2,7 @@
 
 三级主体（user / token / agent）× 三种窗口（day / month / total），可限金额或次数。
 
-**两个设计难点**
+**三个设计难点**
 
 **一、计数必须在内存里，不能从数据库读。**
 
@@ -44,7 +44,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -387,23 +387,3 @@ async def remove(session: AsyncSession, *, subject_type: str, subject_id: int, w
         return False
     await session.delete(row)
     return True
-
-
-async def list_rules(session: AsyncSession) -> list[Quota]:
-    return list(
-        (
-            await session.execute(
-                select(Quota).order_by(Quota.subject_type, Quota.subject_id, Quota.window)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-
-@dataclass
-class Overview:
-    """总览页上的配额提示。"""
-
-    rules: int = 0
-    nearest: list[dict[str, object]] = field(default_factory=list)

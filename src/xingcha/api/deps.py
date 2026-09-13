@@ -1,25 +1,15 @@
-"""请求级依赖：鉴权、限流、上下文。"""
+"""请求级依赖：鉴权与限流。"""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 from fastapi import Request
 
 from ..services import auth as auth_svc
 from ..services.auth import Principal
-from ..services.ratelimit import RateLimiter
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class CallContext:
-    """一次 ``/v1`` 调用的上下文。挂在 ``request.state.xc_ctx``。"""
-
-    principal: Principal
-    run_id: str
 
 
 async def require_auth(request: Request) -> Principal:
@@ -49,7 +39,3 @@ def rate_limit_key(principal: Principal) -> str:
     也让"某个客户端跑飞了"只影响它自己那把 key。
     """
     return principal.kid
-
-
-def limiter_of(request: Request) -> RateLimiter:
-    return request.app.state.xc.limiter

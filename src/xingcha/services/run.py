@@ -2,7 +2,8 @@
 
 一次 Agent 调用的生命周期：
 
-    解析 slug → 取（或建）运行时 → 转换 messages → run → 转成 OpenAI 响应
+    解析 slug → 转换 messages → 预留配额 → 取（或建）运行时 → 套模板与示例
+    → run → 转成 OpenAI 响应
 
 **运行时按 ``(agent_id, version)`` 缓存。** 版本不可变，所以编辑 Agent 会产生新版本号、
 旧条目自然不再命中——不需要任何失效逻辑。缓存失效是这类系统最容易出错的地方，
@@ -50,6 +51,7 @@ from ..foundation.errors import (
     UpstreamError,
     UpstreamTimeout,
     XingchaError,
+    usage_block,
 )
 from ..obs import tracing as tracing_mod
 from .agent import ResolvedAgent
@@ -353,7 +355,7 @@ def apply_prompting(conv: Conversation, prompting: builder.Prompting) -> Convers
 # =============================================================================
 
 
-async def get_runtime(
+def get_runtime(
     resolved: ResolvedAgent,
     *,
     cache: RuntimeCache,
@@ -670,11 +672,7 @@ def to_openai_response(
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": outcome.input_tokens,
-            "completion_tokens": outcome.output_tokens,
-            "total_tokens": outcome.input_tokens + outcome.output_tokens,
-        },
+        "usage": usage_block(outcome),
         C.EXT_KEY: extension_block(outcome, run_id),
     }
 
@@ -701,9 +699,8 @@ def extension_block(outcome: RunOutcome, run_id: str | None = None) -> dict[str,
 class SSEFrames:
     """一次流式响应的帧工厂。
 
-    **帧形状是契约冻结的**（见 CONTRACT §6），所以它只能有一个来源。真流式与
-    伪流式都从这里取帧——两条路径各写一份的话，"把伪流式升级成真 delta 对客户端
-    不可见"这个承诺就没有任何东西在守。
+    **帧形状是契约冻结的**（契约 §6），所以它只能有一个来源——另写一份就等于给一个
+    冻结的形状开了第二个定义点，而两份迟早会分叉。
 
     ``id`` / ``created`` 在同一次响应的所有帧里必须一致，所以它们是实例状态而不是
     每帧现算。
@@ -749,33 +746,10 @@ class SSEFrames:
             {
                 **self._base,
                 "choices": [],
-                "usage": {
-                    "prompt_tokens": outcome.input_tokens,
-                    "completion_tokens": outcome.output_tokens,
-                    "total_tokens": outcome.input_tokens + outcome.output_tokens,
-                },
+                "usage": usage_block(outcome),
                 C.EXT_KEY: extension_block(outcome, run_id),
             }
         )
-
-
-def to_sse_frames(outcome: RunOutcome, *, model: str, run_id: str | None = None) -> list[str]:
-    """伪流式的帧序列：一次性把已有结果切成合法的帧序列。
-
-    结构化 Agent 对 ``stream=true`` 直接 400，所以走到这里的只有**真流式失败后的
-    回落**与纯文本以外的情形。纯文本 Agent 自 v0.4 起走真 delta。
-
-    为什么当初就发伪流式而不是对流式请求返回 400：虽然 400→200 是加法，但客户端
-    会为那个 400 **写死绕过逻辑**（探测到就改走非流式），等真流式上线时反而打断它们。
-    """
-    f = SSEFrames(model=model)
-    return [
-        f.role(),
-        f.content(outcome.content),
-        f.finish(),
-        f.summary(outcome, run_id),
-        C.SSE_DONE,
-    ]
 
 
 # =============================================================================

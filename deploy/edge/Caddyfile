@@ -2,7 +2,8 @@
 #
 # 起它：./deploy/edge/edge start（Windows 双击 edge.bat）。怎么起、怎么装根证书、
 # 别的项目怎么加进来——**deploy/README.md**。
-# 那两个脚本负责三件事：找到 caddy 二进制、从仓库根的 .env 读出 EDGE_HOST、
+# 那两个脚本负责三件事：找到 caddy 二进制、从仓库根 .env 的 XINGCHA_WEB_HOST 推出
+# EDGE_HOST 并导出到进程环境（.env 里**没有** EDGE_HOST 这一项，别去那儿找）、
 # 把这份配置交给它。**EDGE_HOST 必须由脚本传进来**——{$VAR} 读的是进程的环境变量，
 # 空的话站点地址会退化成 https://:8443，证书签不出来而报错离根因很远。
 #

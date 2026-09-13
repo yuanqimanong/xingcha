@@ -47,8 +47,8 @@ services:
     restart: unless-stopped
 
     # 宿主上绑哪个地址。**不是用户变量**——由 deploy/linux/xc 从 XINGCHA_WEB_HOST 推出来
-    # 再导出（见那里的 derive_bind_addr）：localhost/127.0.0.1 → 只绑回环，
-    # 其它 → 0.0.0.0。
+    # 再导出（见那里的 derive_bind_addr）：留空 / localhost / 127.0.0.1 → 只绑回环，
+    # 其它 → 0.0.0.0。**留空 = 只有本机**，不是「开给局域网」。
     #
     # 合成一个变量是因为分开最容易出的错是二者对不上：显示局域网 IP、却只绑了回环，
     # 于是别人打不开而页面上的地址看起来完全正确。

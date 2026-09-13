@@ -51,7 +51,7 @@ def open_keyring(settings: Settings) -> Keyring:
     return Keyring.load_or_create(settings.secret_path, allow_create=not has_ct)
 
 
-def prepare(settings: Settings, *, migrate_db: bool = True) -> Keyring:
+def prepare(settings: Settings) -> Keyring:
     """完整的启动前置序列，返回就绪的密钥环。
 
     顺序是有意的：
@@ -68,8 +68,7 @@ def prepare(settings: Settings, *, migrate_db: bool = True) -> Keyring:
         log.info("已从 .env 读入厂商 key：%s", "、".join(loaded))
     apply_umask()
     settings.ensure_data_dir()
-    if migrate_db:
-        before, after = migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
-        if before != after:
-            log.info("数据库已从 %s 升级到 %s", before or "(空库)", after)
+    before, after = migrate.upgrade_to_head(settings.db_path, settings.backup_dir)
+    if before != after:
+        log.info("数据库已从 %s 升级到 %s", before or "(空库)", after)
     return open_keyring(settings)

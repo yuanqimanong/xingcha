@@ -144,7 +144,8 @@ async def check_provider(
     （少了或多了 ``/v1``）。没有干跑的时候，唯一的验证方式是"保存一次看看"——
     而那要么写坏配置，要么把四个输入全丢掉重填。
 
-    返回 HTML 片段（htmx 换进表单下方），所以**不碰用户已填的任何输入**。
+    返回 HTML 片段（htmx 换进上游页的 #check-result，它在 check-dialog 弹窗里），
+    所以**不碰用户已填的任何输入**。
     """
     await guard_mutation(request, csrf_token)
 

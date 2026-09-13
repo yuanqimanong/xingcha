@@ -1,7 +1,7 @@
 {# 能力勾选列表。**随选定的模型重渲染**，所以单独成片。
 
    模型明确说了不支持的，这里根本不出现——摆一个勾了必然报错的开关，比不摆更糟。
-   "不知道"（目录没有能力信息）按可用处理，理由见 routes._model_report_ctx。 #}
+   "不知道"（目录没有能力信息）按可用处理，理由见 web/admin/agent_view.py 的 model_report_ctx。 #}
 <div class="check-list">
   {% for name, label, hint, _args in capabilities %}
   <label class="check">

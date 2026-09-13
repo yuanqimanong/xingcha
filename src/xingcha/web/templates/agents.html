@@ -84,7 +84,7 @@
   </dialog>
 
 {% if stale_total %}
-{# 只有目录真的拉到东西时才会走到这里（见 routes.agents_page 里的 catalog_known）。
+{# 只有目录真的拉到东西时才会走到这里（见 web/admin/agents.py 的 agents_page）。
    否则"目录为空"会被误报成"所有 Agent 都失效了"。 #}
 <div class="alert danger">
   <div>

@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import contract as C
@@ -36,7 +36,6 @@ from ..db.models import User, WebSession, utcnow
 log = logging.getLogger(__name__)
 
 SESSION_COOKIE = "xc_session"
-CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
 
 _hasher = PasswordHasher()
@@ -251,19 +250,12 @@ async def destroy(session: AsyncSession, token: str | None) -> None:
     await session.execute(delete(WebSession).where(WebSession.id == _sha(token)))
 
 
-async def purge_expired(session: AsyncSession) -> int:
-    result = await session.execute(delete(WebSession).where(WebSession.expires_at <= utcnow()))
-    return getattr(result, "rowcount", 0) or 0
-
-
 async def revoke_all(session: AsyncSession) -> int:
     """吊销所有后台会话，返回被吊销的条数。
 
     改密码与重置密码都要调。不调的话，一个已登录的浏览器仍然握着完整权限——
     而这两个操作的场景往往正是"我不确定还有谁登着"。
     """
-    from sqlalchemy import delete, func, select
-
     n = (await session.execute(select(func.count()).select_from(WebSession))).scalar() or 0
     await session.execute(delete(WebSession))
     return int(n)

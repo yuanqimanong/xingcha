@@ -38,7 +38,6 @@ async def guide_page(request: Request) -> Response:
         "guide.html",
         {
             "sample_agent": sample,
-            "has_agent": bool(pairs),
             # 直通示例里的裸模型名取自真实目录：写死 openai/gpt-5 而当前上游是
             # DeepSeek 的话，照着跑会直接报 model_not_found。
             "sample_model": (state.catalog.all()[0].id if state.catalog.all() else "openai/gpt-5"),
