@@ -59,11 +59,10 @@ if (-not (Test-Path ".env")) {
     Ok "已生成 .env"
     Write-Host ""
     Say "一项都不改也能起来，但**明文 HTTP 且只绑回环**：只有这台机器能打开。"
-    Say "要 HTTPS：双击 deploy\edge\edge.bat 起网关，然后翻到 .env 最后一节"
-    Say "把这两行放开（为什么见 deploy\README.md）："
+    Say "要 HTTPS：双击 deploy\edge\edge.bat 起网关，然后在 .env 第 1 节写一行"
+    Say "（地址与信任范围会据此推出来，不用自己填，为什么见 deploy\README.md）："
     Write-Host ""
-    Say "    XINGCHA_TRUSTED_PROXIES=127.0.0.1"
-    Say "    XINGCHA_PUBLIC_URL=https://本机内网IP:8443"
+    Say "    XINGCHA_GATEWAY=edge"
     Write-Host ""
 }
 

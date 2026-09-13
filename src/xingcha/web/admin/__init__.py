@@ -8,7 +8,8 @@
 
 * :mod:`.security` —— 会话、CSRF、同源、安全响应头；
 * :mod:`.render` —— 模板渲染的唯一出口；
-* :mod:`.runs` —— 调用记录的查询与聚合（总览 / 密钥详情 / 调用记录三页共用）。
+* :mod:`.runs` —— 调用记录的查询与聚合（总览 / 密钥详情 / 调用记录 / Agent 列表
+  四页共用）。
 
 对外只暴露 :func:`mount`，以及 :mod:`xingcha.app` 需要的三样：
 :class:`~.security.Denied`、:func:`~.security.security_headers`（全局异常处理器用）

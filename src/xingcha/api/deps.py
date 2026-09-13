@@ -1,4 +1,4 @@
-"""请求级依赖：鉴权与限流主体。"""
+"""请求级依赖：鉴权与限流。"""
 
 from __future__ import annotations
 

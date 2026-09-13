@@ -103,7 +103,8 @@ cd xingcha
 
 Agent 编辑页的「导出」给你一个目录：`agent.yaml` 是标准的 pydantic-ai AgentSpec
 （不是私有格式），外加一份 `README.md` 写清保留了什么、丢失了什么。带 schema 或
-用户模板时才多一份零星槎依赖的 `run.py`（结构化再多一份 `schema.json`）。
+用户模板、少样本示例时才多一份零星槎依赖的 `run.py`（结构化再多一份
+`schema.json`）。
 改完能用 `xingcha agent apply` 导回来。
 
 ### 客户端兼容
@@ -111,7 +112,9 @@ Agent 编辑页的「导出」给你一个目录：`agent.yaml` 是标准的 pyd
 `/v1` 下所有非自有路径**字节级反代**到上游，所以 OpenRouter 有的能力星槎都有。
 
 但 `models.list()` / `models.retrieve()` / 裸模型 / Agent / 流式 / 错误分派这几条
-当前**没有自动验证**：`openai` 不在 dev 依赖里，CI 里也没有任何一步装它、调它。
+当前**没有自动验证**。`openai` SDK 本身一直装着（它是 `pydantic-ai-slim[openai]` 的
+传递依赖，uv.lock 锁到 3.8.0，`core/builder.py` 每次都 import 它），缺的是拿它当
+**客户端**去跑一遍这些端点——守着那件事的测试随 `e298423` 一起没了。
 
 业务代码要改的就是两行：
 
@@ -173,7 +176,9 @@ $DC exec xingcha ls /data/backups
 $DC exec xingcha xingcha db restore /data/backups/xingcha-<时间戳>.db --yes
 ```
 
-`upgrade` / `downgrade` / `prune` 会先备份；**`restore` 不备份当前库**——它只在覆盖前对那份备份文件跑一次 `PRAGMA integrity_check`，坏文件拒绝恢复。
+真要动数据时才备份：`downgrade` 总是备，`upgrade` 只在确实有迁移可跑且库非空时备，
+`prune` 只在带 `--yes` 真删时备。**`restore` 不备份当前库**——它只在覆盖前对那份
+备份文件跑一次 `PRAGMA integrity_check`，坏文件拒绝恢复。
 
 升级前想在真实数据的副本上演练（空库上的 `upgrade` 通过，证明不了有真实数据时也无感）：
 
@@ -572,7 +577,7 @@ src/xingcha/
 |---|---|
 | `v1.py` | 装配。顺序在这里 |
 | `normalize.py` | 路径归一化中间件，必须在路由之前 |
-| `deps.py` | 请求级依赖：鉴权、限流、上下文 |
+| `deps.py` | 请求级依赖：鉴权、限流 |
 | `openai_compat.py` | `/v1/models` 与 `/v1/chat/completions` |
 | `passthrough.py` | 其余全部字节级反代。**刻意做得很笨**：不解析任何东西 |
 | `runlog_mw.py` / `sse.py` | 记账链路（两条路径共用）；流式响应 |
@@ -618,7 +623,8 @@ src/xingcha/
 > 先是契约、分层、部署产物三份**静态守卫**（不建库、不起服务、不碰网络，跑一遍是
 > 秒级的），之后每修一个 bug 补一条回归测试。尚未恢复的运行时测试有配额、流式、
 > 直通反代、导出物零依赖，以及后台页面那一组（模板不写内联脚本、深浅两套主题
-> token 同步、模板引用的静态文件都在）——那几条约束当前**没有任何自动检查**。
+> token 同步）——那几条约束当前**没有任何自动检查**。「模板引用的静态文件都在」
+> 只在镜像那一层有守卫（CI 的「镜像里的静态资源齐不齐」），源码树那一层没有。
 
 ---
 

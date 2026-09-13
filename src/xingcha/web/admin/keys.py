@@ -126,7 +126,8 @@ async def issue_key(
     # "这是唯一一次看到明文"变成一句假话。
     #
     # 当时的注释认为替代方案会让明文在库里多活一会儿，那是个假两难：单 worker 是
-    # 断言过的硬约束，进程内存里做一次性存取就够了，一次都不落盘。见 web/flash.py。
+    # 硬约束（serve 写死传给 uvicorn），进程内存里做一次性存取就够了，一次都不
+    # 落盘。见 web/flash.py。
     assert session is not None  # require_admin 已在 guard_mutation 里过了
     state.flash.put(f"{session.id}:issued_key", f"{issued.plaintext}\n{issued.name}")
     return security_headers(RedirectResponse("/admin/keys", status_code=303))

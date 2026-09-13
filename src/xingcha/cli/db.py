@@ -1,9 +1,12 @@
 """``xingcha db`` —— 迁移、备份与恢复。
 
-``upgrade`` / ``downgrade`` / ``prune`` 都会先自动备份。``restore`` **不备份当前
-库**——它只在覆盖前对那份备份文件跑一次 ``PRAGMA integrity_check``，坏文件拒绝恢复；
-覆盖之后没有回头路。这一组的每条命令都可能是运维在事故中执行的，
-所以宁可多做一步慢的，也不要让人手滑丢数据。
+**真要动数据时才备份**：``downgrade`` 总是备；``upgrade`` 只在确实有迁移可跑、
+且库非空时备（已是最新就直接返回，见 migrate.upgrade_to_head）；``prune`` 只在
+带 ``--yes`` 真删时备，不带就是 dry-run。
+
+``restore`` 是这一组里唯一的单向门：它**不备份当前库**，只在覆盖前对那份备份文件
+跑一次 ``PRAGMA integrity_check``，坏文件拒绝恢复。这一组的每条命令都可能是运维
+在事故中执行的，所以力气花在覆盖之前，而不是事后。
 """
 
 from __future__ import annotations

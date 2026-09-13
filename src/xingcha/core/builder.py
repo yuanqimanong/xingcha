@@ -217,7 +217,7 @@ def make_provider(
 
 
 def enable_instrumentation(tracing: Any) -> None:
-    """装配 pydantic-ai 的埋点，但**默认不开**。
+    """装配 pydantic-ai 的埋点。没有上报目标时全体关闭；配了目标之后它就是全局默认值。
 
     这是本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
 

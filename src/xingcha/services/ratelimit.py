@@ -6,8 +6,8 @@
 key 能按线速抽干余额。
 
 进程内内存实现，不落库——这依赖单 worker（契约 §9 的 ``REQUIRED_WORKERS``）。
-多 worker 下每个进程各有一份计数，限流会变成 N 倍，这是启动时断言单 worker 的
-理由之一。
+多 worker 下每个进程各有一份计数，限流会变成 N 倍——这是 ``serve`` 把 worker 数
+写死成 1 的理由之一。
 """
 
 from __future__ import annotations
