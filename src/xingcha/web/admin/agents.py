@@ -240,6 +240,32 @@ async def toggle_agent(request: Request, slug: str, csrf_token: str = Form(defau
     return security_headers(RedirectResponse("/admin/agents", status_code=303))
 
 
+@router.post("/agents/{slug}/delete")
+async def delete_agent(request: Request, slug: str, csrf_token: str = Form(default="")) -> Response:
+    """彻底删掉一个 Agent。**只有停用了的才能删。**
+
+    为什么要拆成两下：停用是可逆的（slug 仍被占着，随时开回来），删除不是——删完这个
+    slug 重新可被占用，下一个同名 Agent 会悄悄接管老调用方的请求。所以先停用、再删，
+    中间隔一次确认。连带删了什么、保留了什么，见 services.agent.delete 的注释。
+    """
+    await guard_mutation(request, csrf_token)
+    state = request.app.state.xc
+    session = await current_session(request)
+
+    async with state.sessionmaker() as s:
+        try:
+            await agent_svc.delete(s, slug)
+        except XingchaError as e:
+            await s.rollback()
+            put_agents_flash(request, session, "danger", e.message)
+            return security_headers(RedirectResponse(f"/admin/agents/{slug}", status_code=303))
+        await s.commit()
+    # 运行时缓存里可能还留着它；模型列表也按 is_active 过滤过一轮。
+    state.runtimes.clear()
+    put_agents_flash(request, session, "ok", f"已删除「{slug}」。这个标识现在重新可被占用。")
+    return security_headers(RedirectResponse("/admin/agents", status_code=303))
+
+
 @router.get("/agents/new")
 async def agent_new(request: Request) -> Response:
     await require_admin(request)
