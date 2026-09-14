@@ -87,15 +87,21 @@ Docker 用 root 重建挂载点（容器里 UID 10001 写不进去，直接重�
 双击 `deploy\windows\xc.bat`：确认有 `uv` → 没有 `.env` 就从**同一份**模板生成 →
 `uv sync --frozen --no-dev` → `uv run xingcha serve`。窗口开着就是跑着，关掉就是停止。
 
-**更新代码：双击 `deploy\windows\update.bat`**（等同于终端里 `xc.bat update`）。它先
-`git pull --ff-only` 再走上面同一条启动流程。
+**代码更新是双击时顺带做的**：`xc.ps1` 起服务前先 `git pull --ff-only`，所以双击一次
+拿到的就是最新代码，不用先开终端。
 
-两个文件而不是一个"每次都拉"，与 `deploy/linux/xc` 的 `start` / `update` 分法一致：
-`start` 得是**可复现**的那一下——照当前这份代码起来，不联网也能跑。把 pull 塞进 start
-之后，"昨天好好的，今天双击一下就变了"会变成一类没法回溯的故障。
+这次拉取**尽力而为，绝不阻断启动**——没网、`git` 没装、不是 git 仓库（下载的压缩包）、
+分叉了、工作区脏，每一种都只打一条提示然后照常用当前代码起来。把 pull 做成硬前置会让
+一整类本来能起的服务起不来，而它们跟 git 一点关系都没有。
 
-`--ff-only` 而不是 `reset --hard`：这两个脚本同样会在**开发机**上被双击，而
-`reset --hard` 会不声不响地毁掉未提交的工作。所以脏工作区直接拒绝，让人自己决定。
+要"就照当前这份代码起来、完全不碰 git"（离线复现、排查回归）：终端里 `xc.bat -NoPull`。
+
+`--ff-only` 而不是 `reset --hard`，且**工作区脏就直接跳过**：这个脚本同样会在开发机上
+被双击，而 `reset --hard` 会不声不响地毁掉未提交的工作。
+
+> 和 Linux 那边不一样是有意的：那边 `start` / `update` 分开，因为终端里多打一个词没有
+> 成本，于是 `start` 能保住"完全可复现"这个性质；Windows 这边没有终端那一层，只有双击，
+> 所以把"拿最新"做成默认，把"可复现"留给 `-NoPull`。
 
 要 HTTPS / 局域网访问，再双击 `deploy\edge\edge.bat` 起网关，并在 `.env` 第一节写一行
 `XINGCHA_GATEWAY=edge`——`XINGCHA_PUBLIC_URL` 与 `XINGCHA_TRUSTED_PROXIES` 由 `xc.ps1`

@@ -2,9 +2,9 @@
 .SYNOPSIS
     星槎 · Windows 本地直跑。真正干活的是这个脚本，xc.bat 只是启动器。
 
-.PARAMETER Cmd
-    start（默认，双击就是它）= 照当前这份代码起来，不碰 git。
-    update = 先 git pull --ff-only 再起。双击 update.bat 等同于它。
+.PARAMETER NoPull
+    跳过启动前那次 git pull，照当前这份代码起来。双击进来时不会带这个开关——
+    双击的语义就是"拿最新的跑"。
 
 .DESCRIPTION
     为什么逻辑在 .ps1 而不是 .bat：cmd.exe 在 chcp 65001 下按字节偏移回溯文件位置，
@@ -21,10 +21,9 @@
 #>
 [CmdletBinding()]
 param(
-    # 双击进来就是 start——.bat 双击传不了参数，所以默认值必须是最常用的那个。
-    # update 要在终端里跑 `xc.bat update`，或者双击 update.bat。
-    [ValidateSet("start", "update")]
-    [string]$Cmd = "start"
+    # 默认会先拉一次代码（尽力而为，见下面那段）。要"就照当前这份代码起来、
+    # 完全不碰 git"，终端里跑 `xc.bat -NoPull`。
+    [switch]$NoPull
 )
 
 $ErrorActionPreference = "Stop"
@@ -84,33 +83,46 @@ if (-not (Test-Path ".env")) {
 #   .venv 里删掉**，之后要跑测试先 `uv sync --frozen` 补回来。
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# update：先把代码拉到最新，再照常启动
+# 启动前先拉一次代码 —— **尽力而为，绝不阻断启动**
 #
-# 为什么**不是**每次 start 都拉：start 得是可复现的那一下——照当前这份代码起来，
-# 不联网也能跑。把 pull 塞进 start 之后，「昨天好好的，今天双击一下就变了」会变成
-# 一类没法回溯的故障。deploy/linux/xc 早就是这么分的，这里补齐同样的语义。
+# 双击是这台机器上唯一的入口（.bat 双击传不了参数），所以"拿最新的跑"必须是默认
+# 行为，不能要求人先开终端。但把 pull 做成硬前置会引入一整类新故障：没网、git 没
+# 装、分叉了、工作区脏——每一种都会让一个本来能起来的服务起不来。所以这里的规矩是：
+# **拉得动就拉，拉不动就说清楚原因然后照常起**。
 #
-# `pull --ff-only` 而不是 `reset --hard`：这个脚本同样会在**开发机**上被双击，
-# 而 reset --hard 会不声不响地毁掉未提交的工作。脏工作区直接拒绝，让人自己决定。
+# `--ff-only` 而不是 `reset --hard`，脏工作区直接跳过：这个脚本同样会在**开发机**
+# 上被双击，而 reset --hard 会不声不响地毁掉未提交的工作。理由与 deploy/linux/xc
+# 里那段相同。
+#
+# 与 Linux 那条的差异是有意的：那边 `start` 与 `update` 分开，因为终端里多打一个词
+# 没有成本；这边没有终端这一层，只有双击。要那边的语义就用 -NoPull。
 # ---------------------------------------------------------------------------
-if ($Cmd -eq "update") {
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Die "找不到 git。装一个，或者自己把代码更新到最新再双击 xc.bat。"
-    }
-    # --quiet 时 git diff 用退出码表态：0 = 干净。两条都要查，暂存区也算脏。
-    & git diff --quiet; $dirty = ($LASTEXITCODE -ne 0)
-    & git diff --cached --quiet; $staged = ($LASTEXITCODE -ne 0)
+if ($NoPull) {
+    Say "跳过拉取（-NoPull），照当前这份代码起来"
+} elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Warn "找不到 git，跳过拉取，照当前这份代码起来。"
+} elseif (-not (Test-Path ".git")) {
+    Say "不是 git 仓库（多半是下载的压缩包），跳过拉取"
+} else {
+    # --quiet 时 git diff 用退出码表态：0 = 干净。暂存区也算脏，两条都要查。
+    & git diff --quiet 2>$null;        $dirty  = ($LASTEXITCODE -ne 0)
+    & git diff --cached --quiet 2>$null; $staged = ($LASTEXITCODE -ne 0)
     if ($dirty -or $staged) {
-        Die "工作区有未提交的改动。先 commit 或 stash，再 update。"
+        Warn "工作区有未提交的改动，跳过拉取（不会动你的代码）。"
+        Say  "  要更新就先 commit 或 stash，再双击一次。"
+    } else {
+        Say "拉取最新代码"
+        & git pull --ff-only 2>&1 | ForEach-Object { Say "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            # 没网、远端不可达、分叉了都会落到这里。**不 Die**——服务照常起，
+            # 只是跑的是本地这一份。
+            Warn "拉取没成功（没网？分叉了？原因在上面），照当前这份代码起来。"
+        } else {
+            Ok "代码已是最新"
+        }
     }
-    Say "拉代码"
-    & git pull --ff-only
-    if ($LASTEXITCODE -ne 0) {
-        Die "git pull 失败，原因在上面。分叉了的话先自己 rebase/merge。"
-    }
-    Ok "代码已是最新"
-    Write-Host ""
 }
+Write-Host ""
 
 Say "同步依赖（第一次要下 Python 和依赖包，几分钟；之后是秒级）"
 & uv sync --frozen --no-dev

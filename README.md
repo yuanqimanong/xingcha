@@ -46,8 +46,9 @@ cd xingcha
 ### 没装 docker 的机器（Windows，或干净的 Linux）
 
 双击 `deploy\windows\xc.bat`，或 `uv run xingcha serve`——用 uv 在本机直接起进程，
-不打镜像。**更新代码双击 `update.bat`**（先 `git pull --ff-only` 再起，与 Linux 那边的
-`xc update` 同一套语义）。网关是同一个（`deploy/edge/`，Windows 双击 `edge.bat`）。
+不打镜像。**双击时会顺带 `git pull --ff-only`**（尽力而为：拉不动就提示一句照常起；
+要完全不碰 git 用 `xc.bat -NoPull`）。网关是同一个（`deploy/edge/`，Windows 双击
+`edge.bat`）。
 
 细节见 [deploy/README.md](deploy/README.md)。
 

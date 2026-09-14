@@ -196,14 +196,7 @@ def test_xc_actually_extracts_the_uid_from_the_contract():
 # =============================================================================
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        DEPLOY / "windows" / "xc.bat",
-        DEPLOY / "windows" / "update.bat",
-        DEPLOY / "edge" / "edge.bat",
-    ],
-)
+@pytest.mark.parametrize("path", [DEPLOY / "windows" / "xc.bat", DEPLOY / "edge" / "edge.bat"])
 def test_bat_files_are_pure_ascii(path: Path):
     """``.bat`` 里**一个非 ASCII 字节都不许有**。
 
@@ -231,53 +224,77 @@ def test_powershell_files_have_utf8_bom(path: Path):
 
 
 # =============================================================================
-# 更新：两个平台必须是同一套语义
+# 更新：两个平台都要能拿到最新代码，但入口形态不同
 # =============================================================================
 
 WINDOWS_XC_PS1 = DEPLOY / "windows" / "xc.ps1"
-WINDOWS_UPDATE_BAT = DEPLOY / "windows" / "update.bat"
 
 
-def test_both_platforms_can_update():
-    """Linux 与 Windows 都要有"拉代码再起"的入口。
+def test_both_platforms_can_pull():
+    """Linux 与 Windows 都要有"拉代码"这件事。
 
     少一边的症状很温和、也因此很久都不会被发现：那个平台的人一直跑着旧代码，
-    而服务本身好好的。
+    而服务本身好好的，不报任何错。
     """
     assert "git pull --ff-only" in _text(XC_SH), "deploy/linux/xc 没有 update 了？"
-    assert "git pull --ff-only" in _text(WINDOWS_XC_PS1), "Windows 那条没有 update"
-    assert WINDOWS_UPDATE_BAT.is_file(), "缺少可双击的 update.bat"
+    assert "git pull --ff-only" in _text(WINDOWS_XC_PS1), "xc.ps1 里不拉代码了？"
 
 
-def test_update_refuses_a_dirty_worktree_on_both_platforms():
-    """脏工作区一律拒绝，**两个平台都要**。
+def test_neither_platform_touches_a_dirty_worktree():
+    """脏工作区一律不碰，**两个平台都要**。
 
-    这条守的是 `pull --ff-only` 而不是 `reset --hard` 那个决定（见 deploy/linux/xc
+    守的是"``pull --ff-only`` 而不是 ``reset --hard``"那个决定（见 deploy/linux/xc
     的注释）：这两个脚本同样会在**开发机**上被跑，而 reset --hard 会不声不响地毁掉
     未提交的工作。哪个平台漏了这道闸，哪个平台就会在某天吃掉别人半天的改动。
+
+    两边的处置不同是有意的：Linux 是 `update` 子命令，脏了就**报错退出**（人是特地
+    来更新的）；Windows 是双击启动顺带拉一次，脏了就**跳过并照常启动**（人是来起
+    服务的，不该因为有未提交改动而起不来）。
     """
     for path in (XC_SH, WINDOWS_XC_PS1):
         text = _text(path)
         assert "git diff --quiet" in text and "git diff --cached --quiet" in text, (
-            f"{path.relative_to(ROOT)} 的 update 没有检查脏工作区"
+            f"{path.relative_to(ROOT)} 拉代码前没有检查脏工作区"
+        )
+    # 只看可执行行：两份脚本的注释里都**写着**"而不是 reset --hard"，那是解释，
+    # 不是调用。不滤掉的话这条会盯着一句说明红。
+    for path in (XC_SH, WINDOWS_XC_PS1):
+        code = [ln for ln in _text(path).splitlines() if not ln.strip().startswith("#")]
+        assert not [ln for ln in code if "reset --hard" in ln], (
+            f"{path.relative_to(ROOT)} 真的在跑 reset --hard —— 它会毁掉未提交的工作"
         )
 
 
-def test_start_does_not_pull():
-    """``start`` **不许**碰 git —— 它得是可复现的那一下。
+def test_windows_pull_never_blocks_startup():
+    """Windows 那次 pull **只能是尽力而为**，不许阻断启动。
 
-    把 pull 塞进 start 之后，「昨天好好的，今天双击一下就变了」会变成一类没法回溯的
-    故障；而且离线的机器再也起不来。要最新代码就显式 update。
+    双击是那台机器上唯一的入口（.bat 双击传不了参数），所以拉取必须是默认行为；
+    但把它做成硬前置会引入一整类新故障——没网、git 没装、分叉了、工作区脏，每一种
+    都会让一个本来能起来的服务起不来。规矩是：拉得动就拉，拉不动就说清楚然后照常起。
+
+    实现上就是：拉取那一段里**一次 Die 都不能有**（Die 会 exit 1）。
     """
-    # 先剥掉顶上那段 <# 注释式帮助 #>：它讲的就是 update 会 pull，留着会让"第一个
-    # 匹配"落在文档里，测试于是盯着一句说明而不是真代码。
     ps1 = re.sub(r"<#.*?#>", "", _text(WINDOWS_XC_PS1), count=1, flags=re.S)
-    # Windows 那条：pull 必须被关在 update 分支里。
-    assert 'if ($Cmd -eq "update")' in ps1, "xc.ps1 里 pull 不在 update 分支里"
-    assert ps1.index('if ($Cmd -eq "update")') < ps1.index("git pull --ff-only"), (
-        "xc.ps1 的 git pull 跑在 update 判断之前——start 也会拉代码"
-    )
-    # Linux 那条：start 与 update 是两个 case 分支，pull 只在后者里。
+    # 拉取段：从 -NoPull 那个判断起，到依赖同步那一句止。之后的 Die 是别的事
+    # （uv sync 失败之类），不在这条的管辖范围里。
+    start = ps1.index("if ($NoPull)")
+    block = ps1[start : ps1.index('Say "同步依赖', start)]
+    assert "git pull --ff-only" in block, "拉取不在这一段里了，这条守卫已经盯错地方"
+    assert "Die " not in block, "拉取那一段里有 Die：拉不动就该警告后照常启动，不该让服务起不来"
+    assert "Warn " in block, "拉取失败时得有明确提示，不能静默跳过"
+
+
+def test_windows_has_a_no_pull_escape_hatch():
+    """要"就照当前这份代码起来"时得有办法关掉拉取——离线复现、排查回归都要它。"""
+    ps1 = _text(WINDOWS_XC_PS1)
+    assert "[switch]$NoPull" in ps1, "xc.ps1 没有 -NoPull 开关"
+
+
+def test_linux_start_still_does_not_pull():
+    """Linux 那边 ``start`` 与 ``update`` 分开，别把 pull 漏进 start。
+
+    终端里多打一个词没有成本，所以那边保留"start 完全可复现"这个性质。
+    """
     sh = _text(XC_SH)
     assert sh.index("  start)") < sh.index("  update)") < sh.index("git pull --ff-only"), (
         "deploy/linux/xc 的 git pull 跑出 update 分支了"
