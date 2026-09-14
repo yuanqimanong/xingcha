@@ -284,6 +284,37 @@ def test_windows_pull_never_blocks_startup():
     assert "Warn " in block, "拉取失败时得有明确提示，不能静默跳过"
 
 
+def test_windows_pull_does_not_merge_native_stderr_under_stop():
+    """把原生命令的 stderr 用 ``2>&1`` 合进管道，在 ``$ErrorActionPreference='Stop'``
+    下是**终止错误**。
+
+    git 把 ``From github.com:...`` 这类进度写在 stderr 上，**成功拉到新提交时也一样**。
+    PowerShell 5.1 在合流那一刻把原生 stderr 转成 ErrorRecord，EAP=Stop 于是把它当成
+    终止错误抛出来（``FullyQualifiedErrorId : NativeCommandError``）——脚本当场死掉，
+    xc.bat 看到非零退出码就 pause，服务根本没起。
+
+    它时灵时不灵：没东西可拉时 git 只往 stdout 写一句 "Already up to date."，于是
+    **只有真的拉到新提交那次才炸**，平时看着好好的。真机上撞到过。
+
+    上面那条 :func:`test_windows_pull_never_blocks_startup` 看的是 ``Die``，看不见这
+    一种——阻断启动的是 PowerShell 自己抛的错，不是脚本里的一句退出。
+    """
+    ps1 = _text(WINDOWS_XC_PS1)
+    assert '$ErrorActionPreference = "Stop"' in ps1, "这条守卫的前提没了：脚本不再是 EAP=Stop"
+    code = [ln for ln in ps1.splitlines() if not ln.strip().startswith("#")]
+    for i, line in enumerate(code):
+        if "2>&1" not in line:
+            continue
+        # 合流之前就近把 EAP 放回 Continue。窗口取小一点：放在几十行之外的那种
+        # "放开了忘了收"同样是 bug，不该让这条守卫替它背书。
+        window = "\n".join(code[max(0, i - 4) : i])
+        assert '$ErrorActionPreference = "Continue"' in window, (
+            f"xc.ps1 这一句把原生命令的 stderr 合进了管道，而前面没有把 "
+            f"$ErrorActionPreference 放回 Continue：\n    {line.strip()}\n"
+            "git 一旦真的拉到新提交就会抛 NativeCommandError，服务起不来。"
+        )
+
+
 def test_windows_has_a_no_pull_escape_hatch():
     """要"就照当前这份代码起来"时得有办法关掉拉取——离线复现、排查回归都要它。"""
     ps1 = _text(WINDOWS_XC_PS1)
