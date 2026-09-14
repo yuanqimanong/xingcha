@@ -172,6 +172,10 @@ class SpecBundle:
     slug: str
     spec: dict[str, Any]
     schema_text: str | None
+    #: 导出物里记下的分组与档位（``metadata.xingcha``）。手写的 agent.yaml 里通常没有，
+    #: 那时为 None，调用方退回原有行为：分组保持不动、档位走自动判。
+    origin_group: str | None = None
+    origin_tier: Tier | None = None
 
     @property
     def model(self) -> str:
@@ -210,10 +214,28 @@ def parse_bundle(
     if schema_text is None and isinstance(spec.get("output_schema"), dict):
         schema_text = json.dumps(spec["output_schema"], ensure_ascii=False)
 
+    # 分组与档位是导出时盖进 metadata 的来源戳，读完即从 spec 里摘掉——库里它们是列，
+    # spec 里再留一份就会不同步。摘不出来（手写的 yaml）就是 None。
+    origin_group, origin_tier_raw = builder.take_origin(spec)
+    origin_tier: Tier | None = None
+    if origin_tier_raw:
+        try:
+            origin_tier = Tier(origin_tier_raw)
+        except ValueError:
+            # 不认识的档位不拦下整次导入：它多半来自更新的星槎版本，退回自动判档
+            # 比让人对着一个"档位写错了"的报错无从下手要好。
+            log.warning("导入物里的档位 %r 不认识，退回自动判档", origin_tier_raw)
+
     resolved = (slug or spec.get("name") or "").strip()
     if not resolved:
         raise AgentSpecInvalid("没有 slug：给一个，或让文件所在目录名当 slug。")
-    return SpecBundle(slug=resolved, spec=spec, schema_text=schema_text)
+    return SpecBundle(
+        slug=resolved,
+        spec=spec,
+        schema_text=schema_text,
+        origin_group=origin_group,
+        origin_tier=origin_tier,
+    )
 
 
 async def apply_bundle(

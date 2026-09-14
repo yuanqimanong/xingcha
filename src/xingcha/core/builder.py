@@ -829,6 +829,54 @@ def prompting_to_spec(spec: dict[str, Any], prompting: Prompting) -> None:
     spec.setdefault("metadata", {})[SPEC_NS] = body
 
 
+#: 导出物里记录来源的两个键：分组与档位。
+#:
+#: 它们在库里是 ``agent.group_name`` / ``agent_version.tier`` 两个**列**，不是 spec 的
+#: 字段——所以只在导出那一刻拓进 metadata，导入时读完即删。spec 里长期留一份副本的话，
+#: 后台改一次分组它就和列不同步了，而不同步的那一份会在下次导出时胜出。
+ORIGIN_GROUP: Final = "group"
+ORIGIN_TIER: Final = "tier"
+
+
+def stamp_origin(spec: dict[str, Any], *, group: str | None, tier: str | None) -> dict[str, Any]:
+    """导出：把分组与档位记进 ``metadata.xingcha``，让导出物能被完整还原。
+
+    不记的话，导到另一台星槎上会**静默丢两样**：分组掉回默认组（还算显眼），
+    档位退回自动判档——T1+/T3 一律变成 T2，而那是保证方式与花费都不同的另一档，
+    页面上看不出来，只有账单和失败形态会变。
+
+    合并而不是覆盖 ``metadata.xingcha``：用户模板、少样本、输出通道都住在同一个
+    命名空间里（见 :func:`prompting_to_spec`）。
+    """
+    body = {k: v for k, v in ((ORIGIN_GROUP, group), (ORIGIN_TIER, tier)) if v}
+    if not body:
+        return spec
+    metadata = dict(spec.get("metadata") or {})
+    metadata[SPEC_NS] = {**(metadata.get(SPEC_NS) or {}), **body}
+    return {**spec, "metadata": metadata}
+
+
+def take_origin(spec: dict[str, Any]) -> tuple[str | None, str | None]:
+    """导入：取出分组与档位，并**从 spec 里删掉**（库里有列，不留副本）。
+
+    原地改 spec。读不出来就给 ``(None, None)``，调用方退回原有行为
+    （分组保持不动、档位走自动判）。
+    """
+    ns = (spec.get("metadata") or {}).get(SPEC_NS)
+    if not isinstance(ns, dict):
+        return None, None
+    group = ns.pop(ORIGIN_GROUP, None)
+    tier = ns.pop(ORIGIN_TIER, None)
+    if not ns:  # 摘干净之后空了就别留一坨空结构
+        spec["metadata"].pop(SPEC_NS, None)
+        if not spec["metadata"]:
+            spec.pop("metadata", None)
+    return (
+        group.strip() if isinstance(group, str) and group.strip() else None,
+        tier.strip() if isinstance(tier, str) and tier.strip() else None,
+    )
+
+
 # =============================================================================
 # 构造（数据库行 → 可执行的 Agent）
 # =============================================================================

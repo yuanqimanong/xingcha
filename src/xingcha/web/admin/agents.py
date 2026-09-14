@@ -516,8 +516,16 @@ async def agent_import(
 
     try:
         async with state.sessionmaker() as s:
+            # 分组：已存在的 Agent 保持原分组，新建的用导入物里记的那个（见
+            # builder.stamp_origin）。档位同理——不带的话 T1+/T3 会静默退成 T2。
+            group_name = await agent_svc.current_group(s, parsed.slug) or parsed.origin_group
             result = await agent_svc.apply_bundle(
-                s, parsed, native_ok=native, changelog="从后台导入"
+                s,
+                parsed,
+                native_ok=native,
+                requested_tier=parsed.origin_tier,
+                group_name=group_name,
+                changelog="从后台导入",
             )
             await s.commit()
     except XingchaError as e:
@@ -545,6 +553,7 @@ async def agent_export(slug: str, request: Request) -> Response:
 
     async with state.sessionmaker() as s:
         a = await agent_svc.resolve(s, slug, include_inactive=True)
+        group_name = await agent_svc.current_group(s, a.slug)
 
     with tempfile.TemporaryDirectory() as tmp:
         bundle = exporter.export(
@@ -555,6 +564,7 @@ async def agent_export(slug: str, request: Request) -> Response:
             spec=json.loads(a.spec_json),
             out_schema=json.loads(a.out_schema) if a.out_schema else None,
             dest=Path(tmp),
+            group=group_name,
         )
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

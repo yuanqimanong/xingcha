@@ -125,12 +125,22 @@ def agent_apply(
                 # （不传 = 挪回默认组），那对后台的表单是对的；但命令行里"这次没提
                 # 这一项"不等于"把它挪走"。照搬表单语义的话，每次 apply 都会静默把
                 # Agent 踢回默认组，而 apply 的输出一个字都不提分组。
-                group_name = await agent_svc.current_group(s, slug) if group is None else group
+                # 分组三档优先级：显式 --group > 这个 Agent 现在的分组 > 导入物里记的。
+                # 中间那档是关键：命令行里"这次没提 --group"不等于"把它挪走"（见
+                # tests/test_agent_apply_group.py）；而新建时没有现值，才轮到导入物
+                # 里那个——不然从别处导过来的 Agent 每次都掉进默认组。
+                if group is not None:
+                    group_name = group
+                else:
+                    group_name = await agent_svc.current_group(s, slug)
+                    if group_name is None:
+                        group_name = bundle.origin_group
                 result = await agent_svc.apply_bundle(
                     s,
                     bundle,
                     native_ok=native_ok,
-                    requested_tier=C.Tier(tier) if tier else None,
+                    # --tier 没给就用导入物里记的那个；都没有才走自动判档。
+                    requested_tier=C.Tier(tier) if tier else bundle.origin_tier,
                     group_name=group_name,
                     changelog=changelog,
                 )
@@ -262,6 +272,7 @@ def agent_export(
                     spec=json.loads(a.spec_json),
                     out_schema=json.loads(a.out_schema) if a.out_schema else None,
                     dest=dest,
+                    group=await agent_svc.current_group(s, a.slug),
                 )
         finally:
             await engine.dispose()  # type: ignore[attr-defined]

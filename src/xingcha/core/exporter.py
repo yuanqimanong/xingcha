@@ -192,12 +192,20 @@ def export(
     spec: dict[str, Any],
     out_schema: dict[str, Any] | None,
     dest: Path,
+    group: str | None = None,
 ) -> Bundle:
     """写出 bundle。返回目录与文件清单。"""
     directory = dest / slug
     directory.mkdir(parents=True, exist_ok=True)
 
-    spec = dict(spec)
+    # 延迟 import，与本模块里 PROMPT_PLACEHOLDER 那处同一个理由（builder 很重，
+    # 且模块级互引会成环）。
+    from .builder import stamp_origin
+
+    # 分组与档位在库里是列、不是 spec 字段，只在导出这一刻盖进 metadata.xingcha。
+    # 不盖的话导到另一台星槎上会静默丢两样：分组掉回默认组，档位退回自动判档
+    # （T1+/T3 一律变成 T2 —— 保证方式与花费都不同，而页面上看不出来）。
+    spec = stamp_origin(dict(spec), group=group, tier=tier.value)
     # schema 必须留在 spec 里：导出物靠 from_file → output_schema 拿到结构化输出，
     # 那是它唯一的注入点。线上则是显式传 output_type，两条路径不冲突。
     if out_schema is not None:
@@ -351,4 +359,9 @@ def _readme(
 
 这个目录里的 `agent.yaml` 可以直接贴回星槎的 Agent 表单（或
 `xingcha agent apply agent.yaml`），因为它就是标准的 `AgentSpec`，不是星槎的私有格式。
+
+**导回星槎时，分组与档位也会一并还原**：它们在库里是列、不是 AgentSpec 的字段，所以
+记在 `metadata.xingcha.group` / `.tier` 里（上游不解释 `metadata`，这不影响 `run.py`
+那条零星槎依赖的路径）。导入一个**已存在**的 slug 时分组保持原样不动——文件里那个只
+在新建时生效，免得从别处导一份回来就把线上的归类搅乱。
 """
