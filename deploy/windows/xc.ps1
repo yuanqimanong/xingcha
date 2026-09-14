@@ -112,7 +112,20 @@ if ($NoPull) {
         Say  "  要更新就先 commit 或 stash，再双击一次。"
     } else {
         Say "拉取最新代码"
-        & git pull --ff-only 2>&1 | ForEach-Object { Say "  $_" }
+        # git 把 "From github.com:..." 这类进度写在 **stderr** 上，成功拉到新提交时
+        # 也一样。而 PowerShell 5.1 在 `2>&1` 合流的那一刻把原生命令的 stderr 转成
+        # ErrorRecord，开头那句 $ErrorActionPreference='Stop' 于是把它当成**终止
+        # 错误**（NativeCommandError）——**拉到了东西反而让脚本当场死掉**，xc.bat 看到
+        # 非零退出码就 pause，服务根本没起。
+        #
+        # 没东西可拉时 git 只往 stdout 写一句 "Already up to date."，所以它时灵时不灵：
+        # 一有新提交就炸，平时看着好好的。
+        #
+        # 只在这一句放开，拉完立刻放回去。以后再加 `2>&1` 合流的原生命令同理。
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & git pull --ff-only 2>&1 | ForEach-Object { Say "  $_" } }
+        finally { $ErrorActionPreference = $eap }
         if ($LASTEXITCODE -ne 0) {
             # 没网、远端不可达、分叉了都会落到这里。**不 Die**——服务照常起，
             # 只是跑的是本地这一份。
