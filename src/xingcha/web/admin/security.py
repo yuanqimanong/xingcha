@@ -12,6 +12,7 @@ Origin/Sec-Fetch-Site 校验。
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -26,6 +27,35 @@ CSRF_COOKIE = "xc_csrf"
 #: cookie 的作用域。限死在后台路径下，``/v1`` 的请求不会白带上它们。
 COOKIE_PATH = "/admin"
 
+#: 允许把后台嵌进 iframe、并被当作同站放行的来源。由 :func:`configure` 在装配后台时
+#: 按 ``XINGCHA_ADMIN_EMBED_ORIGINS`` 装入，之后不再变。
+#:
+#: 放模块级而不是 ``app.state``：它启动即定、永不失效，没有"该在哪儿让它过期"的问题
+#: （那才是这个项目躲全局变量的原因）。而 :func:`security_headers` 有二十来处调用点，
+#: 为一个常量把 ``Request`` 穿进每一处，只会让"哪些响应带了安全头"更难数清。
+_EMBED_ORIGINS: tuple[str, ...] = ()
+
+_CSP_TEMPLATE = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; frame-ancestors {frame_ancestors}; "
+    "base-uri 'none'; form-action 'self'"
+)
+
+_CSP = _CSP_TEMPLATE.format(frame_ancestors="'none'")
+
+
+def configure(embed_origins: Sequence[str] = ()) -> None:
+    """装配后台时调用一次，把"谁可以嵌我"定下来。
+
+    没配（默认）时行为与从前逐字相同：``frame-ancestors 'none'`` + ``X-Frame-Options:
+    DENY`` + 同源校验只认自己。
+    """
+    global _EMBED_ORIGINS, _CSP
+    _EMBED_ORIGINS = tuple(embed_origins)
+    _CSP = _CSP_TEMPLATE.format(
+        frame_ancestors=" ".join(_EMBED_ORIGINS) if _EMBED_ORIGINS else "'none'"
+    )
+
 
 class Denied(Exception):
     """后台层面的拒绝。不走 /v1 的错误契约——那是给 SDK 用的，这里是给人看的。"""
@@ -39,16 +69,19 @@ class Denied(Exception):
 def security_headers(resp: Response) -> Response:
     """每个后台响应都带上。
 
-    ``frame-ancestors 'none'`` 挡点击劫持——否则攻击者可以把后台套进一个透明 iframe，
-    诱导管理员"点一下"，绕到与 CSRF 相同的结果。
+    ``frame-ancestors`` 挡点击劫持——否则攻击者可以把后台套进一个透明 iframe，
+    诱导管理员"点一下"，绕到与 CSRF 相同的结果。默认是 ``'none'``；配了
+    :attr:`~xingcha.config.Settings.admin_embed_origins` 就换成那份名单。
+
+    配了名单时**不再发** ``X-Frame-Options``：它只有 DENY / SAMEORIGIN 两档，表达不了
+    "只允许某个源"（``ALLOW-FROM`` 早已废弃、主流浏览器不认）。留着 DENY 会把 CSP 刚
+    放行的那个源又挡回去，而且是浏览器优先采信的那一个。
     """
-    resp.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-    )
+    resp.headers["Content-Security-Policy"] = _CSP
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
-    resp.headers["X-Frame-Options"] = "DENY"
+    if not _EMBED_ORIGINS:
+        resp.headers["X-Frame-Options"] = "DENY"
     return resp
 
 
@@ -58,14 +91,24 @@ def check_origin(request: Request) -> None:
     ``Sec-Fetch-Site`` 是现代浏览器一定会带的，且不可被脚本伪造；``Origin`` 作为
     老浏览器的回退。两个都没有时放行——非浏览器客户端（curl）本来就不受 CSRF 影响，
     而卡住它们只会让排障变难。
+
+    显式配进 :data:`_EMBED_ORIGINS` 的来源先行放行，两条分支都绕过。嵌进别的门户时
+    这一步是必需的：门户若用同源反代把后台挂在自己的路径下，浏览器发来的 ``Origin``
+    是门户的源，与我们看到的 ``Host``（自己的内网地址）永远不符，登录一提交就被这里
+    拦下——而拦下的原因和"真有人跨站打你"长得一模一样。放行的只是这一层；真正的防线
+    （SameSite=Strict cookie + double-submit token）一条都没动，而那两条恰恰是攻击者
+    伪造不出来的。
     """
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") in _EMBED_ORIGINS:
+        return
+
     site = request.headers.get("sec-fetch-site")
     if site is not None:
         if site not in {"same-origin", "same-site", "none"}:
             raise Denied(f"跨站请求被拒绝（Sec-Fetch-Site: {site}）")
         return
 
-    origin = request.headers.get("origin")
     if origin:
         host = request.headers.get("host", "")
         if not (origin.endswith(f"//{host}") or origin.endswith(f".{host}")):

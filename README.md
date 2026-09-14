@@ -614,6 +614,7 @@ src/xingcha/
 | 出站客户端都读环境代理，且只有一个建法 | `tests/test_outbound_proxy.py` |
 | `agent apply` 不改 Agent 的分组 | `tests/test_agent_apply_group.py` |
 | Windows 与 Linux 推出同一个绑定地址 | `tests/test_bind_addr_parity.py` |
+| 后台默认不可被嵌入；放行只对指名来源生效 | `tests/test_admin_embedding.py` |
 | 容器 healthy、`/v1` 无凭据 401 | CI：真起整栈 |
 
 契约测试变红时**不是测试坏了**，是在提醒你正在做一次破坏性变更。
