@@ -41,9 +41,7 @@ def test_stamp_merges_into_the_existing_namespace() -> None:
 
 def test_take_removes_the_stamp_but_keeps_the_rest() -> None:
     """读完即删：库里分组/档位是列，spec 里留副本会立刻不同步。"""
-    spec = stamp_origin(
-        {"metadata": {SPEC_NS: {"output_channel": "prompt"}}}, group="g", tier="T1"
-    )
+    spec = stamp_origin({"metadata": {SPEC_NS: {"output_channel": "prompt"}}}, group="g", tier="T1")
     assert take_origin(spec) == ("g", "T1")
     assert spec["metadata"][SPEC_NS] == {"output_channel": "prompt"}
 
