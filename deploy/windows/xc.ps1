@@ -2,6 +2,10 @@
 .SYNOPSIS
     星槎 · Windows 本地直跑。真正干活的是这个脚本，xc.bat 只是启动器。
 
+.PARAMETER NoPull
+    跳过启动前那次 git pull，照当前这份代码起来。双击进来时不会带这个开关——
+    双击的语义就是"拿最新的跑"。
+
 .DESCRIPTION
     为什么逻辑在 .ps1 而不是 .bat：cmd.exe 在 chcp 65001 下按字节偏移回溯文件位置，
     而偏移记账在多字节字符上是错的，于是会从一个汉字中间接着读——后半行被当成一条
@@ -16,7 +20,11 @@
     为什么 Windows 上不走 docker、.env 怎么配、防火墙那一步——见 deploy\README.md。
 #>
 [CmdletBinding()]
-param()
+param(
+    # 默认会先拉一次代码（尽力而为，见下面那段）。要"就照当前这份代码起来、
+    # 完全不碰 git"，终端里跑 `xc.bat -NoPull`。
+    [switch]$NoPull
+)
 
 $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
@@ -74,6 +82,48 @@ if (-not (Test-Path ".env")) {
 # --no-dev：dev 组里有 playwright，几百 MB，跑服务用不上。**注意它会把 dev 依赖从
 #   .venv 里删掉**，之后要跑测试先 `uv sync --frozen` 补回来。
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 启动前先拉一次代码 —— **尽力而为，绝不阻断启动**
+#
+# 双击是这台机器上唯一的入口（.bat 双击传不了参数），所以"拿最新的跑"必须是默认
+# 行为，不能要求人先开终端。但把 pull 做成硬前置会引入一整类新故障：没网、git 没
+# 装、分叉了、工作区脏——每一种都会让一个本来能起来的服务起不来。所以这里的规矩是：
+# **拉得动就拉，拉不动就说清楚原因然后照常起**。
+#
+# `--ff-only` 而不是 `reset --hard`，脏工作区直接跳过：这个脚本同样会在**开发机**
+# 上被双击，而 reset --hard 会不声不响地毁掉未提交的工作。理由与 deploy/linux/xc
+# 里那段相同。
+#
+# 与 Linux 那条的差异是有意的：那边 `start` 与 `update` 分开，因为终端里多打一个词
+# 没有成本；这边没有终端这一层，只有双击。要那边的语义就用 -NoPull。
+# ---------------------------------------------------------------------------
+if ($NoPull) {
+    Say "跳过拉取（-NoPull），照当前这份代码起来"
+} elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Warn "找不到 git，跳过拉取，照当前这份代码起来。"
+} elseif (-not (Test-Path ".git")) {
+    Say "不是 git 仓库（多半是下载的压缩包），跳过拉取"
+} else {
+    # --quiet 时 git diff 用退出码表态：0 = 干净。暂存区也算脏，两条都要查。
+    & git diff --quiet 2>$null;        $dirty  = ($LASTEXITCODE -ne 0)
+    & git diff --cached --quiet 2>$null; $staged = ($LASTEXITCODE -ne 0)
+    if ($dirty -or $staged) {
+        Warn "工作区有未提交的改动，跳过拉取（不会动你的代码）。"
+        Say  "  要更新就先 commit 或 stash，再双击一次。"
+    } else {
+        Say "拉取最新代码"
+        & git pull --ff-only 2>&1 | ForEach-Object { Say "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            # 没网、远端不可达、分叉了都会落到这里。**不 Die**——服务照常起，
+            # 只是跑的是本地这一份。
+            Warn "拉取没成功（没网？分叉了？原因在上面），照当前这份代码起来。"
+        } else {
+            Ok "代码已是最新"
+        }
+    }
+}
+Write-Host ""
+
 Say "同步依赖（第一次要下 Python 和依赖包，几分钟；之后是秒级）"
 & uv sync --frozen --no-dev
 if ($LASTEXITCODE -ne 0) { Die "uv sync 失败，原因在上面。" }
