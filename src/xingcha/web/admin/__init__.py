@@ -29,6 +29,7 @@ from . import (
     logs,
     overview,
     quota,
+    security,
     settings,
     upstreams,
 )
@@ -47,6 +48,9 @@ _PAGES = (login, overview, keys, logs, settings, upstreams, guide, agent_trial, 
 
 def mount(app: FastAPI) -> None:
     """挂载后台。静态文件内嵌进 wheel，不走 CDN——离线可用是硬约束。"""
+    # "谁可以把后台嵌进 iframe" 在这里一次定死。放在挂路由之前只是为了读起来顺：
+    # 它是这批路由共享的一条准入规则，不是某一页的事。见 security.configure。
+    security.configure(app.state.xc.settings.embed_origins)
     for page in _PAGES:
         app.include_router(page.router)
     app.mount("/admin/static", VersionedStatic(directory=str(STATIC_DIR)), name="xc-static")

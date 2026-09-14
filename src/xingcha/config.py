@@ -127,6 +127,31 @@ class Settings(BaseSettings):
     #: 挂网关那套（deploy/linux/docker-compose.gateway.yml）正是这种情形。
     trusted_proxies: str | None = None
 
+    #: 允许把后台嵌进 iframe 的来源，逗号分隔，形如 ``http://10.20.1.13:30800``。
+    #: **默认空 = 谁都不许嵌**（``frame-ancestors 'none'`` + ``X-Frame-Options: DENY``）。
+    #:
+    #: 存在的理由：后台被挂进别的门户（内部系统导航一类）里当一个页签。那种场景下
+    #: 上面两个头会让 iframe 渲染出一块空白，而**浏览器控制台之外没有任何提示**——
+    #: 门户那边只能看到"打不开"。于是门户那边往往会去反代里把这两个头剥掉，等于把
+    #: 防点击劫持整个抹掉，还抹在一个我们看不见的地方。给一个显式的名单，让这件事
+    #: 回到被嵌的这一侧、并且只放行指名的来源。
+    #:
+    #: 配了之后三件事一起变（见 web/admin/security.py）：CSP 的 ``frame-ancestors``
+    #: 换成这份名单、``X-Frame-Options`` 不再发送（它没有"只允许某个源"的合法写法，
+    #: ``ALLOW-FROM`` 早已废弃）、同源校验把这些来源当作同站放行。
+    #:
+    #: 写完整的源：scheme + host + 端口（非默认端口必须写）。末尾斜杠会被去掉——
+    #: 浏览器发的 ``Origin`` 永远不带它，多一个斜杠就是永远匹配不上。
+    admin_embed_origins: str | None = None
+
+    @property
+    def embed_origins(self) -> tuple[str, ...]:
+        """:attr:`admin_embed_origins` 解析成规范化的元组。"""
+        raw = self.admin_embed_origins or ""
+        return tuple(
+            item.strip().rstrip("/") for item in raw.split(",") if item.strip()
+        )
+
     # --- 上游 ---
     #: 默认上游。仅用于**首次启动**时导入 DB，之后由管理面/CLI 接管。
     #:
