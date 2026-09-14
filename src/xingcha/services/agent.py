@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import yaml
+from sqlalchemy import delete as delete_stmt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,8 +25,8 @@ from ..contract import ModelRefInvalid, Tier, validate_slug
 from ..core import builder
 from ..core.guarantee import resolve_tier
 from ..core.schema_guard import SchemaRejected, validate_schema
-from ..db.models import Agent, AgentAlias, AgentVersion, utcnow
-from ..foundation.errors import AgentSpecInvalid, ModelNotFound
+from ..db.models import Agent, AgentAlias, AgentTestRun, AgentVersion, Quota, utcnow
+from ..foundation.errors import AgentSpecInvalid, ModelNotFound, XingchaError
 
 log = logging.getLogger(__name__)
 
@@ -423,6 +424,44 @@ async def set_active(session: AsyncSession, agent_id: int, active: bool) -> bool
         return False
     row.is_active = active
     return True
+
+
+class AgentStillActive(XingchaError):
+    """还在启用中的 Agent 不许删。"""
+
+
+async def delete(session: AsyncSession, slug: str) -> None:
+    """彻底删掉一个 Agent。**必须先停用**。
+
+    停用是可逆的那一步，删除不是——所以它被拆成两下，而不是一个按钮。为什么这个操作
+    本身就危险，见 :func:`set_active` 的调用点注释：调用方代码里写着这个 slug，删掉
+    之后它们收到 ``model_not_found``，而且**这个 slug 会重新变得可被占用**——下一个
+    同名 Agent 会悄悄接管那些调用。
+
+    连带处理三类数据，三种不同的取舍：
+
+    * ``agent_version`` / ``agent_alias`` —— 外键 ``ondelete=CASCADE``，跟着走。
+    * ``agent_test_run`` / ``quota`` —— **必须手工清**。前者按 slug 存、后者按
+      agent id 存，都没有外键。不清的话：下一个占用同名 slug 的 Agent 会继承别人的
+      试运行记录；而 SQLite 会复用 rowid，一条留下来的配额可能**静默套到将来某个
+      毫不相干的 Agent 头上**。
+    * ``run`` / ``run_usage`` —— **保留**。``run.agent_id`` 是裸整数、没有外键正是
+      为了这一刻：调用记录与账单是已经发生的事实，不该因为清理一个 Agent 而消失，
+      否则「这个月一共花了多少」会对不上。
+    """
+    row = (await session.execute(select(Agent).where(Agent.slug == slug))).scalar_one_or_none()
+    if row is None:
+        raise ModelNotFound(slug)
+    if row.is_active:
+        raise AgentStillActive(
+            f"「{slug}」还在启用中。先停用，确认没有调用方再来删——停用是可逆的，删除不是。"
+        )
+
+    await session.execute(
+        delete_stmt(Quota).where(Quota.subject_type == "agent", Quota.subject_id == row.id)
+    )
+    await session.execute(delete_stmt(AgentTestRun).where(AgentTestRun.slug == slug))
+    await session.delete(row)
 
 
 #: 没分过组的 Agent 归到这个名字下**只在展示时**成立。
