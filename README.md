@@ -3,39 +3,81 @@
 > **星槎**（xīng chá）——《博物志》载有人乘槎溯河，直抵天河；明代费信随郑和下西洋，
 > 著《星槎胜览》。一条渡海之筏：把提示词渡成可被调用的服务。
 
-自部署的轻量 Agent 控制面。把 `base_url` 指向它、填一把 `sk-xc-` 密钥，业务代码就能
-调用任意 OpenRouter 模型——**代理不进代码**。
+自部署的轻量 Agent 控制面。业务代码把 `base_url` 指过来、拿一把 `sk-xc-` 密钥，就能
+调任意 OpenRouter 模型——**代理不进代码，上游 key 不出这台机器**。
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="https://192.168.1.10:8443/v1", api_key="sk-xc-1-...")
 
-# 裸模型直通
+# 裸模型直通：带 / 的 model 原样转发给上游
 client.chat.completions.create(model="openai/gpt-5", messages=[...])
 
 # Agent：model 换成它的标识，200 即保证符合你定义的 JSON Schema
 client.chat.completions.create(model="extract", messages=[...])
 ```
 
+它做四件事：
+
+| | |
+|---|---|
+| **直通** | `/v1` 下非自有路径**字节级反代**到上游，OpenRouter 有的能力都有。出网那一跳只发生在服务器上 |
+| **Agent** | 提示词 + 输出约定固定成一个 `model` 标识。系统提示词是你的资产，**不流到调用方手里**；换模型不用改业务代码 |
+| **保证** | 结构化 Agent 的 200 响应，`content` 保证是符合你那份 JSON Schema 的 JSON 文本。[四档](#输出保证的四档)各自怎么做到、各付什么代价，都写明 |
+| **计量** | 每次调用一行记录（**不存消息内容**），按账号 / 密钥 / Agent 三级设金额与次数上限 |
+
+Agent 随时可以带走：导出的是标准 `AgentSpec`，不是私有格式，删掉星槎照样跑。
+调用地址、密钥格式、响应结构与错误码[上线后只能加、不能改](#对外契约)。
+
 一台 1C1G 的 VPS 足够。**一个容器、一个 compose 文件、一个 SQLite 文件**，没有
 Postgres / Redis / 消息队列。
+
+按你要做的事挑一节：
+
+| | |
+|---|---|
+| [部署](#部署) | 三条路：Linux 有 / 无 docker、Windows |
+| [调用](#调用) | 业务代码要改什么、四档保证、流式、已知的坑 |
+| [后台](#后台) | 六个页面各管什么，以及导出 |
+| [运维](#运维) | 升级、回滚、备份、密钥环、体检 |
+| [对外契约](#对外契约) | 冻结的那些：路径归属、token 格式、`model` 命名空间、响应形状、错误码 |
+| [架构](#架构) | 分层、一次调用怎么走、由测试守着的约束 |
+| [本地开发](#本地开发) | 怎么跑测试，CI 里有哪两层别处看不到的断言 |
 
 ---
 
 ## 部署
 
-### Linux（有 docker）
+三条路，共用同一个网关、同一份 `.env` 模板、同一个 `data/` 位置。
+**完整步骤、`.env` 每一项的含义、备份演练与排障表在 [deploy/README.md](deploy/README.md)**，
+这里只给入口。
+
+| 机器 | 起 | 停 |
+|---|---|---|
+| Linux 有 docker | `./deploy/linux/xc start` | `restart: unless-stopped`，开机自启 |
+| Linux 无 docker | `uv run --frozen --no-dev xingcha serve` | 关掉终端 |
+| Windows | 双击 `deploy\windows\xc.bat` | 关掉窗口 |
+
+要 HTTPS，或要让别的机器访问，**先起网关再起星槎**：
 
 ```bash
 git clone git@github.com:yuanqimanong/xingcha.git
 cd xingcha
 
-./deploy/edge/edge start     # 1. 起网关，提供 HTTPS（还要装一次根证书，见 deploy/README.md）
-./deploy/linux/xc start      # 2. 部署星槎（首次会生成 .env 并停下来提示填写）
+./deploy/edge/edge start     # 1. 网关（还要装一次根证书，见 deploy/README.md）
+./deploy/linux/xc start      # 2. 星槎（首次会生成 .env 并停下来提示填写）
 ```
 
-日常三条命令：
+网关是 `deploy/edge/` 里的一个 Caddy 单文件：一个可执行文件加一份配置，没有 docker，
+一台机器一个，根证书每台设备只装一次。Windows 上双击 `edge.bat`。
+
+`.env` 里写 `XINGCHA_GATEWAY=edge` 之后，星槎那个端口被强制**只绑 `127.0.0.1`**，
+对外只有网关上的 HTTPS 一条路，`xc start` 启动前会检查网关在不在。留空则星槎自己
+发布端口、**明文 HTTP**——后台密码与 `sk-xc-` 裸传，而且 docker 发布的端口走
+`DOCKER-USER` 链、**绕过 ufw**，所以默认也只绑回环。
+
+docker 那条路日常就三条命令：
 
 | | |
 |---|---|
@@ -43,44 +85,28 @@ cd xingcha
 | `./deploy/linux/xc update` | 拉代码 + 重新构建启动 |
 | `./deploy/linux/xc redeploy` | 清空 `data` 从零开始（会问一次 yes） |
 
-### 没装 docker 的机器（Windows，或干净的 Linux）
-
-双击 `deploy\windows\xc.bat`，或 `uv run xingcha serve`——用 uv 在本机直接起进程，
-不打镜像。**双击时会顺带 `git pull --ff-only`**（尽力而为：拉不动就提示一句照常起；
-要完全不碰 git 用 `xc.bat -NoPull`）。网关是同一个（`deploy/edge/`，Windows 双击
-`edge.bat`）。
-
-细节见 [deploy/README.md](deploy/README.md)。
-
-### 关于网关
-
-`.env` 里 `XINGCHA_GATEWAY=edge` 时，星槎那个端口被强制只绑 `127.0.0.1`，
-**对外只有网关上的 HTTPS 一条路**；`xc start` 会在启动前检查网关在不在。
-
-留空则星槎自己发布端口，**明文 HTTP**——密码与 `sk-xc-` 裸传，而且 docker 发布的
-端口走 `DOCKER-USER` 链、**绕过 ufw**，所以默认只绑回环。
-
-网关是 `deploy/edge/` 里的一个 Caddy 单文件：一个可执行文件加一份配置，没有 docker，
-一台机器一个（根证书每台设备只装一次）。见 [deploy/README.md](deploy/README.md)。
+Windows 双击时会顺带 `git pull --ff-only`——尽力而为，拉不动就提示一句照常起；
+要完全不碰 git 用 `xc.bat -NoPull`。
 
 ---
 
-## 用法
+## 调用
 
-### 后台
+接口是 OpenAI 兼容的。业务代码要改的就是两行：
 
-浏览器打开 `https://<地址>:8443/admin`。首次访问会让你设一个管理员密码。
+```python
+from openai import OpenAI
+client = OpenAI(base_url="https://<地址>:8443/v1", api_key="sk-xc-1-...")
+```
 
-| 页 | 做什么 |
-|---|---|
-| 上游 | 填 OpenRouter key，或切到别的供应商 / 自建中转。**同一时刻只有一个出口** |
-| 密钥 | 签发 `sk-xc-` 给调用方。明文只显示一次，库里只存哈希 |
-| Agent | 把提示词 + 输出约定配成一个可调用的 `model` 标识 |
-| 配额 | 给账号 / 某把密钥 / 某个 Agent 设金额或次数上限 |
-| 调用记录 | 次数、费用与错误（**不存消息内容**） |
-| 设置 | 后台密码、调用追踪（OTLP）上报地址 |
+`model` 怎么解析是这套东西最不能改的一条规则：**带 `/` 的一律当上游模型原样转发，
+不带 `/` 的按 Agent 标识解析**。查不到就是 404，绝不猜测性地转发出去——那样一个拼错
+的 slug 会静默变成一次真实的付费调用，而调用方以为自己在调 Agent。完整规则见
+[§3 · model 命名空间](#3--model-命名空间)。
 
-### Agent 的四档输出保证
+`GET /v1/models` 里两者都有：Agent 行不含 `/`，上游行含 `/`。
+
+### 输出保证的四档
 
 结构化 Agent 保证 200 响应的 `content` 是符合你那份 JSON Schema 的 JSON 文本。
 四档的区别是**怎么保证**与**代价**：
@@ -97,48 +123,70 @@ cd xingcha
 需要原生支持的档碰上不支持的模型会**自动降级到 T2**，保存时会明说降了。
 上游没有 tools 通道时（如 DeepSeek 思考模式），把 T2 的 schema 送达方式换成提示词。
 
-**结构化 Agent 不支持 `stream=true`**，返回 400 `stream_unsupported`。流一半的 JSON
-无法被安全解析，所以这里选择报错而不是在服务端缓冲完整输出再一次性吐出去。
+### 流式
+
+纯文本 Agent 与直通都是真流式，逐 delta 发。
+
+**结构化 Agent 不支持 `stream=true`**，返回 400 `stream_unsupported`：流一半的 JSON
+无法被安全解析，所以这里选择报错，而不是在服务端缓冲完整输出再一次性吐出去假装在流。
 要流式就用纯文本 Agent。
 
-### 导出
+中途失败没法改状态码（200 已经发出去了），所以**不发 `[DONE]` 就是失败信号**——
+判成败看流是否以 `[DONE]` 结尾，别只看状态码。
 
-Agent 编辑页的「导出」给你一个目录：`agent.yaml` 是标准的 pydantic-ai AgentSpec
-（不是私有格式），外加一份 `README.md` 写清保留了什么、丢失了什么。带 schema 或
-用户模板、少样本示例时才多一份零星槎依赖的 `run.py`（结构化再多一份
-`schema.json`）。
-改完能用 `xingcha agent apply` 导回来。
+### 响应里多出来的 `x_xingcha`
 
-### 客户端兼容
+OpenAI 的标准字段一个都没动，额外附赠一块 `x_xingcha`：这次调用的保证档位、预估费用、
+schema 重试与违规次数，以及一个可用来对账的 `run_id`。SDK 会忽略它，需要就自己读。
+字段与冻结规则见[§6 · 响应形状](#6--响应形状)。
 
-`/v1` 下所有非自有路径**字节级反代**到上游，所以 OpenRouter 有的能力星槎都有。
+失败响应（429 / 422）也带 `usage`，而且**零调用也给 0**——形状统一，调用方不必分情况处理。
 
-但 `models.list()` / `models.retrieve()` / 裸模型 / Agent / 流式 / 错误分派这几条
-当前**没有自动验证**——缺的是拿 `openai` SDK 当客户端跑一遍这些端点的测试。
-
-业务代码要改的就是两行：
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="https://<地址>:8443/v1", api_key="sk-xc-1-...")
-```
-
-两个已知的坑：
+### 已知的坑
 
 - **机器上设了 socks 代理**（`ALL_PROXY=socks5://...`）时，openai SDK 在构造阶段就抛
   `ImportError: ... 'socksio' package is not installed`。指向星槎之后你本来就不需要那个
   代理了，去掉即可；要保留就给 SDK 传 `http_client=httpx.Client(trust_env=False)`。
 - **浏览器里跑的客户端**（Open WebUI 一类）要 CORS。星槎默认不发任何 CORS 头，
   放开：`XINGCHA_CORS_ORIGINS=https://webui.example.com`。
+- **换了上游之后 Agent 全报错**：Agent 里写死的模型名在新上游不存在。后台「上游」页
+  切换前会先列出受影响的 Agent 让你确认，切完去把模型名改成新上游的写法。
 
-Cherry Studio / Continue / Cursor 这类桌面与 IDE 客户端**没有实测过**——它们走的
-两个端点也在上面那批没有自动验证的路径里。
+`models.list()` / `models.retrieve()` / 裸模型 / Agent / 流式 / 错误分派这几条当前
+**没有自动验证**——缺的是拿 `openai` SDK 当客户端跑一遍这些端点的测试。Cherry Studio /
+Continue / Cursor 这类桌面与 IDE 客户端也**没有实测过**，它们走的两个端点正在这批里。
+
+---
+
+## 后台
+
+浏览器打开 `https://<地址>:8443/admin`。首次访问会让你设一个管理员密码。
+
+| 页 | 做什么 |
+|---|---|
+| 上游 | 填 OpenRouter key，或切到别的供应商 / 自建中转。**同一时刻只有一个出口** |
+| 密钥 | 签发 `sk-xc-` 给调用方。明文只显示一次，库里只存哈希 |
+| Agent | 把提示词 + 输出约定配成一个可调用的 `model` 标识 |
+| 配额 | 给账号 / 某把密钥 / 某个 Agent 设金额或次数上限 |
+| 调用记录 | 次数、费用与错误（**不存消息内容**） |
+| 设置 | 后台密码、调用追踪（OTLP）上报地址 |
+
+后台自带一页调用指南（`/admin/guide`），从签一把密钥到在代码里调起来，一页读完。
+
+### 导出
+
+Agent 编辑页的「导出」给你一个目录：`agent.yaml` 是标准的 pydantic-ai `AgentSpec`
+（不是私有格式），外加一份 `README.md` 写清保留了什么、丢失了什么。带 schema 或用户
+模板、少样本示例时才多一份零星槎依赖的 `run.py`（结构化再多一份 `schema.json`）。
+
+改完用 Agent 页的「导入」或 `xingcha agent apply` 放回来，存成一个新版本。
 
 ---
 
 ## 运维
 
-下面几条要直接对容器说话：
+备份、演练与排障表在 [deploy/README.md](deploy/README.md)；下面是那份没有的几件事。
+命令要直接对容器说话：
 
 ```bash
 DC="docker compose -f deploy/linux/docker-compose.yml --env-file .env"
@@ -176,8 +224,8 @@ $DC exec xingcha xingcha db restore /data/backups/xingcha-<时间戳>.db --yes
 ```
 
 真要动数据时才备份：`downgrade` 总是备，`upgrade` 只在确实有迁移可跑且库非空时备，
-`prune` 只在带 `--yes` 真删时备。**`restore` 不备份当前库**——它只在覆盖前对那份
-备份文件跑一次 `PRAGMA integrity_check`，坏文件拒绝恢复。
+`prune` 只在带 `--yes` 真删时备。**`restore` 不备份当前库**——它只在覆盖前对那份备份
+文件跑一次 `PRAGMA integrity_check`，坏文件拒绝恢复。
 
 升级前想在真实数据的副本上演练（空库上的 `upgrade` 通过，证明不了有真实数据时也无感）：
 
@@ -188,8 +236,8 @@ cp data/backups/xingcha-<时间戳>-pre-upgrade-drill.db /tmp/drill-dir/xingcha.
 XINGCHA_DATA_DIR=/tmp/drill-dir xingcha db upgrade
 ```
 
-整套「备份 → 体检 → 挪走 data/ → 从备份重建 → 复原」的演练见
-`./deploy/linux/drill.sh`（用法在 deploy/README.md）。
+整套「备份 → 体检 → 挪走 `data/` → 从备份重建 → 复原」的演练是
+`./deploy/linux/drill.sh`，**每次改动部署方式之后跑一次**。
 
 ### 密钥环
 
@@ -202,7 +250,8 @@ $DC exec xingcha python -c \
   "from pathlib import Path; from xingcha.foundation.crypto import Keyring; Keyring.load(Path('/data/secret.key')).rotate()"
 ```
 
-备份密钥环时**不要和数据库放同一个包**。
+备份密钥环时**不要和数据库放同一个包**——那等于让加密对「备份泄露」这个最现实的威胁
+提供零保护。
 
 ### 体检
 
@@ -439,6 +488,7 @@ slug 是**全局**唯一命名空间（`agent.slug` 有 UNIQUE 约束），不�
 
 ## 架构
 
+**这一节是给要改这个项目的人看的**，只用它不需要读。
 代码怎么分层、一次调用怎么走、哪些约束由测试机械地守着。
 
 ### 分层

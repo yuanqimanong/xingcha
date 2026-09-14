@@ -1,15 +1,26 @@
 # 部署
 
-按这台机器有没有 docker 分三条路。三条共用同一个网关、同一份 `.env` 模板、同一个
-`data/` 位置。
+起一套星槎先定两件事：
+
+1. **这台机器有没有 docker** —— 决定走下面哪条路。三条路共用同一个网关、同一份 `.env`
+   模板、同一个 `data/` 位置。
+2. **要不要 HTTPS**（或者要不要让别的机器访问）—— 要就**先起[网关](#网关)，再起星槎**。
 
 | 机器 | 怎么跑 | 起停 |
 |---|---|---|
-| [Linux 无 docker](#一--linux-无-docker) | `uv run --frozen --no-dev xingcha serve` | 关掉终端就是停 |
-| [Linux 有 docker](#二--linux-有-docker) | `./deploy/linux/xc start` | `restart: unless-stopped`，开机自启 |
-| [Windows](#三--windows) | 双击 `deploy\windows\xc.bat` | 关掉窗口就是停 |
+| [一 · Linux 无 docker](#一--linux-无-docker) | `uv run --frozen --no-dev xingcha serve` | 关掉终端就是停 |
+| [二 · Linux 有 docker](#二--linux-有-docker) | `./deploy/linux/xc start` | `restart: unless-stopped`，开机自启 |
+| [三 · Windows](#三--windows) | 双击 `deploy\windows\xc.bat` | 关掉窗口就是停 |
 
-要 HTTPS 或让别的机器访问，**先起[网关](#网关)，再起星槎**。
+起完之后按需要读：
+
+| | |
+|---|---|
+| [网关](#网关) | 一个 Caddy 单文件提供 HTTPS。**根证书每台设备装一次** |
+| [`.env`](#env) | 一项都不改也能起来；四项最常动的在这里 |
+| [初始化](#初始化) | 设密码 → 填上游 key → 签一把 `sk-xc-`，然后立刻设两道钱闸 |
+| [备份](#备份) · [演练](#演练) | 为什么"`data/backups/` 里躺着一堆 .db"这件事本身什么都不证明 |
+| [安全注意](#安全注意) · [排障](#排障) | 六条纪律；十种症状先看哪里 |
 
 ---
 
