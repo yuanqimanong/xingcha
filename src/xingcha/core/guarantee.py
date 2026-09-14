@@ -1,15 +1,11 @@
-"""输出保证。
+"""输出保证。整个项目的技术核心。
 
-**这是整个项目的技术核心。**
+要解决的问题：pydantic-ai 的声明式路径不做运行时校验。放进 ``AgentSpec.output_schema``
+的 schema 只被用来生成发给模型的指令，Pydantic 侧只校验"是不是一个 dict"。实测同一份
+三重违规数据（缺必填 + 类型错 + 超 maxItems）在命令式路径下被拦截并重试，在声明式
+路径下原样放行。星槎要做的就是把这层保证补回来。
 
-要解决的问题：pydantic-ai 的声明式路径**不做运行时校验**。把 schema 放进
-``AgentSpec.output_schema``，它只被用来生成发给模型的指令；Pydantic 侧只校验
-"是不是一个 dict"。实测同一份三重违规数据（缺必填 + 类型错 + 超 maxItems）
-在命令式路径（真 Pydantic model）下被拦截并重试，在声明式路径下**原样放行**。
-
-这不是框架缺陷，是声明式路径丢失了命令式路径已有的保证。星槎要做的就是把它补回来。
-
-**四档，全部实现**
+四档，全部实现：
 
 ============ ================================ ========== ============ ========
 档            机制                              形状保证    内容风险      成本
@@ -21,20 +17,13 @@ T1+          两阶段：自由推理 → 再格式化          最强       最
 T3           ``PromptedOutput``（仅提示）        无         无           单次
 ============ ================================ ========== ============ ========
 
-四档的**映射**都在这里（各三行，不值得拆开）。表单开放哪几档见
-:data:`AVAILABLE_TIERS`；T1 的对齐税靠 :data:`TIER_INFO` 的说明与
-:func:`t1_rewrites_schema` 在选之前讲清楚，而不是靠不给选。
+四档的映射都在这里。表单开放哪几档见 :data:`AVAILABLE_TIERS`；T1 的对齐税靠
+:data:`TIER_INFO` 的说明与 :func:`t1_rewrites_schema` 在选之前讲清楚，而不是靠不给选。
 
-**两个计数器为什么必须分开（实测）**
-
-``retries=2`` 且持续违规时：模型被调用 3 次，校验器被调用 3 次，但**真实重试只有
-2 次**——最后一次校验失败后预算已耗尽，不再重试。所以：
-
-* ``schema_violations`` = 自己数的违规次数（3）
-* ``schema_retries``    = ``RunContext.retry``（2，框架给的真实序号）
-
-只留自数的那个，会让失败 run 的重试数系统性偏移一格——而那恰恰是最需要精确告警的
-一类 run。
+两个计数器必须分开（实测）：``retries=2`` 且持续违规时模型被调用 3 次、校验器被调用
+3 次，但真实重试只有 2 次（最后一次失败后预算已耗尽）。所以 ``schema_violations`` 是
+自己数的违规次数，``schema_retries`` 取 ``RunContext.retry``——只留前者会让失败 run 的
+重试数系统性偏移一格，而那恰恰是最需要精确告警的一类 run。
 """
 
 from __future__ import annotations
@@ -75,16 +64,13 @@ class GuaranteeCounters:
     last_error: str = ""
 
 
-#: T2 把 schema 递给模型的两条通道。**档位的保证不受它影响。**
+#: T2 把 schema 递给模型的两条通道。档位的保证不受它影响——T2 的定义是"校验后重试"，
+#: 不是"走 tools"，校验器与重试预算两边完全一样。
 #:
-#: T2 的定义是"校验后重试"，不是"走 tools"。通道只决定 schema 怎么送过去，校验器
-#: 与重试预算两边完全一样。分开成一个选项，是因为有的上游根本没有 tools 这条路：
-#:
-#: DeepSeek 的思考模式**不接受 tool_choice**（上游原话："Thinking mode does not
-#: support this tool_choice"），于是 T2 在它上面每次都 400。在此之前唯一能出结构化
-#: 输出的档是 T3——而 T3 恰好是那个不做任何校验的档。也就是说，一旦上游没有 tools，
-#: 保证阶梯就整个塌成"没有保证"。换条通道就能把 T2 救回来，代价只是 schema 以提示
-#: 词形式送达（模型对它的遵守度略低，但这正是校验+重试要兜的东西）。
+#: 分成一个选项是因为有的上游没有 tools 这条路：DeepSeek 的思考模式不接受
+#: ``tool_choice``，于是 T2 在它上面每次都 400，而唯一还能出结构化输出的 T3 恰好是那个
+#: 不做校验的档——保证阶梯整个塌成"没有保证"。换条通道就能把 T2 救回来，代价只是
+#: schema 以提示词形式送达（遵守度略低，而那正是校验+重试要兜的东西）。
 OUTPUT_CHANNELS: dict[str, str] = {
     "tool": "工具通道（默认）",
     "prompt": "提示词通道",
@@ -94,15 +80,12 @@ OUTPUT_CHANNELS: dict[str, str] = {
 def output_spec(
     tier: Tier, schema: dict[str, Any], *, max_retries: int, channel: str = "tool"
 ) -> Any:
-    """把档位翻译成 pydantic-ai 的 ``output_type``。
+    """把档位翻译成 pydantic-ai 的 ``output_type``，必须传进
+    ``Agent.from_spec(..., output_type=...)``。
 
-    这个返回值必须传进 ``Agent.from_spec(..., output_type=...)``。
-
-    **不能只把 schema 留在 spec 里然后指望它生效**：那样 ``from_spec`` 会把
-    ``output_type`` 设成一个不校验的 ``StructuredDict``；而如果既 pop 掉
-    ``output_schema`` 又不传 ``output_type``，它会退化成 ``str``——于是校验器收到的是
-    原始 JSON **字符串**，对 object schema 必然报 "is not of type 'object'"，
-    **连完全合法的模型输出都会被打到重试耗尽**。这是实测过的。
+    不能只把 schema 留在 spec 里指望它生效（两种都实测过）：那样 ``from_spec`` 会设成
+    不校验的 ``StructuredDict``；既 pop 掉 ``output_schema`` 又不传 ``output_type`` 则
+    退化成 ``str``，校验器收到原始 JSON 字符串，连合法输出都会被打到重试耗尽。
 
     ``channel`` 只对 T2 有意义，见 :data:`OUTPUT_CHANNELS`。
     """
@@ -113,11 +96,9 @@ def output_spec(
                 # 仍然是 T2：下面 attach_validator 照挂校验器、照用重试预算。
                 # 变的只是 schema 以提示词而非工具签名送达。
                 return PromptedOutput(sd)
-            # strict=False 是必需的，不是默认值的同义写法。
-            #
-            # 不写的话 pydantic-ai 会按 model profile 把 strict 推断成 true 并发上去
-            # （实测），于是 T2 在 OpenAI 系模型上同样承担对齐税——而 T2 存在的理由
-            # 恰恰是"不承担对齐税"。前端给用户显示的保证等级也就成了假的。
+            # strict=False 是必需的，不是默认值的同义写法：不写的话 pydantic-ai 会按
+            # model profile 把它推断成 true 并发上去（实测），T2 在 OpenAI 系模型上就
+            # 同样承担了对齐税——而 T2 存在的理由恰恰是不承担它。
             return ToolOutput(sd, strict=False, max_retries=max_retries)
         case Tier.T1 | Tier.T1P:
             return NativeOutput(sd, strict=True)
@@ -129,10 +110,9 @@ def output_spec(
 def attach_validator(agent: Agent, tier: Tier, schema: dict[str, Any]) -> GuaranteeCounters:
     """挂运行时校验，返回计数器。
 
-    档位之间的差异**由这个函数制造，不是框架行为**：实测四种输出模式下
-    ``output_validator`` 被调用的次数逐位相同。所以 "T3 不校验" 是星槎的应用层策略，
-    测试要断言"本项目没有注册校验器"，而不是断言框架不校验——否则把 T3 误传成 T2
-    也测不出来。
+    档位之间的差异由这个函数制造，不是框架行为：实测四种输出模式下 ``output_validator``
+    被调用的次数逐位相同。所以"T3 不校验"是星槎的应用层策略，测试要断言"本项目没有注册
+    校验器"，而不是断言框架不校验——否则把 T3 误传成 T2 也测不出来。
     """
     counters = GuaranteeCounters()
 
@@ -167,24 +147,20 @@ def attach_validator(agent: Agent, tier: Tier, schema: dict[str, Any]) -> Guaran
 def limits_for(
     *, max_retries: int, max_tool_steps: int, max_tokens: int, max_cost_usd: Decimal | None
 ) -> UsageLimits:
-    """一次运行的护栏。
-
-    三处与文档写法不同，每一处都是实测出来的：
+    """一次运行的护栏。三处与文档写法不同，每一处都是实测出来的：
 
     ``request_limit`` 不能只是 ``max_retries + 1``
-        它计的是**所有**模型请求，工具调用的往返也算一次。实测一个只有 1 次工具往返、
-        0 次 schema 重试的 run 就消耗 ``requests=2``。按 ``max_retries + 1`` 算的话，
-        任何带工具的 Agent 都会在第一次工具调用后被打断，而且用户看到的是"限流"
-        而不是真实原因。
+        它计的是所有模型请求，工具往返也算一次（实测一个 0 次 schema 重试的 run 就消耗
+        ``requests=2``）。按 ``max_retries + 1`` 算的话，任何带工具的 Agent 都会在第一次
+        工具调用后被打断，而用户看到的是"限流"。
 
     ``total_tokens_limit`` 是必填而不是可选
-        ``cost_limit`` 对 genai-prices 认不出的模型**静默失效**（只发一条
-        ``CostNotFoundWarning``），而实测在售模型里约三分之一查不到价。也就是说
-        费用护栏在三分之一的模型上是摆设。token 上限永远可执行，必须作为硬兜底。
+        ``cost_limit`` 对 genai-prices 认不出的模型静默失效（只发一条
+        ``CostNotFoundWarning``），而实测在售模型里约三分之一查不到价。token 上限永远
+        可执行，必须作为硬兜底。
 
     ``cost_limit`` 必须是 ``Decimal``
-        标注是 Decimal 但不校验，传 float 今天能跑；金额全链路用 Decimal，
-        不给未来留一个精度坑。
+        标注是 Decimal 但不校验，传 float 今天能跑。金额全链路用 Decimal。
     """
     return UsageLimits(
         request_limit=(max_retries + 1) + max_tool_steps,
@@ -194,14 +170,12 @@ def limits_for(
 
 
 def t1_rewrites_schema(schema: dict[str, Any]) -> list[str]:
-    """T1 档下会被上游**静默提升为必填**的可选字段。
+    """T1 档下会被上游静默提升为必填的可选字段。
 
-    ``NativeOutput(strict=True)`` 会把所有可选字段塞进 ``required``（实测：一个
-    ``required: ["title"]`` 而 ``score`` 可选的 schema，发到线上变成
-    ``required: ["title","score"]``，且没有加成可空类型）。
-
-    也就是说用户在表单里标为可选的字段，在 T1 档下会变成模型**必须**输出的字段。
-    这对用户构成隐性违约，所以表单上必须提前说清楚——这个函数就是给表单用的。
+    ``NativeOutput(strict=True)`` 会把所有可选字段塞进 ``required``（实测：``score``
+    可选的 schema 发到线上变成 ``required: ["title","score"]``，且没有加成可空类型）。
+    用户标为可选的字段因此变成模型必须输出的字段，表单上要提前说清楚——这个函数就是
+    给表单用的。
     """
     props = schema.get("properties")
     if not isinstance(props, dict):
@@ -223,9 +197,8 @@ class TierChoice:
 def resolve_tier(requested: Tier | None, *, has_schema: bool, native_ok: bool) -> TierChoice:
     """决定实际使用的档位。
 
-    ``native_ok`` 来自模型目录的 ``structured_outputs``——**不能看
-    ``response_format``**：实测两者不等价（今天 424 个在售模型里后者 365、前者 340，
-    有 25 个只有后者），混用会把 T2 误判成 T1，于是对用户谎称"有原生保证"。
+    ``native_ok`` 来自模型目录的 ``structured_outputs``，不能看 ``response_format``：
+    实测两者不等价（424 个在售模型里有 25 个只有后者），混用会把 T2 误判成 T1。
 
     未知模型一律当作不支持：宁可降级到 T2 多花点重试成本，也不能谎称有保证。
     """
@@ -245,11 +218,9 @@ def resolve_tier(requested: Tier | None, *, has_schema: bool, native_ok: bool) -
     return TierChoice(requested or Tier.T2)
 
 
-#: 每一档的对外说明。表单与 API 都从这里取，避免两处措辞漂移。
-#:
-#: ``pick`` 是这一版新加的，也是最要紧的一条：**先说什么时候选它，再说它是什么。**
-#: 原来只有 shape/content/cost 三个维度，读者得自己在"形状保证强/内容保证低/
-#: 成本两倍"之间做换算才知道该点哪一个——而那正是他打开这个下拉时唯一想知道的事。
+#: 每一档的对外说明。表单与 API 都从这里取，避免两处措辞漂移。``pick`` 放在最前：读者
+#: 打开这个下拉时唯一想知道的是"什么时候该选它"，而不是在 shape/content/cost 三个维度
+#: 之间自己做换算。
 TIER_INFO: dict[Tier, dict[str, str]] = {
     Tier.T1: {
         "name": "原生约束",
@@ -257,10 +228,10 @@ TIER_INFO: dict[Tier, dict[str, str]] = {
         "how": "上游在解码时就不让模型写出不合 schema 的 token，所以一次就对，不重试。",
         # 用大白话先说清后果，再把项目自己的术语（对齐税）括进去——只写术语，
         # 读者得先学会那个词才知道自己在选什么；只写大白话，别处的文档又对不上。
-        "catch": "**可选字段会被上游提升为必填**，模型于是被迫编一个值填进去；"
+        "catch": "可选字段会被上游提升为必填，模型于是被迫编一个值填进去；"
         "格式约束还会削弱推理，复杂任务的答案质量会掉（这两条合称「对齐税」）。",
         "shape": "最强",
-        "content": "有对齐税：格式约束会削弱推理，且**可选字段会被上游提升为必填**",
+        "content": "有对齐税：格式约束会削弱推理，且可选字段会被上游提升为必填",
         "cost": "单次",
         "needs_native": "yes",
     },
@@ -278,7 +249,7 @@ TIER_INFO: dict[Tier, dict[str, str]] = {
         "name": "两阶段",
         "pick": "任务需要真的思考，同时又要严格的结构",
         "how": "先让模型不带任何格式约束自由推理，再单独调一次只做格式化。",
-        "catch": "**两次模型调用，约两倍的钱**，而且慢一倍。",
+        "catch": "两次模型调用，约两倍的钱，而且慢一倍。",
         "shape": "最强",
         "content": "最低：先自由推理再格式化，格式约束不参与推理那一步",
         "cost": "约两倍（两次模型调用）",
@@ -299,8 +270,8 @@ TIER_INFO: dict[Tier, dict[str, str]] = {
     Tier.T3: {
         "name": "仅提示",
         "pick": "只想给模型一个格式参考，不要任何强制",
-        "how": "schema 只写进提示词，输出**不做校验**，模型返回什么就是什么。",
-        "catch": "**没有任何保证。** 字段缺了、类型不对，都得调用方自己兜。",
+        "how": "schema 只写进提示词，输出不做校验，模型返回什么就是什么。",
+        "catch": "没有任何保证。字段缺了、类型不对，都得调用方自己兜。",
         "shape": "无",
         "content": "无——schema 只进提示词，输出不合规也照样返回",
         "cost": "单次",
@@ -309,11 +280,9 @@ TIER_INFO: dict[Tier, dict[str, str]] = {
 }
 
 
-#: 表单开放的档位。四档全开。
-#:
-#: T1 与 T1P 是在自动判档（:func:`resolve_tier` 查目录的 ``structured_outputs``）与
-#: "可选字段会被提升为必填"的表单提示（:func:`t1_rewrites_schema` + schema_lint）
-#: 都到位之后才开放的。缺任何一件就开放 T1，等于让用户在不知情的情况下承担对齐税。
+#: 表单开放的档位。四档全开。T1 与 T1P 是在自动判档（:func:`resolve_tier`）与"可选字段
+#: 会被提升为必填"的表单提示（:func:`t1_rewrites_schema` + schema_lint）都到位之后才开
+#: 的——缺任何一件就开放 T1，等于让用户在不知情的情况下承担对齐税。
 AVAILABLE_TIERS: tuple[Tier, ...] = (Tier.T1, Tier.T2, Tier.T1P, Tier.T3)
 
 
@@ -338,10 +307,8 @@ def guard_counters(counters: GuaranteeCounters, *, tier: Tier) -> None:
 # T1+ 两阶段
 # =============================================================================
 
-#: 第二阶段的指令。
-#:
-#: **只做格式化，不允许改事实。** 两阶段的价值是让推理那一步不受格式约束干扰；
-#: 如果第二步顺手"改进"内容，那就等于又引入了一次未受控的生成，反而比 T1 更糟。
+#: 第二阶段的指令。只做格式化，不允许改事实：两阶段的价值是让推理那一步不受格式约束
+#: 干扰，第二步要是顺手"改进"内容，就等于又引入一次未受控的生成，反而比 T1 更糟。
 FORMAT_INSTRUCTIONS = (
     "把下面这段内容整理成规定的结构。\n"
     "只做格式转换：不要新增事实、不要删改事实、不要补充推测。"

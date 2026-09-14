@@ -2,9 +2,8 @@
 
 形状是 OpenAI 风格，因为调用方用的是 OpenAI SDK——它按 ``error.type`` 分支。
 
-``type`` 与 ``code`` **分两层**：``type`` 是粗粒度闭集（供 SDK 判断该重试还是该报错），
-``code`` 可以更细。两者相等的设计是发出第一个错误响应之后就再也回不去的冻结——
-一旦调用方按 ``code`` 写了分支，你就不能再细化它了。
+``type`` 与 ``code`` 分两层：``type`` 是粗粒度闭集（供 SDK 判断该重试还是该报错），
+``code`` 可以更细。让两者相等的话，调用方按 ``code`` 写了分支之后就再也细化不了。
 """
 
 from __future__ import annotations
@@ -35,8 +34,8 @@ def usage_block(usage: Any) -> dict[str, int]:
 class XingchaError(Exception):
     """所有对外错误的基类。
 
-    ``detail`` 里的内容会**原样回给调用方**，所以绝不能放上游 URL、header 或任何
-    可能含 key 的东西。需要记录细节就用 ``log_detail``，它只进日志。
+    ``detail`` 会原样回给调用方，绝不能放上游 URL、header 或任何可能含 key 的东西。
+    需要记录细节用 ``log_detail``，它只进日志。
     """
 
     error_type: ErrorType = ErrorType.INTERNAL_ERROR
@@ -56,11 +55,9 @@ class XingchaError(Exception):
         self.param = param
         self.log_detail = log_detail
         self.extra = extra
-        #: 这次调用已经产生的用量。失败也要带——契约冻结了 ``USAGE_ON_ERROR``：
-        #: 「429 / 422 也带 usage，否则失败 run 的花费不可见」。
-        #:
-        #: 由 ``services/run.map_errors`` 在抛出时挂上（重试耗尽时手上没有 result
-        #: 可读，一个原地累加的 RunUsage 是唯一还拿得到用量的东西）。
+        #: 这次调用已经产生的用量。失败也要带（契约的 ``USAGE_ON_ERROR``），否则失败
+        #: run 的花费不可见。由 ``services/run.map_errors`` 在抛出时挂上——重试耗尽时
+        #: 手上没有 result 可读，原地累加的 RunUsage 是唯一还拿得到用量的东西。
         self.usage: Any = None
 
     @property
@@ -76,15 +73,10 @@ class XingchaError(Exception):
         }
         body.update(self.extra)
         out: dict[str, Any] = {"error": body}
-        # **失败响应也带 usage。** 契约 §6 的 USAGE_ON_ERROR 冻结了这一点：
-        # 一次重试耗尽的 422 背后是 1+retries 次真实的模型调用，不报出来的话
-        # 调用方看不见自己花了多少——而那恰好是最贵的一类调用。
-        #
-        # 口径与 200 一致：整轮累计，含全部重试。
-        #
-        # 哪些错误要带由 contract.USAGE_ON_ERROR_TYPES 决定，而且**零调用也给 0**：
-        # 配额可能在模型调用之前就拒了，那时用量确实是零——但"不给"会让调用方
-        # 读 .usage.total_tokens 时分两种情况处理，形状统一更重要。
+        # 失败响应也带 usage（契约 §6 的 USAGE_ON_ERROR）：一次重试耗尽的 422 背后是
+        # 1+retries 次真实的模型调用，不报出来调用方就看不见自己花了多少。口径与 200
+        # 一致（整轮累计），哪些错误要带由 contract.USAGE_ON_ERROR_TYPES 决定，而且零
+        # 调用也给 0——形状统一比让调用方分两种情况读 .usage.total_tokens 重要。
         if self.error_type.value in C.USAGE_ON_ERROR_TYPES:
             out["usage"] = usage_block(self.usage)
         return out
@@ -94,10 +86,8 @@ class XingchaError(Exception):
 
 
 class InvalidApiKey(XingchaError):
-    """令牌无效 / 禁用 / 过期。
-
-    **对外一律同一条消息。** 区分它们等于给公网一个 token 有效性 oracle
-    （"这个 key 存在但过期了"是白送的信息）。区分只进日志。
+    """令牌无效 / 禁用 / 过期。对外一律同一条消息——区分等于给公网一个 token 有效性
+    oracle。区分只进日志。
     """
 
     error_type = ErrorType.INVALID_API_KEY
@@ -186,16 +176,12 @@ class AgentSpecInvalid(XingchaError):
 
 
 class AgentBuildFailed(XingchaError):
-    """spec 无法构造或无法执行 → 500，需管理员介入。
+    """spec 无法构造或无法执行 → 500，需管理员介入。与 400 分开是因为处置路径不同：
+    一个让用户改表单，一个让管理员改配置。
 
-    与 400 分开是因为处置路径完全不同：一个是让用户改表单，一个是让管理员改配置。
-
-    **原因要带出来。** 此前只回一句"请管理员查看日志"，而这一类失败**每次都发生**
-
-    （不是偶发），原因往往具体又可执行——实测拿到过
-    "WebSearchTool is not supported with OpenAIChatModel and model 'x'"。
-    只说"内部错误"等于让人去猜一个日志里明写着的答案。脱敏之后再带出去：
-    异常文本经常带完整 URL、偶尔带 header。
+    原因要带出来：这类失败每次都发生（不是偶发），原因往往具体又可执行——实测拿到过
+    "WebSearchTool is not supported with OpenAIChatModel and model 'x'"。只说"内部错误"
+    等于让人去猜一个日志里明写着的答案。脱敏之后再带出去：异常文本常带完整 URL。
     """
 
     error_type = ErrorType.AGENT_BUILD_FAILED
@@ -209,17 +195,13 @@ class AgentBuildFailed(XingchaError):
 
 
 class UpstreamError(XingchaError):
-    """上游拒了这次请求。
+    """上游拒了这次请求。``upstream_message`` 是上游自己说的原因，脱敏后原样带给调用方。
 
-    ``upstream_message`` 是上游自己说的原因，会**原样带给调用方**（脱敏之后）。
+    不带的话调用方只看到"上游返回 502"，而真正的原因只在服务端日志里——实测 DeepSeek
+    回的是 "Thinking mode does not support this tool_choice"，那是每次都会发生的配置
+    问题，看不到那句话的人只会以为网络抖了一下然后一直重试。
 
-    不带的话，调用方只看到一句"上游返回 502"，而真正的原因只在服务端日志里——
-    实测踩过：DeepSeek 回的是 "Thinking mode does not support this tool_choice"，
-    那是一个**每次都会发生**的配置问题，而不是偶发故障。看不到那句话的人只会
-    以为网络抖了一下，然后一直重试下去。
-
-    脱敏是必须的：异常文本经常带完整 URL、偶尔带 header，直接回显就是一条 key
-    泄漏路径。
+    脱敏是必须的：异常文本常带完整 URL、偶尔带 header，直接回显就是一条 key 泄漏路径。
     """
 
     error_type = ErrorType.UPSTREAM_ERROR
@@ -248,11 +230,9 @@ class UpstreamTimeout(XingchaError):
 
 
 class RequestTimeout(XingchaError):
-    """整轮墙钟超时（``asyncio.timeout``）。
-
-    与 :class:`UpstreamTimeout` 分开：``Agent.run`` 没有 timeout 参数，per-Agent 超时
-    走 ``model_settings['timeout']``，整轮上限只能靠 ``asyncio.timeout``。两者来源不同、
-    排查路径也不同，混成一个错误码会让人查错方向。
+    """整轮墙钟超时（``asyncio.timeout``）。与 :class:`UpstreamTimeout` 分开：per-Agent
+    超时走 ``model_settings['timeout']``，两者来源与排查路径不同，混成一个错误码会让人
+    查错方向。
     """
 
     error_type = ErrorType.REQUEST_TIMEOUT
@@ -286,19 +266,14 @@ def redact(text: str) -> str:
 
 
 class RedactingFormatter(logging.Formatter):
-    """在**日志渲染的唯一收口**上脱敏。
+    """在日志渲染的唯一收口上脱敏。
 
-    **为什么必须是 Formatter，而不是在各个 log 调用点手动 redact**
-
-    手动调的下场已经发生过一次：``redact()`` 只被用在 ``XingchaError.log_detail``
-    上，而 :func:`unhandled_error_handler` 里的 ``log.exception()`` 把整条 traceback
-    原样写了出去。实测用一个 ``RuntimeError("... key sk-or-v1-LEAKED failed")``
-    触发 5xx：**响应体是干净的，日志里那把 key 逐字出现。**
-
-    挡住了回显、没挡住日志——而日志会进 json-file、进 `docker logs`、进任何日志收集。
+    必须是 Formatter，不能在各个 log 调用点手动 redact：手动调漏过一次——
+    :func:`unhandled_error_handler` 里的 ``log.exception()`` 把整条 traceback 原样写了
+    出去，响应体干净而日志里那把 key 逐字出现，而日志会进 `docker logs` 与任何日志收集。
 
     Filter 也不够：traceback 是 handler 阶段由 Formatter 渲染的，Filter 拿到的
-    ``record.exc_info`` 还是个元组，改不动最终文本。所以只能在 Formatter 上做。
+    ``record.exc_info`` 还是个元组，改不动最终文本。
     """
 
     def format(self, record: logging.LogRecord) -> str:

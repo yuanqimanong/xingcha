@@ -6,15 +6,14 @@
 3. **判档与能力**——``supported_parameters`` 里的 ``structured_outputs`` 决定 T1
    敢不敢给，其余几项喂 ``builder.model_report``
 
-为什么 catalog 是主价源而不是 genai-prices：实测拿今天 OpenRouter 在售的 424 个模型
-逐个跑 ``calc_price``，成功 283 个（66.7%），141 个抛 ``LookupError``；跑在线更新后
-覆盖率**一个都没多**（上游数据持续滞后，不是本地快照过期），漏的全是新模型与
-``:free`` / ``:batch`` 变体——恰好是最省钱那些。而 ``/v1/models`` 响应自带精确价格
-且 424/424 全有，抽样与 genai-prices 完全相等。
+catalog 是主价源而不是 genai-prices：实测拿 424 个在售模型逐个跑 ``calc_price`` 只成功
+283 个（66.7%），跑在线更新后覆盖率一个都没多（上游数据持续滞后，不是本地快照过期），
+漏的全是新模型与 ``:free`` / ``:batch`` 变体；而 ``/v1/models`` 响应 424/424 全带价格，
+抽样与 genai-prices 完全相等。
 
-**stale-while-error 是契约的一部分。** 拉取失败时返回上次成功的快照并标记 stale，
-而不是报错或静默少返回：客户端会缓存这个列表并把 id 写进会话配置，一次上游抖动
-如果让接口静默只返回 Agent 行，用户配置里的上游模型会被抹掉。
+stale-while-error 是契约的一部分：拉取失败时返回上次成功的快照并标记 stale，而不是报错
+或静默少返回——客户端会缓存这个列表并把 id 写进会话配置，静默只返回 Agent 行会把用户
+配置里的上游模型抹掉。
 """
 
 from __future__ import annotations
@@ -50,12 +49,9 @@ class ModelInfo:
 
     @property
     def declares_capabilities(self) -> bool:
-        """这条记录**有没有**能力信息。
-
-        与"声明了不支持"必须分开。厂商直连的 ``/models`` 常常只回
-        ``{id, object, owned_by}``（实测 DeepSeek 就是），那时候
-        ``supported_parameters`` 是空的——把它当成"什么都不支持"会在页面上对着
-        一个明明能推理的模型打叉。没有信息就说没有信息。
+        """这条记录有没有能力信息。与"声明了不支持"必须分开：厂商直连的 ``/models``
+        常常只回 ``{id, object, owned_by}``，那时 ``supported_parameters`` 是空的，当成
+        "什么都不支持"会在页面上对着一个明明能推理的模型打叉。
         """
         return bool(self.supported or self.input_modalities or self.context_length)
 
@@ -71,12 +67,9 @@ class ModelInfo:
     def supports_native_schema(self) -> bool:
         """是否支持原生结构化输出。
 
-        **只看 ``structured_outputs``，不看 ``response_format``。** 实测今天 424 个模型里
-        后者 365 个、前者 340 个——有 25 个只有后者。混用会把 T2 误判成 T1，
-        于是对用户谎称"有原生保证"。
-
-        ``supported_parameters`` 为空 list 的模型语义是「未声明」而不是「全支持」，
-        这里天然落到 False，是想要的保守判定。
+        只看 ``structured_outputs``，不看 ``response_format``：实测 424 个模型里有 25 个
+        只有后者，混用会把 T2 误判成 T1，于是对用户谎称"有原生保证"。
+        ``supported_parameters`` 为空 list 的语义是「未声明」，这里天然落到 False。
         """
         return C.CATALOG_NATIVE_SCHEMA_PARAM in self.supported
 

@@ -9,8 +9,8 @@
 
   {% if no_catalog %}
   <div class="hint">
-    这个上游的模型目录**没有能力信息**（厂商直连的 <code>/models</code> 常常只回一个 id）。
-    下面一律显示"不确定"——不知道就说不知道，比对着一个明明会推理的模型打叉强。
+    <strong>这个上游的模型目录没有能力信息</strong>（厂商直连的 <code>/models</code> 常常只回一个 id）。
+    下面一律显示「不确定」——不知道就说不知道，比对着一个明明会推理的模型打叉强。
     要确认就用下面的「试运行」跑一次。
   </div>
   {% endif %}
@@ -44,7 +44,7 @@
   {% if sampling_ignored %}
   <div class="notice warn mb4">
     <strong>这个模型会忽略 temperature 与 top_p。</strong>
-    它被识别为"思考常开"的推理模型，而推理模型不接受采样参数——填了会在发请求前被
+    它被识别为「思考常开」的推理模型，而推理模型不接受采样参数——填了会在发请求前被
     剥掉，<strong>不报错</strong>。要控发散度就用下面的 <code>reasoning_effort</code>，
     或换一个非 <code>openai/</code> 前缀的模型。
   </div>

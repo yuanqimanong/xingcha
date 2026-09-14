@@ -1,10 +1,8 @@
 """从数据库行构造 Agent。
 
-**这是上游版本适配的唯一集中点。** ``AgentSpec`` 的字段与 ``CAPABILITY_TYPES``
-会随 pydantic-ai 演进，所有兼容处理只写在这个文件里；别处不解释 spec 字段的含义
-（见 README 的「架构」一节）。升级 pydantic-ai 时只需要改这里。
-
-下面每一条注释里的"实测"都是真跑过的，不是从文档抄的——文档在这几处是错的。
+上游版本适配的唯一集中点：``AgentSpec`` 的字段与 ``CAPABILITY_TYPES`` 会随
+pydantic-ai 演进，所有兼容处理只写在这个文件里，别处不解释 spec 字段的含义。
+注释里标「实测」的都是真跑过的——文档在这几处是错的。
 """
 
 from __future__ import annotations
@@ -49,14 +47,10 @@ def _spec_schema() -> dict[str, Any]:
 def validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """保存前校验 spec，返回规范化后的 dict。
 
-    **必须显式跑一遍官方 schema 的 jsonschema 校验。**
-
-    ``AgentSpec`` 是 ``extra='ignore'``：拼错的字段会被**静默吞掉**，
-    ``from_spec({"totally_bogus": 1})`` 照样构造成功。而官方生成的 schema 是
-    ``additionalProperties: false``。两者不一致，意味着靠 ``from_spec`` 本身
-    探测不到字段拼错或上游改名——静默降级会一路跑到线上。
-
-    决策 2 那句"整块存 JSON，升级只改 builder 一个文件"，要靠这一步才成立。
+    必须显式跑一遍官方 schema 的 jsonschema 校验：``AgentSpec`` 是 ``extra='ignore'``，
+    拼错的字段被静默吞掉，``from_spec({"totally_bogus": 1})`` 照样成功；而官方 schema
+    是 ``additionalProperties: false``。只靠 ``from_spec`` 探测不到字段拼错或上游改名，
+    静默降级会一路跑到线上。
     """
     import jsonschema
 
@@ -80,26 +74,19 @@ def validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def runnable_capabilities(spec: dict[str, Any]) -> dict[str, Any]:
-    """把 capability 改回 ``from_spec`` **收得下**的形状。
+    """把 capability 改回 ``from_spec`` 收得下的形状。
 
-    **上游自己的 round-trip 不自洽**（实测 pydantic-ai 2.35.3）：
+    上游自己的 round-trip 不自洽（实测 pydantic-ai 2.35.3）：``model_dump()`` 把
+    ``["Thinking"]`` 规范化成 ``[{"name": "Thinking"}]``，而 ``from_spec()`` 拒绝那个
+    形状（把整个 dict 当成"能力名叫 name"）。星槎存的正是 dump 那一份，于是保存成功、
+    每次调用 500，任何勾了能力的 Agent 都建不起来。
 
-    * ``AgentSpec.model_dump()`` 把 ``["Thinking"]`` 规范化成 ``[{"name": "Thinking"}]``；
-    * 而 ``Agent.from_spec()`` **拒绝**那个形状，报
-      ``Capability 'name' is not in the provided custom_capability_types``
-      ——它把整个 dict 当成"能力名叫 name"。
+    ``from_spec`` 收 ``"Thinking"`` 与 ``{"Thinking": {args}}``，官方 schema 只认
+    ``"Thinking"`` 与 ``{"name": "Thinking"}``——交集只有裸字符串，所以一律降回字符串。
+    带参数的能力目前没有表单入口，别现在假装支持。
 
-    星槎存的正是 dump 出来的那一份，于是：**保存成功，每次调用都 500。** 任何勾了
-    能力的 Agent 都建不起来，包括「可观测」那个勾（它就是 ``Instrumentation``
-    能力）。导出的 ``agent.yaml`` 同样带着这个坏形状。
-
-    ``from_spec`` 收 ``"Thinking"`` 与 ``{"Thinking": {args}}``；官方 schema 只认
-    ``"Thinking"`` 与 ``{"name": "Thinking"}``。**两个集合的交集只有裸字符串**，
-    所以这里一律降回字符串。带参数的能力现在没有表单入口；将来有了，得同时绕过
-    schema 校验与 from_spec 的这条分歧，那时候再说，别现在假装支持。
-
-    在 :func:`validate_spec`（写入）与 :func:`build`（读取）两处都做：前者修新存
-    的与导出的，后者让库里已有的坏行不需要迁移就能跑。幂等。
+    写入（:func:`validate_spec`）与读取（:func:`build`）两处都做：前者修新存的与导出
+    的，后者让库里已有的坏行不迁移也能跑。幂等。
     """
     caps = spec.get("capabilities")
     if not isinstance(caps, list):
@@ -115,12 +102,9 @@ def runnable_capabilities(spec: dict[str, Any]) -> dict[str, Any]:
     return spec
 
 
-#: OpenRouter 的联网开关：请求体里的 ``plugins``。
-#:
-#: 不带 ``engine`` 是**刻意的**——留空等同 ``:online``（由 OpenRouter 自己选，grok 这类
-#: 自带检索的模型走上游 native 搜索，其余回退 Exa）。实测同一个 grok-4.3：留空注入
-#: ~11K token / 15 条引用，写死 ``engine="exa"`` 只剩 ~2.7K / 5 条——写死等于把所有模型
-#: 拉到最低那一档。
+#: OpenRouter 的联网开关：请求体里的 ``plugins``。不带 ``engine`` 是刻意的——留空等同
+#: ``:online``，由上游自选（自带检索的走 native，其余回退 Exa）。实测同一个 grok-4.3
+#: 留空注入 ~11K token / 15 条引用，写死 ``engine="exa"`` 只剩 ~2.7K / 5 条。
 _WEB_SEARCH_PLUGIN: Final[dict[str, Any]] = {"id": "web"}
 
 
@@ -137,27 +121,20 @@ def _capability_name(item: Any) -> str | None:
 
 
 def websearch_to_plugin(spec: dict[str, Any]) -> dict[str, Any]:
-    """把 ``WebSearch`` 能力翻成 OpenRouter 的 ``plugins``，并**摘掉这个 capability**。
+    """把 ``WebSearch`` 能力翻成 OpenRouter 的 ``plugins``，并摘掉这个 capability。
 
-    没有这一层的话，勾了「联网搜索」的 Agent **不报错也不搜索**：pydantic-ai 的
+    没有这一层的话，勾了「联网搜索」的 Agent 不报错也不搜索：pydantic-ai 的
     ``WebSearchTool`` 在 ``OpenAIChatModel`` 上翻成 OpenAI 自家的 ``web_search_options``，
-    而 OpenRouter **不实现那个字段**。实测（2026-09-13）：
+    而 OpenRouter 不实现那个字段。实测（2026-09-13）：塞非法值照样 200，与瞎编的字段
+    同待遇（``reasoning_effort="banana"`` / ``plugins=[{"id":"banana"}]`` 都会 400）；
+    而本该拦住它的门禁也失效——``openai_chat_supports_web_search`` 对 grok / glm /
+    gemini / gpt / deepseek 全是 True，pydantic-ai 永远不抛"not supported"。
 
-    * ``web_search_options={"search_context_size":"banana"}`` → **200**，与一个瞎编的
-      字段待遇完全相同；而 ``reasoning_effort="banana"`` / ``plugins=[{"id":"banana"}]``
-      都会 400 并列出合法值——也就是说前者根本没被解析。
-    * 那道本该拦住它的门禁是失效的：``OpenRouterProvider.model_profile`` 按厂商前缀取
-      各家原生 profile，实测 grok / glm / gemini / gpt / deepseek 的
-      ``openai_chat_supports_web_search`` **全是 True**，于是 pydantic-ai 永远不会抛
-      "not supported by this model"，只会安静地发一个没人接的字段。
+    结果是最坏的失败形态：模型没拿到材料，照常编一个自信的答案，成品上看不出来。
 
-    结果是最坏的失败形态：模型没拿到任何材料，照常编一个自信的答案，**成品上看不出来**
-    （BTC 实价 $77,665 那天它答 $67K）。
-
-    **必须摘掉 capability**——只加 plugins 不摘它的话，那个死字段照发。
-
-    合并而不是覆盖：手写 spec 的人可以在 ``model_settings.extra_body.plugins`` 里自己
-    写一条带 ``max_results`` / ``engine`` 的 web 插件，那条优先，这里不再重复添加。幂等。
+    必须摘掉 capability，只加 plugins 不摘的话那个死字段照发。合并而不是覆盖：手写
+    spec 的人可以在 ``model_settings.extra_body.plugins`` 里自带一条 web 插件，那条
+    优先。幂等。
     """
     caps = spec.get("capabilities")
     if not isinstance(caps, list):
@@ -177,12 +154,11 @@ def websearch_to_plugin(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def custom_capability_types() -> tuple[type, ...]:
-    """自定义 capability。v0.2 为空——逃生舱在后续版本。
+    """自定义 capability。目前为空。
 
-    注意上游对这类类有三条硬约束（实测）：必须继承 ``AbstractCapability``、
-    必须**自己**被 ``@dataclass`` 装饰（继承来的不算）、``get_serialization_name()``
-    不能返回 None。``Capability`` 基类显式返回 None，所以直接继承它会报
-    "has opted out of serialization"。
+    上游对这类类有三条硬约束（实测）：必须继承 ``AbstractCapability``、必须自己被
+    ``@dataclass`` 装饰（继承来的不算）、``get_serialization_name()`` 不能返回 None
+    （``Capability`` 基类显式返回 None，直接继承会报 "has opted out of serialization"）。
     """
     return ()
 
@@ -205,8 +181,8 @@ def declarable_capabilities() -> list[str]:
 def is_openrouter(base_url: str) -> bool:
     """这个上游是不是 OpenRouter 本体。
 
-    按**主机名**判断，不看路径：中转会把路径改成各种样子，但域名不会假装是
-    openrouter.ai。判错的代价是不对称的——见 :func:`make_provider`。
+    按主机名判断，不看路径：中转会改路径，但域名不会假装是 openrouter.ai。判错的
+    代价不对称，见 :func:`make_provider`。
     """
     from urllib.parse import urlparse
 
@@ -219,40 +195,26 @@ def make_provider(
 ) -> Provider:
     """构造 provider。
 
-    **不是 OpenRouter 就不能用 ``OpenRouterProvider``。**
+    不是 OpenRouter 就不能用 ``OpenRouterProvider``：它的 ``model_profile()`` 在模型名
+    没有 ``/`` 时直接抛 UserError，而厂商直连与多数中转的 id 恰恰是裸的。症状是
+    ``GET /v1/models`` 与直通都正常、只有 Agent 挂成 500「服务内部错误」。反过来判错
+    是安全的（``OpenAIProvider`` 只是少了几条按厂商前缀挑 profile 的提示），所以按
+    域名严格识别，其余一律走通用的那个。
 
-    它的 ``model_profile()`` 在模型名里没有 ``/`` 时**直接抛 UserError**
-    （"model names must be prefixed with the upstream provider"）。而厂商直连
-    与大多数中转的模型 id 恰恰是裸的（``deepseek-v4-flash``）——于是：
-
-    * ``GET /v1/models`` 正常（那只是一次 HTTP 拉取），
-    * 直通正常（原样转发），
-    * **只有 Agent 挂**，而且是一个 500 "服务内部错误"。
-
-    也就是说，产品的核心卖点在任何非 OpenRouter 上游上都不可用，而三条路径里
-    唯一坏掉的那条报的是一句看不出原因的话。实测踩到。
-
-    反过来判错是安全的：``OpenAIProvider`` 只是少了几条按厂商前缀挑 profile 的
-    提示，不会硬失败。所以这里按域名严格识别 OpenRouter，其余一律走通用的那个。
-
-    走自建 ``AsyncOpenAI`` 而不是让 provider 自己建，因为 ``OpenRouterProvider``
-    **不接受 base_url**（实测：签名里没有，也没有任何别名），而大陆中转恰恰必须改它。
-
-    三个参数每一个不设都会咬人：
+    走自建 ``AsyncOpenAI`` 而不是让 provider 自己建：``OpenRouterProvider`` 不接受
+    base_url，而大陆中转恰恰必须改它。三个参数每一个不设都会咬人：
 
     ``max_retries=0``
-        SDK 默认重试 2 次。实测 timeout=0.3 时墙钟被放大到 2.17 秒，并且**把中转
-        打了三遍**。重试只该有一层，交给 pydantic-ai 的 retries / guarantee。
+        SDK 默认重试 2 次。实测 timeout=0.3 时墙钟放大到 2.17 秒，并把中转打了三遍。
+        重试只该有一层，交给 pydantic-ai 的 retries / guarantee。
 
     走 ``upstream.new_async_client``
-        **Agent 真正调模型走的就是这里**，所以它必须和拉目录 / 直通那条用同一个建法
-        ——读环境代理。此前这里写死 ``trust_env=False``，而 ``make_client`` 已经改成
-        读代理，于是目录拉得到、上游体检也通，**只有 Agent 调用**被上游按出口 IP 挡回
-        ``This model is not available in your region.``，502 的文案还完全指向上游。
+        Agent 调模型走的就是这里，必须和拉目录 / 直通用同一个建法——读环境代理。写死
+        ``trust_env=False`` 的后果是目录拉得到、体检也通，只有 Agent 调用被上游按出口
+        IP 挡回 ``This model is not available in your region.``。
 
     手写的 attribution headers
-        传了 ``openai_client=`` 之后，官方**不再**注入 HTTP-Referer / X-Title
-        （那段注入只在它自建 client 的分支里）。所以这不是重复代码，删掉会让
+        传了 ``openai_client=`` 之后官方不再注入 HTTP-Referer / X-Title，删掉会让
         OpenRouter 后台看不到来源。
     """
     hooks: dict[str, list[Any]] = {}
@@ -278,26 +240,17 @@ def make_provider(
 
 
 def enable_instrumentation(tracing: Any) -> None:
-    """装配 pydantic-ai 的埋点。没有上报目标时全体关闭；配了目标之后它就是全局默认值。
+    """装配 pydantic-ai 的埋点。没有上报目标时全体关闭；配了目标之后它是全局默认值。
 
-    这是本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
+    本项目唯一调用 pydantic-ai 埋点 API 的地方（架构标准 3：上游适配点唯一）。
 
-    **为什么是"按 Agent 开"而不是全局开**
+    埋点把每次模型请求的完整消息与响应记成 span 属性发到外部地址，而"对话内容能不能
+    离开这台机器"在不同 Agent 之间答案不同，所以按 Agent 开。
 
-    埋点做的事是把每次模型请求的**完整消息与响应**记成 span 属性，然后发到外部
-    地址。这件事的答案在不同 Agent 之间通常不同：一个跑客户合同的 Agent 与一个
-    跑内部分类的 Agent，对"对话内容能不能离开这台机器"的回答不该被一个全局开关
-    统一。
-
-    ``instrument_all`` 设的是**默认值**，只作用于没有单独声明 ``Instrumentation``
-    能力的 Agent。**两个分支的含义不同**：没有上报目标时传 ``False``，谁都不上报；
-    一旦配了上报目标，默认值就是这份 settings——那时候是**默认全体上报**，声明了
-    能力的 Agent 用自己那一份。要做到"配了地址也仍然按 Agent 开"，得改下面那次
-    传参，那是一次行为变更。
-
-    ``instrument_all`` 仍然要调（而不是完全不调）：pydantic-ai 需要一个
-    tracer_provider 才知道往哪儿发，而那是全局基础设施——**地址是全局的，
-    开关是按 Agent 的**。
+    ``instrument_all`` 设的是默认值，只作用于没有单独声明 ``Instrumentation`` 的
+    Agent：没有上报目标时传 ``False``，谁都不上报；配了目标之后默认值是这份 settings，
+    也就是默认全体上报。地址是全局的，开关是按 Agent 的，所以它仍然要调——pydantic-ai
+    需要一个 tracer_provider 才知道往哪儿发。
     """
     from pydantic_ai import Agent
     from pydantic_ai.models.instrumented import InstrumentationSettings
@@ -314,25 +267,17 @@ def enable_instrumentation(tracing: Any) -> None:
     )
 
 
-#: 表单要暴露的模型参数，**按官方 ModelSettings 的字段名**。
+#: 表单要暴露的模型参数，按官方 ModelSettings 的字段名。
 #:
-#: 只列这几个：它们是调模型时真会动的旋钮。其余（``extra_body`` / ``logit_bias`` /
-#: ``extra_headers`` / ``tool_choice``）要么是逃生舱、要么形状复杂到表单放不下——
-#: 那些走「导出 bundle 手改 agent.yaml 再 apply」这条路。
+#: 只列调模型时真会动的旋钮。其余（``extra_body`` / ``logit_bias`` /
+#: ``extra_headers`` / ``tool_choice``）要么是逃生舱、要么形状复杂到表单放不下，那些
+#: 走「导出 bundle 手改 agent.yaml 再 apply」。每一项都在
+#: :func:`model_settings_fields` 里对着官方 schema 校验过存在，改名会在构建期就红。
 #:
-#: 每一项都在 :func:`model_settings_fields` 里对着官方 schema 校验过存在，所以
-#: pydantic-ai 哪天改了字段名，构建期就会红，而不是在某次调用时静默失效。
-#: 每一项的第三格是**留空时实际生效的值**，直接印在输入框里。
-#:
-#: 原先那里写的是"默认"两个字，而那等于什么都没说：调 temperature 的人想知道的正是
-#: "不动它是多少"。这些数字是 **OpenAI 兼容 API 的文档默认值**——星槎留空时压根不发
-#: 这个字段，所以真正决定取值的是上游。少数上游会不一样，所以措辞是"上游默认"。
-#:
-#: 有三项没有数字可写，那就**不写数字**：``max_tokens`` 由模型自己的上限决定，
-#: ``seed`` / ``top_k`` 不发就是不生效。编一个数字比写"默认"更糟。
-#:
-#: ``timeout`` 是唯一一项星槎自己知道确切值的（``settings.request_timeout``），
-#: 所以它是个占位符，由 :func:`model_settings_fields` 填进去。
+#: 第三格是留空时实际生效的值，直接印在输入框里——调 temperature 的人想知道的正是
+#: "不动它是多少"。星槎留空时压根不发这个字段，真正决定取值的是上游，所以措辞是
+#: "上游默认"。``max_tokens`` / ``seed`` / ``top_k`` 没有数字可写就不写，编一个更糟。
+#: ``timeout`` 是唯一星槎自己知道确切值的，占位符由 :func:`model_settings_fields` 填。
 FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str, str], ...]] = (
     # (字段名, 中文标签, 留空时实际是多少, 提示)
     ("temperature", "temperature", "上游默认 1", "0 最确定、越高越发散。抽取类任务通常设 0。"),
@@ -346,99 +291,63 @@ FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "timeout",
         "timeout（秒）",
         "{request_timeout}",
-        "**单次**上游请求的超时，不是整轮。长思考模型要放宽。",
+        "单次上游请求的超时，不是整轮。长思考模型要放宽。",
     ),
 )
 
-#: 厂商专属的参数。**不在通用 ``ModelSettings`` 里**，所以单独一张表：
-#: :func:`model_settings_fields` 那道"对着官方 schema 校验字段名"的检查用的是
-#: 通用那份，把这些混进去会直接把构建搞红。
+#: 厂商专属的参数。不在通用 ``ModelSettings`` 里，所以单独一张表——
+#: :func:`model_settings_fields` 那道校验用的是通用那份，混进去会把构建搞红。
 #:
-#: ``openai_reasoning_effort`` 是实测过真的会发出去的——它落成请求体里的
-#: ``reasoning_effort``。不实测不敢加：
-#: ``AgentSpec`` 的 ``extra='ignore'`` 会静默吞掉收不下的键，症状是"我设了、没生效"。
-#:
-#: 取值不是数字而是一个闭集，所以单独走 ``<select>``，不进
-#: :func:`model_settings_from_form` 的数字转换。
+#: ``openai_reasoning_effort`` 实测真的会发出去（落成请求体里的 ``reasoning_effort``）。
+#: 必须实测：``AgentSpec`` 的 ``extra='ignore'`` 会静默吞掉收不下的键，症状是"我设了、
+#: 没生效"。取值是闭集而不是数字，所以单独走 ``<select>``。
 FORM_CHOICE_SETTINGS: Final[tuple[tuple[str, str, str, str, tuple[str, ...]], ...]] = (
     (
         "openai_reasoning_effort",
         "reasoning_effort",
         "上游默认 medium",
-        "思考深度。**只有目录里带 reasoning 参数的模型认它**，别的模型会忽略"
-        "（不会报错）。越高越慢越贵。",
+        "思考深度。只有推理型模型认它，别的模型会忽略（不报错）。越高越慢越贵。",
         ("minimal", "low", "medium", "high"),
     ),
 )
 
-#: 能力清单里对**单用户自托管**真正有用、且不需要额外参数的那些。
+#: 能力清单里对单用户自托管真正有用、且不需要额外参数的那些。
 #:
-#: 全列 14 个只会让表单变成一份 pydantic-ai 内部术语表——``PrefixTools`` /
-#: ``SetToolMetadata`` / ``IncludeToolReturnSchemas`` 是给框架使用者调工具协议的，
-#: 在这个后台里勾了也没有可观察的效果。
+#: 全列 14 个只会让表单变成一份 pydantic-ai 内部术语表：``PrefixTools`` /
+#: ``SetToolMetadata`` / ``IncludeToolReturnSchemas`` / ``NativeTool`` 只在有工具时
+#: 才有意义，``ReinjectSystemPrompt`` 重注的是 ``system_prompt`` 而星槎用
+#: ``instructions``，勾了都没有可观察的效果。``Instrumentation`` 由「可观测」分区
+#: 单独呈现（那是"把对话发到外部"，不该与"给模型加个能力"并列）；MCP 需要服务器
+#: 地址与鉴权，得先有一个配置页。
 #:
-#: ``Instrumentation`` 不在这里：它由「可观测」分区单独呈现（语义完全不同——那是
-#: "把这个 Agent 的对话发到外部"，与"给模型加个能力"不该并列在同一个勾选框列表里）。
+#: 这条通道原生只认一个工具。实测 pydantic-ai 2.35.3 的
+#: ``OpenAIChatModel.supported_native_tools()`` 只返回 ``{WebSearchTool}``，而星槎对
+#: 所有模型都用 ``OpenAIChatModel``（见 make_model）。直接打这道闸测过三个模型
+#: （含 gpt-5），``WebFetchTool`` / ``ImageGenerationTool`` / ``MCPServerTool`` 一律
+#: ``not supported by this model``——不是支持的模型少，是与模型无关地为零，它们只
+#: 存在于 ``OpenAIResponsesModel`` 那条通道上。
 #:
-#: MCP 也不在这里：它需要服务器地址与鉴权，得先有一个配置页。
+#: 所以这里只放真的能用的：``Thinking`` 纯本地不碰这道闸；``WebSearch`` 是唯一能交给
+#: 上游做的，要 provider 侧的 ``openai_chat_supports_web_search``（OpenRouter 全放行、
+#: 厂商直连全不放行）与模型自身支持同时成立。
 #:
-#: 每一条的说明都是**实测**出来的，不是照官方清单抄的。
-#:
-#: **这条通道原生只认一个工具。** 实测 pydantic-ai 2.35.3：
-#:
-#:     class OpenAIChatModel:
-#:         def supported_native_tools(cls): return frozenset({WebSearchTool})
-#:
-#: 星槎对所有模型都用 ``OpenAIChatModel``（见 make_model 的注释：``OpenRouterModel``
-#: 对缺 ``provider`` 字段的中转响应会硬失败，而走中转正是这个项目的用途）。
-#:
-#: 直接打这道闸测过，三个模型（含 gpt-5）结论一致：``WebFetchTool`` /
-#: ``ImageGenerationTool`` / ``MCPServerTool`` 一律 ``not supported by this model``。
-#: **不是"支持的模型少"，是与模型无关地为零**——它们只存在于 ``OpenAIResponsesModel``
-#: （OpenAI 的 Responses API）那条通道上。
-#:
-#: 所以这个列表只放**真的能用**的：
-#:
-#: * ``Thinking`` —— 纯本地，不碰这道闸。实测 DeepSeek 直连与 OpenRouter 都通。
-#: * ``WebSearch`` —— 唯一能交给上游做的，且要两个条件同时成立：provider 侧的
-#:   ``openai_chat_supports_web_search``（**OpenRouter 全放行、厂商直连全不放行**），
-#:   以及模型自己支持 ``WebSearchTool``。实测 glm-5.3-flash 经 OpenRouter 可用，
-#:   同一个能力经 DeepSeek 直连直接被拒。
-#:
-#: 拿掉的三个与理由：
-#:
-#: * ``WebFetch`` —— 原生做不到；本地回退（``local=True``）能跑，但那是**星槎自己
-#:   出网去抓**，覆盖范围取决于这台机器能到哪，而不是取决于配置。用户的判断是
-#:   "模型没有抓取能力，本地也就别抓"——一个时灵时不灵的能力比没有更糟。而且那等于
-#:   开一个由模型决定目标地址的出网原语，也就是 SSRF：要开得先过 urlguard。
-#: * ``ImageGeneration`` —— 原生做不到，本地回退要传一个 Python 函数，网页表单
-#:   表达不了。
-#: * ``ToolSearch`` —— 不碰这道闸，但它做的是"工具很多时先检索再调用"，而星槎
-#:   还没有注册工具的入口。不报错、也不做任何事。
-#:
-#: 看过但没放进来的：``ReinjectSystemPrompt`` 重注的是 ``system_prompt``，而
-#: ``AgentSpec`` 没有这个字段（星槎用 ``instructions``），对本项目是空转；
-#: ``XSearch`` 同 WebFetch 那道闸；``PrefixTools`` / ``SetToolMetadata`` /
-#: ``IncludeToolReturnSchemas`` / ``NativeTool`` 都只在有工具时才有意义。
+#: 拿掉的三个：``WebFetch`` 原生做不到，本地回退等于开一个由模型决定目标地址的出网
+#: 原语（SSRF），要开得先过 urlguard；``ImageGeneration`` 的本地回退要传一个 Python
+#: 函数，网页表单表达不了；``ToolSearch`` 做的是"工具很多时先检索再调用"，而星槎还
+#: 没有注册工具的入口，不报错也不做事。
 FORM_CAPABILITIES: Final[tuple[tuple[str, str, str, dict[str, Any] | None], ...]] = (
     (
         "Thinking",
         "深度思考",
-        "让模型先想再答。**纯本地开关**，任何上游都收——但只有推理型模型真的会想，"
-        "其余模型收下这个参数也不会改变行为，而且思考过程本身要花 token。"
-        "实测在 DeepSeek 直连与 OpenRouter 上都可用。",
+        "让模型先想再答。只有推理型模型会真的思考，其余模型勾了也不改变行为；"
+        "思考过程本身要花 token。",
         None,
     ),
     (
         "WebSearch",
         "联网搜索",
-        "**由上游去搜**，不占这台机器的网络。勾上之后星槎把它翻成 OpenRouter 的 "
-        "`plugins`（见 websearch_to_plugin）——**不能原样交给 pydantic-ai**，它发的是 "
-        "OpenAI 的 `web_search_options`，OpenRouter 不认那个字段且静默丢弃。"
-        "检索引擎由 OpenRouter 自选：grok 这类自带检索的走 native（约 15 条来源），"
-        "其余回退 Exa（5 条）。**材料按 token 计费**，一次调用常多花 1~2 万 prompt "
-        "token，别在不需要时序上勾。验证方法：看返回里的 `usage.prompt_tokens`，"
-        "上万才是真搜了，几百就是没搜。",
+        "由上游完成检索，把材料附进上下文，不占这台机器的网络。检索到的材料"
+        "按 prompt token 计费，一次调用可能多花上万 token，不需要时别勾。",
         None,
     ),
 )
@@ -450,13 +359,12 @@ CAPABILITY_INSTRUMENTATION: Final = "Instrumentation"
 def model_settings_fields(
     request_timeout: float | None = None,
 ) -> tuple[tuple[str, str, str, str], ...]:
-    """表单要用的模型参数，**对着官方 schema 校验过**。
+    """表单要用的模型参数，对着官方 schema 校验过。
 
-    不校验的话，pydantic-ai 改字段名之后表单会静默失效：填了 temperature、
-    存进 spec、``extra='ignore'`` 把它吞掉——你以为设了、实际跑的是默认值。
+    不校验的话，pydantic-ai 改字段名之后表单会静默失效：填了 temperature、存进 spec、
+    ``extra='ignore'`` 把它吞掉，你以为设了、实际跑的是默认值。
 
-    ``request_timeout`` 传进来是为了把 ``timeout`` 那一项的"留空是多少"填成真值。
-    不传就留占位符原样——CLI 与测试不需要它。
+    ``request_timeout`` 用来把 ``timeout`` 那项的"留空是多少"填成真值；不传就留占位符。
     """
     known = set(_spec_schema()["$defs"]["ModelSettings"].get("properties", {}))
     missing = [name for name, _, _, _ in FORM_MODEL_SETTINGS if name not in known]
@@ -522,19 +430,13 @@ def choice_settings_fields() -> tuple[tuple[str, str, str, str, tuple[str, ...]]
 def capabilities_from_form(raw: Any) -> list[Any]:
     """勾选框 → spec 里的 capabilities 列表。
 
-    没参数的写成裸字符串，有参数的写成 ``{"名字": {参数}}``——这两种正好是
-    :func:`validate_spec` 的官方 schema 与 ``from_spec`` **同时**接受的形状
-    （交集，见 :func:`runnable_capabilities`）。
-
-    现在 FORM_CAPABILITIES 两项都不带参数，所以实际只会走裸字符串那一支；带参数
-    那一支留着是给将来加回需要参数的能力用的（``WebFetch(local=True)`` 就是那种）。
+    没参数的写成裸字符串，有参数的写成 ``{"名字": {参数}}``——这两种正好是官方 schema
+    与 ``from_spec`` 同时接受的形状（见 :func:`runnable_capabilities`）。当前两项都
+    不带参数，带参数那一支留给将来（``WebFetch(local=True)`` 就是那种）。
     """
-    #: 扫 ``cap_*`` 前缀，而不是只遍历 FORM_CAPABILITIES。
-    #:
-    #: 差别在于**从表单里拿掉一个能力时会不会静默丢数据**：只遍历当前提供的清单，
-    #: 那么一个早先勾过 ImageGeneration 的 Agent，下次保存就把它悄悄清掉了——而
-    #: 用户什么都没动。扫前缀 + 对着官方全集校验，页面就可以把这类"已不再提供但
-    #: 你确实设过"的能力渲染出来让人自己决定去留。
+    #: 扫 ``cap_*`` 前缀而不是只遍历 FORM_CAPABILITIES：只遍历当前清单的话，一个早先
+    #: 勾过 ImageGeneration 的 Agent 下次保存就被悄悄清掉了。扫前缀 + 对着官方全集
+    #: 校验，页面才能把这类"已不再提供但你确实设过"的能力渲染出来让人决定去留。
     offered = {name: args for name, _, _, args in form_capabilities()}
     known = set(declarable_capabilities())
     out: list[Any] = []
@@ -566,28 +468,19 @@ def _strip_prefix(model: str) -> str:
 
 
 def native_ok(model_id: str, provider: Provider, *, catalog_says: bool) -> bool:
-    """这个模型**真的**能走原生 JSON Schema 约束吗（T1 / T1+ 的前提）。
+    """这个模型真的能走原生 JSON Schema 约束吗（T1 / T1+ 的前提）。
 
-    **必须问两个人，而且要取交集**
+    必须问模型目录与 pydantic-ai 的 profile 两边并取交集。真正的闸在 pydantic-ai 里、
+    在发请求之前：``output_mode == 'native'`` 而 profile 的
+    ``supports_json_schema_output`` 为假时直接 ``UserError``。
 
-    此前只问模型目录。而真正的闸在 pydantic-ai 里，**在本地、发请求之前**就会拦：
+    两个来源各自错一个方向（实测）：目录说 yes、profile 说 no（``z-ai/glm-5.3-flash``、
+    ``qwen/qwen3.8-flash`` 目录里都标着 ``structured_outputs: true``）会保住 T1、保存时
+    不给降级提示，然后每次调用都失败；目录说 no、profile 说 yes 则出现在厂商直连——
+    目录里连能力字段都没有，而通用 profile 对没见过的名字给默认值。
 
-        if params.output_mode == 'native' and not profile.get('supports_json_schema_output', False):
-            raise UserError('Native structured output is not supported by this model.')
-
-    两个来源各自错一个方向（实测）：
-
-    * 目录说 yes、profile 说 no —— ``z-ai/glm-5.3-flash``、``qwen/qwen3.8-flash``
-      在 OpenRouter 目录里都标着 ``structured_outputs: true``。判档因此保住 T1、
-      **保存时不给任何降级提示**，然后每一次调用都失败。这一条最糟：管理员以为
-      自己拿到了最强的形状保证，实际拿到的是一个必然报错的 Agent。
-    * 目录说 no、profile 说 yes —— 厂商直连时目录里往往连能力字段都没有
-      （DeepSeek 的 ``/models`` 只回 id/object/owned_by），而通用 profile 对没
-      见过的名字给的是默认值。
-
-    取交集在两个方向上都安全：错判成"不支持"只是降级到 T2、多花点重试成本，
-    而错判成"支持"是对用户**谎称有保证**。这与 ``resolve_tier`` 里那句"未知模型
-    一律当作不支持"是同一条原则。
+    取交集两个方向都安全：错判成"不支持"只是降到 T2 多花点重试，错判成"支持"是对用户
+    谎称有保证。与 ``resolve_tier`` 的"未知模型一律当作不支持"同一条原则。
     """
     if not catalog_says:
         return False
@@ -602,9 +495,8 @@ def native_ok(model_id: str, provider: Provider, *, catalog_says: bool) -> bool:
 class CapabilityCheck:
     """一条"这个模型能不能干这个"的结论。
 
-    ``state`` 三态而不是布尔：**"声明了不支持"与"没有信息"必须分开**。厂商直连的
-    ``/models`` 常常只回 id（实测 DeepSeek），那时候对着一个明明会推理的模型打叉
-    是在撒谎——不知道就说不知道。
+    ``state`` 三态而不是布尔：厂商直连的 ``/models`` 常常只回 id，那时候对着一个明明
+    会推理的模型打叉是在撒谎——"声明了不支持"与"没有信息"必须分开。
     """
 
     key: str
@@ -640,27 +532,16 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
             "reasoning",
             "深度思考",
             tri(declared.supports_reasoning if declared is not None else None),
-            "目录里有 reasoning 参数才算。没有的模型勾了「深度思考」也不会真的想。",
+            "模型目录声明支持推理才算。没声明的模型勾了「深度思考」也不会真的想。",
         ),
         CapabilityCheck(
             "web_search",
             "联网搜索",
-            # **问 profile，不问目录。** 结论对，但理由曾经写错，订正如下：
-            #
-            # 目录里的 `web_search_options` 只有少数模型声明——那是 **OpenAI 自家**
-            # 那个字段的支持情况，而 OpenRouter 根本不实现它（实测：塞非法值照样
-            # 200，与瞎编的字段同待遇）。所以拿目录当判据是问错了问题。
-            #
-            # 星槎走的是 OpenRouter 的 `plugins`（见 websearch_to_plugin）——那是
-            # 上游的一层**通用注入**，与模型是否声明无关，任何模型都能用。检索引擎
-            # 由 OpenRouter 自选：自带检索的走 native，其余回退 Exa。
-            #
-            # profile 的这个 flag 对 OpenRouter 全系为 True（实测 grok / glm /
-            # gemini / gpt / deepseek），恰好等于"经 plugins 都能搜"，所以判据成立；
-            # 厂商直连全 False，也正确——那条路上确实没有这层插件。
-            #
-            # 注意它**不是** pydantic-ai 那道门禁的真相：那道门禁同样读这个 flag，
-            # 全 True 意味着它永远不抛"模型不支持"，这正是翻译层必须存在的原因。
+            # 问 profile，不问目录。目录里的 `web_search_options` 是 OpenAI 自家那个
+            # 字段的支持情况，而 OpenRouter 根本不实现它（实测塞非法值照样 200）。
+            # 星槎走的是 OpenRouter 的 `plugins`（见 websearch_to_plugin），那是一层
+            # 通用注入，与模型是否声明无关。而这个 flag 对 OpenRouter 全系为 True、
+            # 厂商直连全 False，恰好等于"经 plugins 能不能搜"，所以判据成立。
             tri(bool(profile.get("openai_chat_supports_web_search", False))),
             "由上游去搜。OpenRouter 这类上游整体放行，厂商直连一律不放行。",
         ),
@@ -672,7 +553,7 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
                 if declared is not None
                 else None
             ),
-            "目录与 pydantic-ai 的 profile 都点头才算。不点头会自动降级到 T2。",
+            "模型目录与调用通道都支持才算。有一边不支持就会自动降级到 T2。",
         ),
         CapabilityCheck(
             "tools",
@@ -684,8 +565,8 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
             "multimodal",
             "图片 / 文件输入",
             tri(bool(declared.input_modalities - {"text"}) if declared is not None else None),
-            "**即使模型支持，星槎现在也只发文本**——收到非文本 content part 会明确报错，"
-            "而不是静默丢掉。这一栏是给你选模型时参考的。",
+            "即使模型支持，星槎现在也只发文本；收到非文本内容会明确报错，不会静默丢掉。"
+            "这一栏供你选模型时参考。",
         ),
     ]
     return checks
@@ -694,17 +575,11 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
 def make_model(model_id: str, provider: Provider) -> OpenAIChatModel:
     """构造 model。
 
-    **用 ``OpenAIChatModel`` 而不是 ``OpenRouterModel``。**
+    用 ``OpenAIChatModel`` 而不是 ``OpenRouterModel``：后者对响应缺 ``provider`` 字段
+    会硬失败，而中转（New API 一类）不保证回传那个字段，走中转正是这个项目的用途。
+    代价是拿不到上游的 prompt-cache 计价优化，但费用主价源已经是模型目录的单价。
 
-    后者会带上 OpenRouter 的 prompt-cache 处理，看起来更"对口"，但它对响应缺
-    ``provider`` 字段会**硬失败**——而中转（New API 一类）不保证回传那个字段。
-    星槎的核心用途就是走中转，所以这里选稳。
-
-    代价是拿不到上游的 prompt-cache 计价优化，但那只影响费用**预估精度**，
-    而费用主价源已经改成模型目录的单价，影响被补偿掉了。
-
-    别好心改回 OpenRouterModel——中转到底回不回传 ``provider``，只能自己抓一次
-    上游响应看，没有现成的体检项。
+    别好心改回去——中转到底回不回传 ``provider``，只能自己抓一次上游响应看。
     """
     return OpenAIChatModel(_strip_prefix(model_id), provider=provider)
 
@@ -716,14 +591,12 @@ def make_model(model_id: str, provider: Provider) -> OpenAIChatModel:
 #: 用户提示词模板里代表"调用方发来的那段话"的占位符。
 PROMPT_PLACEHOLDER: Final = "{{input}}"
 
-#: 星槎自己的东西放进 ``AgentSpec.metadata`` 的这个命名空间下。
+#: 星槎自己的东西放进 ``AgentSpec.metadata`` 的这个命名空间下：官方 schema 是
+#: ``additionalProperties: false``，加顶层字段会被打回，而 ``metadata`` 是官方留的
+#: 自由字典；带命名空间是为了不和别人写进去的东西撞。
 #:
-#: 为什么放 metadata：``AgentSpec`` 的官方 schema 是 ``additionalProperties: false``，
-#: 加顶层字段会被校验直接打回；而 ``metadata`` 是官方留的自由字典。放在带命名空间
-#: 的键下，将来上游或用户往 metadata 里写别的也不会撞上。
-#:
-#: 代价要说清楚：上游**不解释**这里的任何东西，模板与示例是星槎在运行时应用的。
-#: 所以导出物里不能只把 metadata 带走了事——见 exporter，它把两者烤进 run.py。
+#: 代价：上游不解释这里的任何东西，模板与示例是星槎在运行时应用的，所以导出物不能
+#: 只把 metadata 带走了事——见 exporter，它把两者烤进 run.py。
 SPEC_NS: Final = "xingcha"
 
 
@@ -764,8 +637,8 @@ class Prompting:
 def prompting_from_spec(spec: dict[str, Any]) -> Prompting:
     """spec → :class:`Prompting`。字段缺失或形状不对一律退回空，不抛。
 
-    读取路径必须宽容：库里可能存着更早版本写的 spec，而一个老 Agent 不该因为
-    metadata 里少个键就整个跑不起来。写入路径（:func:`validate_prompting`）才严格。
+    读取路径宽容：库里可能存着更早版本写的 spec，老 Agent 不该因为少个键就跑不起来。
+    严格校验在写入路径（:func:`validate_prompting`）。
     """
     raw = (spec.get("metadata") or {}).get(SPEC_NS) or {}
     if not isinstance(raw, dict):
@@ -790,9 +663,8 @@ def validate_prompting(
 ) -> Prompting:
     """保存前校验。
 
-    模板非空却不含占位符是**必须拦下**的：那样调用方发来的内容会被整个丢掉，
-    每次调用都拿同一段固定文本去问模型。表现是"Agent 好像不看我的输入"，
-    而表单上一切正常——静默失败里最难查的一类。
+    模板非空却不含占位符必须拦下：那样调用方发来的内容会被整个丢掉，每次都拿同一段
+    固定文本去问模型，表现是"Agent 好像不看我的输入"而表单上一切正常。
     """
     template = user_template.strip()
     if template and PROMPT_PLACEHOLDER not in template:
@@ -812,10 +684,8 @@ def validate_prompting(
 
 
 def prompting_to_spec(spec: dict[str, Any], prompting: Prompting) -> None:
-    """把 :class:`Prompting` 写回 spec 的 metadata。空则**不写键**。
-
-    空也写一个 ``{"xingcha": {}}`` 的话，每个 Agent 的 spec 里都多一坨没内容的
-    结构，导出的 agent.yaml 也跟着脏。
+    """把 :class:`Prompting` 写回 spec 的 metadata。空则不写键——否则每个 spec 里都多
+    一坨没内容的结构，导出的 agent.yaml 也跟着脏。
     """
     if prompting.is_empty:
         return
@@ -829,11 +699,9 @@ def prompting_to_spec(spec: dict[str, Any], prompting: Prompting) -> None:
     spec.setdefault("metadata", {})[SPEC_NS] = body
 
 
-#: 导出物里记录来源的两个键：分组与档位。
-#:
-#: 它们在库里是 ``agent.group_name`` / ``agent_version.tier`` 两个**列**，不是 spec 的
-#: 字段——所以只在导出那一刻拓进 metadata，导入时读完即删。spec 里长期留一份副本的话，
-#: 后台改一次分组它就和列不同步了，而不同步的那一份会在下次导出时胜出。
+#: 导出物里记录来源的两个键：分组与档位。它们在库里是列而不是 spec 字段，所以只在
+#: 导出那一刻拓进 metadata、导入时读完即删——长期留副本的话，后台改一次分组就不同步，
+#: 而不同步的那份会在下次导出时胜出。
 ORIGIN_GROUP: Final = "group"
 ORIGIN_TIER: Final = "tier"
 
@@ -841,12 +709,10 @@ ORIGIN_TIER: Final = "tier"
 def stamp_origin(spec: dict[str, Any], *, group: str | None, tier: str | None) -> dict[str, Any]:
     """导出：把分组与档位记进 ``metadata.xingcha``，让导出物能被完整还原。
 
-    不记的话，导到另一台星槎上会**静默丢两样**：分组掉回默认组（还算显眼），
-    档位退回自动判档——T1+/T3 一律变成 T2，而那是保证方式与花费都不同的另一档，
-    页面上看不出来，只有账单和失败形态会变。
+    不记的话导到另一台星槎会静默丢两样：分组掉回默认组，档位退回自动判档——T1+/T3
+    一律变成 T2，而那是保证方式与花费都不同的另一档，页面上看不出来。
 
-    合并而不是覆盖 ``metadata.xingcha``：用户模板、少样本、输出通道都住在同一个
-    命名空间里（见 :func:`prompting_to_spec`）。
+    合并而不是覆盖：用户模板、少样本、输出通道住在同一个命名空间里。
     """
     body = {k: v for k, v in ((ORIGIN_GROUP, group), (ORIGIN_TIER, tier)) if v}
     if not body:
@@ -857,10 +723,9 @@ def stamp_origin(spec: dict[str, Any], *, group: str | None, tier: str | None) -
 
 
 def take_origin(spec: dict[str, Any]) -> tuple[str | None, str | None]:
-    """导入：取出分组与档位，并**从 spec 里删掉**（库里有列，不留副本）。
+    """导入：取出分组与档位，并从 spec 里删掉（库里有列，不留副本）。
 
-    原地改 spec。读不出来就给 ``(None, None)``，调用方退回原有行为
-    （分组保持不动、档位走自动判）。
+    原地改 spec。读不出来给 ``(None, None)``，调用方退回原有行为。
     """
     ns = (spec.get("metadata") or {}).get(SPEC_NS)
     if not isinstance(ns, dict):
@@ -897,10 +762,8 @@ class AgentRuntime:
     limits: UsageLimits
     model_id: str
 
-    #: 两阶段（T1+）的第一阶段：不带任何格式约束，纯自由推理。
-    #:
-    #: 只有 T1+ 有这个。它存在的全部意义是让推理那一步**不受格式约束干扰**——
-    #: 文献显示格式约束会削弱推理，而两阶段把这两件事分开。
+    #: 两阶段（T1+）的第一阶段：不带任何格式约束，纯自由推理。只有 T1+ 有，存在的
+    #: 意义是让推理那一步不受格式约束干扰。
     reason_agent: Agent | None = None
 
     #: 用户提示词模板与少样本。上游不认识它们，是星槎在组装消息时应用的。
@@ -951,11 +814,9 @@ def build(
         # 错误会推迟到 from_spec 抛 UserError。在这里显式拦下，报错更靠近原因。
         raise AgentSpecInvalid("Agent 定义里没有 model")
 
-    # **make_model 要在 try 里。**
-    #
-    # 它会抛 UserError（模型名不被 provider 接受之类），而放在 try 外面的话那个
-    # 异常一路冒到最外层，变成一句"服务内部错误，请把 run_id 给管理员"——而这恰恰
-    # 是最需要说清原因的一类失败：它每次都发生，不是偶发。
+    # make_model 要在 try 里：它会抛 UserError（模型名不被 provider 接受之类），放在
+    # 外面的话异常一路冒到最外层，变成一句"服务内部错误"——而这是每次都发生、最需要
+    # 说清原因的一类失败。
     try:
         model = make_model(model_id, provider)
     except (UserError, ValueError) as e:
@@ -971,11 +832,9 @@ def build(
     if concurrency is not None:
         kwargs["max_concurrency"] = concurrency
     if schema is not None:
-        # **必须显式传 output_type。**
-        #
-        # 只把 schema 留在 spec 里 → from_spec 设成不校验的 StructuredDict；
-        # 既 pop 掉又不传 → 退化成 str，校验器收到原始 JSON 字符串，
-        # 于是连完全合法的输出都会被打到重试耗尽。两种都实测过。
+        # 必须显式传 output_type（两种都实测过）：只把 schema 留在 spec 里，from_spec
+        # 会设成不校验的 StructuredDict；既 pop 掉又不传则退化成 str，校验器收到原始
+        # JSON 字符串，连合法输出都会被打到重试耗尽。
         kwargs["output_type"] = output_spec(
             tier,
             schema,
@@ -992,19 +851,13 @@ def build(
 
     counters = attach_validator(agent, tier, schema) if schema is not None else GuaranteeCounters()
 
-    # 两阶段（T1+）：再造一个**不带任何输出约束**的 agent 做第一步。
-    #
-    # 用同一份 spec（同样的指令、同样的模型），只是不传 output_type——那正是
-    # "让推理不受格式约束干扰"的字面实现。文献显示格式约束会削弱推理，两阶段
-    # 把这两件事分开，代价是约两倍的调用成本。
+    # 两阶段（T1+）：用同一份 spec 再造一个不带输出约束的 agent 做第一步，让推理不受
+    # 格式约束干扰。代价是约两倍的调用成本。
     reason_agent: Agent | None = None
     if tier is Tier.T1P and schema is not None:
-        # 要让第一阶段真的**没有**格式约束，必须从 spec 里去掉 output_schema。
-        #
-        # 传 output_type=str 是不够的（实测）：str 正是那个参数的默认值，
-        # pydantic-ai 分不清"显式传了 str"和"根本没传"，于是照样回落到 spec 里的
-        # output_schema、走 tools 通道——第一阶段仍然带着约束，两阶段就白做了。
-        # 这个坑很隐蔽，因为代码读起来完全像是生效了。
+        # 必须从 spec 里去掉 output_schema。传 output_type=str 不够（实测）：str 正是
+        # 那个参数的默认值，pydantic-ai 分不清"显式传了 str"与"根本没传"，照样回落到
+        # spec 里的 output_schema，第一阶段仍然带着约束。
         reason_spec = {k: v for k, v in spec.items() if k != "output_schema"}
         reason_kwargs = {k: v for k, v in kwargs.items() if k != "output_type"}
         try:
@@ -1035,9 +888,8 @@ def build(
 # 表单 ↔ spec
 # =============================================================================
 #
-# 这一段服务的是后台的 Agent 编辑页，但它留在 core 而不是 web：
-# 「表单里有哪些模型参数、哪些能力可勾」是 pydantic-ai 的知识，而本文件是
-# 上游版本适配的唯一集中点。搬到 web 去，升级 pydantic-ai 就要改两个地方。
+# 服务的是后台的 Agent 编辑页，但留在 core 而不是 web：「表单里有哪些模型参数、哪些
+# 能力可勾」是 pydantic-ai 的知识，搬到 web 去升级时就要改两个地方。
 
 
 def spec_from_form(
@@ -1053,8 +905,8 @@ def spec_from_form(
 ) -> dict[str, Any]:
     """表单字段 → AgentSpec dict。
 
-    ``instrument`` **不是** AgentSpec 字段（实测），对应的是名为 ``Instrumentation``
-    的 capability——所以表单的"可观测"开关要写进 capabilities，不能建顶层输入项。
+    ``instrument`` 不是 AgentSpec 字段（实测），对应的是 ``Instrumentation`` capability
+    ——表单的"可观测"开关要写进 capabilities，不能建顶层输入项。
     """
     spec: dict[str, Any] = {"model": model, "name": name, "instructions": instructions}
     if description:
@@ -1066,8 +918,8 @@ def spec_from_form(
     if model_settings:
         spec["model_settings"] = model_settings
     if retries is not None:
-        # 必须是裸 int 或 {'output': n}。2.35.3 新增的 {'tools': n} **不影响**
-        # output 校验重试——写成那样会让重试预算看起来设了、实际没设。
+        # 必须是裸 int 或 {'output': n}。2.35.3 新增的 {'tools': n} 不影响 output 校验
+        # 重试，写成那样会让重试预算看起来设了、实际没设。
         spec["retries"] = retries
     if prompting is not None:
         prompting_to_spec(spec, prompting)
@@ -1077,12 +929,11 @@ def spec_from_form(
 def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
     """表单里的模型参数 → ``model_settings`` dict。
 
-    **空字符串一律丢弃，不写成 0 或 null。** 表单里留空的意思是"不设这一项、用
-    上游默认"，而写进 spec 的 ``temperature: 0`` 是一个截然不同的指令——把留空
-    当成 0 会静默把每个 Agent 都变成确定性输出。
+    空字符串一律丢弃，不写成 0 或 null：留空是"不设这一项、用上游默认"，而
+    ``temperature: 0`` 是一条明确指令，混同会把每个 Agent 变成确定性输出。
 
-    类型按官方 schema 走：整数字段收 int，其余收 float。收错类型的话
-    ``AgentSpec`` 的 ``extra='ignore'`` 不会报错，它会**静默丢掉**那一项。
+    类型按官方 schema 走（整数字段收 int，其余 float）——收错类型不会报错，
+    ``extra='ignore'`` 会静默丢掉那一项。
     """
     ints = {"max_tokens", "seed", "top_k"}
     out: dict[str, Any] = {}
@@ -1097,8 +948,8 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
 
             raise AgentSpecInvalid(f"{field} 不是合法的数字：{text!r}") from e
 
-    # 枚举项：**只收闭集里的值**。不校验的话一个手改过的表单能把任意字符串塞进
-    # spec，而上游对无效值的反应是一个 400，报错离"你在下拉框里选了什么"很远。
+    # 枚举项只收闭集里的值：不校验的话手改过的表单能把任意字符串塞进 spec，而上游
+    # 对无效值回的 400 离"你在下拉框里选了什么"很远。
     for field, _, _, _, options in choice_settings_fields():
         text = (raw.get(field) or "").strip()
         if not text:
@@ -1112,16 +963,13 @@ def model_settings_from_form(raw: dict[str, str]) -> dict[str, Any]:
 
 
 def capability_names(caps: list[Any]) -> set[str]:
-    """从 spec 的 capabilities 里取出能力名。**三种形状都要认。**
+    """从 spec 的 capabilities 里取出能力名。三种形状都要认。
 
-    ``AgentSpec.model_dump()`` 会把 ``["Thinking"]`` 规范化成
-    ``[{"name": "Thinking"}]``——:func:`validate_spec` 随后用
-    :func:`runnable_capabilities` 把它降回裸字符串，但库里那些没被重写过的旧行
-    还留着这个形状；手写的 agent.yaml 里则还可能是 ``[{"Thinking": {...参数}}]``。
-
-    只认一种的下场：反填时把 ``{"name": "Thinking"}`` 的第一个 key 当成能力名，
-    于是每个 Agent 都被读成开了一个叫 ``name`` 的能力——**编辑页所有勾都是空的，
-    一保存就把用户设过的能力全清掉**。实测踩过。
+    库里可能存着 ``model_dump()`` 规范化出的 ``[{"name": "Thinking"}]``（新写入的由
+    :func:`runnable_capabilities` 降回裸字符串），手写的 agent.yaml 里还可能是
+    ``[{"Thinking": {...参数}}]``。只认一种的下场：反填时把第一个 key 当成能力名，
+    每个 Agent 都被读成开了一个叫 ``name`` 的能力——编辑页所有勾是空的，一保存就把
+    用户设过的能力全清掉。
     """
     out: set[str] = set()
     for cap in caps:
@@ -1140,8 +988,7 @@ def capability_names(caps: list[Any]) -> set[str]:
 def form_view(spec: dict[str, Any]) -> dict[str, Any]:
     """AgentSpec → 表单要回填的值。是 :func:`spec_from_form` 的反向。
 
-    编辑一个 Agent 时必须能看到**当前的**参数值。反填不了的话，编辑就等于重填——
-    而"我只是想改一句提示词"会把之前设过的 temperature 悄悄清掉。
+    反填不了的话编辑就等于重填，"只想改一句提示词"会把之前设过的 temperature 清掉。
     """
     settings = spec.get("model_settings") or {}
     names = capability_names(spec.get("capabilities") or [])

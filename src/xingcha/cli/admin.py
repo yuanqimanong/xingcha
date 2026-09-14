@@ -110,7 +110,7 @@ def admin_status() -> None:
         info("密码：已设置（存在库里）")
         if settings.admin_password:
             typer.secho(
-                "  环境变量 XINGCHA_ADMIN_PASSWORD **被忽略**：库里已有密码，先立者为准。\n"
+                "  环境变量 XINGCHA_ADMIN_PASSWORD 被忽略：库里已有密码，先立者为准。\n"
                 "  要改用它，先跑 `xingcha admin reset-password`。",
                 fg=typer.colors.YELLOW,
             )

@@ -32,15 +32,17 @@ def _reset():
 
 
 def _request(**headers: str) -> Request:
-    return Request({
-        "type": "http",
-        "method": "POST",
-        "path": "/admin/login",
-        "query_string": b"",
-        "scheme": "http",
-        "server": ("10.20.1.13", 8720),
-        "headers": [(k.replace("_", "-").encode(), v.encode()) for k, v in headers.items()],
-    })
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/admin/login",
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("10.20.1.13", 8720),
+            "headers": [(k.replace("_", "-").encode(), v.encode()) for k, v in headers.items()],
+        }
+    )
 
 
 # =============================================================================

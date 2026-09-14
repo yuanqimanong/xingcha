@@ -56,20 +56,17 @@ async def add_provider(
     password: str = Form(...),
     csrf_token: str = Form(default=""),
 ) -> Response:
-    """添加一个供应商到列表。**只保存，不切换。**
+    """添加一个供应商到列表。只保存，不切换。
 
-    加和用是两件事：加进来是"我以后可能用它"，切过去是"现在就换出口"，而后者会打断
-    所有现有 Agent。把两件事绑在一个按钮上，等于每次新增供应商都强制来一次出口变更。
-    要用它就在左边列表点「检查并切换」——那条路径会先列出哪些 Agent 会失效。
+    加进来是"我以后可能用它"，切过去是"现在就换出口"，而后者会打断所有现有 Agent。绑在
+    一个按钮上等于每次新增供应商都强制来一次出口变更。要用它就在左边点「检查并切换」，
+    那条路径会先列出哪些 Agent 会失效。
 
-    **顺序是：全部校验通过（含真连一次上游）之后，才写。**
+    顺序是全部校验通过（含真连一次上游）之后才写：先存再探测的话，失败的条目会留在列表
+    里等用户自己删。而"不丢输入"不该靠落库实现——这个表单走 htmx，失败时页面不重载。
 
-    此前是"先存下来再探测"，代价是失败的条目留在列表里，用户看到一个从来没通过的
-    条目还得自己去删。而"不丢输入"根本不该靠落库实现——这个表单走 htmx，失败时页面
-    不重载，输入本来就还在。
-
-    要密码：这个表单一旦被跨站提交，付费 key 就会被送到攻击者的服务器。CSRF 三层
-    之外再加一道，因为这是全后台后果最严重的一个操作。
+    要密码：这个表单一旦被跨站提交，付费 key 就会被送到攻击者的服务器，是全后台后果最
+    严重的一个操作。
     """
     await guard_mutation(request, csrf_token)
 
@@ -138,14 +135,12 @@ async def check_provider(
     name: str = Form(default=""),
     csrf_token: str = Form(default=""),
 ) -> Response:
-    """只检查，**什么都不写**。给「添加供应商」表单在保存之前用。
+    """只检查，什么都不写。给「添加供应商」表单在保存之前用。
 
-    存在的理由：这个表单要填名字、地址、key、密码四样，而最常错的是地址
-    （少了或多了 ``/v1``）。没有干跑的时候，唯一的验证方式是"保存一次看看"——
-    而那要么写坏配置，要么把四个输入全丢掉重填。
+    这个表单要填名字、地址、key、密码四样，而最常错的是地址（少了或多了 ``/v1``）。没有
+    干跑的话唯一的验证方式是"保存一次看看"，要么写坏配置要么把四个输入全丢掉。
 
-    返回 HTML 片段（htmx 换进上游页的 #check-result，它在 check-dialog 弹窗里），
-    所以**不碰用户已填的任何输入**。
+    返回 HTML 片段（htmx 换进 #check-result），所以不碰用户已填的任何输入。
     """
     await guard_mutation(request, csrf_token)
 
@@ -261,13 +256,10 @@ async def upstream_context(request: Request, *, error: str | None = None) -> dic
 
     default_key, default_base = ue.default_pair(state.settings)
 
-    # 切换列表 = .env 里的默认那一对 + 扫到的厂商 key + 用户自己加的。
-    #
-    # **默认那一对必须在列表里**，否则切到别家之后回不来——它没有"厂商变量名"，
-    # 此前也就没有对应的一行，只能靠重新写 .env + 重启。实际撞过。
-    #
+    # 切换列表 = .env 里的默认那一对 + 扫到的厂商 key + 用户自己加的。默认那一对必须
+    # 在列表里，否则切到别家之后回不来（它没有"厂商变量名"，只能靠重写 .env + 重启）。
     # 取值走 default_pair 而不是 default_from_env：uv 直跑那条路上 .env 只被 pydantic
-    # 读进 Settings，进程环境里没有它，于是这一行**只在 docker 下出得来**。同样实际撞过。
+    # 读进 Settings、进程环境里没有它，这一行就只在 docker 下出得来。
     options: list[dict[str, Any]] = []
     if default_key:
         options.append(
@@ -438,14 +430,11 @@ async def upstreams_switch(
 ) -> Response:
     """真正切过去。
 
-    选中的 key 从环境变量读出来后**加密落库**——环境只是发现来源，不是长期存放处
-    （它会进 ``docker inspect`` 与 ``/proc/<pid>/environ``）。
+    选中的 key 从环境变量读出来后加密落库——环境只是发现来源，不是长期存放处。
 
-    切完必须做三件收尾，少一件就会留下难查的问题：
-    1. 重装上游客户端（``load_upstream``）；
-    2. **重拉模型目录**——它是判档与定价的主价源，不拉的话每条记录都是
-       ``cost_source=unknown``；
-    3. **清运行时缓存**——Agent 实例把 provider 烤进去了，不清则旧 key 继续被用。
+    切完必须做三件收尾，少一件就会留下难查的问题：重装上游客户端（``load_upstream``）；
+    重拉模型目录（它是判档与定价的主价源，不拉的话每条记录都是 ``cost_source=unknown``）；
+    清运行时缓存（Agent 实例把 provider 烤进去了，不清则旧 key 继续被用）。
     """
     await guard_mutation(request, csrf_token)
 

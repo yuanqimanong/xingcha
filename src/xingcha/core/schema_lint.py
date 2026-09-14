@@ -83,7 +83,7 @@ def lint(schema: dict[str, Any], *, tier_is_native: bool = False) -> list[Hint]:
                     path=", ".join(promoted),
                     level="warn",
                     message=(
-                        "原生约束档下，上游会把这些可选字段**提升为必填**，模型必须输出它们。"
+                        "原生约束档下，上游会把这些可选字段提升为必填，模型必须输出它们。"
                         "如果这些字段确实可能没有值，改用校验重试档，或者把它们标成必填并"
                         "允许空值。"
                     ),

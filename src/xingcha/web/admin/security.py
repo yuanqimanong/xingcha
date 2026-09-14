@@ -1,12 +1,11 @@
 """后台的准入：会话、CSRF、同源与安全响应头。
 
-**每一个改状态的请求都必须经过 :func:`guard_mutation`。** 后台暴露在公网上，
-而它里面有一个能改写上游 base_url 的表单：一次成功的 CSRF 就等于把付费 key 送到
-攻击者的服务器。所以三层叠加：SameSite=Strict cookie、double-submit token、
-Origin/Sec-Fetch-Site 校验。
+每一个改状态的请求都必须经过 :func:`guard_mutation`。后台里有一个能改写上游 base_url
+的表单，一次成功的 CSRF 就等于把付费 key 送到攻击者的服务器，所以三层叠加：
+SameSite=Strict cookie、double-submit token、Origin/Sec-Fetch-Site 校验。
 
-这些东西单独成一个模块，是为了让"哪些请求受保护"能被一眼数清——散在各页里的时候，
-新加一个 POST 忘记加守卫不会有任何提示。
+单独成一个模块，是为了让"哪些请求受保护"能被一眼数清——散在各页里的话，新加一个 POST
+忘记加守卫不会有任何提示。
 """
 
 from __future__ import annotations
@@ -27,12 +26,12 @@ CSRF_COOKIE = "xc_csrf"
 #: cookie 的作用域。限死在后台路径下，``/v1`` 的请求不会白带上它们。
 COOKIE_PATH = "/admin"
 
-#: 允许把后台嵌进 iframe、并被当作同站放行的来源。由 :func:`configure` 在装配后台时
-#: 按 ``XINGCHA_ADMIN_EMBED_ORIGINS`` 装入，之后不再变。
+#: 允许把后台嵌进 iframe、并被当作同站放行的来源。由 :func:`configure` 在装配后台时按
+#: ``XINGCHA_ADMIN_EMBED_ORIGINS`` 装入，之后不再变。
 #:
-#: 放模块级而不是 ``app.state``：它启动即定、永不失效，没有"该在哪儿让它过期"的问题
-#: （那才是这个项目躲全局变量的原因）。而 :func:`security_headers` 有二十来处调用点，
-#: 为一个常量把 ``Request`` 穿进每一处，只会让"哪些响应带了安全头"更难数清。
+#: 放模块级而不是 ``app.state``：它启动即定、永不失效，没有"该在哪儿让它过期"的问题；
+#: 而 :func:`security_headers` 有二十来处调用点，为一个常量把 ``Request`` 穿进每一处
+#: 只会让"哪些响应带了安全头"更难数清。
 _EMBED_ORIGINS: tuple[str, ...] = ()
 
 _CSP_TEMPLATE = (
@@ -45,10 +44,8 @@ _CSP = _CSP_TEMPLATE.format(frame_ancestors="'none'")
 
 
 def configure(embed_origins: Sequence[str] = ()) -> None:
-    """装配后台时调用一次，把"谁可以嵌我"定下来。
-
-    没配（默认）时行为与从前逐字相同：``frame-ancestors 'none'`` + ``X-Frame-Options:
-    DENY`` + 同源校验只认自己。
+    """装配后台时调用一次，把"谁可以嵌我"定下来。默认（没配）是
+    ``frame-ancestors 'none'`` + ``X-Frame-Options: DENY`` + 同源校验只认自己。
     """
     global _EMBED_ORIGINS, _CSP
     _EMBED_ORIGINS = tuple(embed_origins)
@@ -69,13 +66,12 @@ class Denied(Exception):
 def security_headers(resp: Response) -> Response:
     """每个后台响应都带上。
 
-    ``frame-ancestors`` 挡点击劫持——否则攻击者可以把后台套进一个透明 iframe，
-    诱导管理员"点一下"，绕到与 CSRF 相同的结果。默认是 ``'none'``；配了
+    ``frame-ancestors`` 挡点击劫持（把后台套进透明 iframe 诱导管理员点一下，效果等同
+    CSRF）。默认 ``'none'``，配了
     :attr:`~xingcha.config.Settings.admin_embed_origins` 就换成那份名单。
 
-    配了名单时**不再发** ``X-Frame-Options``：它只有 DENY / SAMEORIGIN 两档，表达不了
-    "只允许某个源"（``ALLOW-FROM`` 早已废弃、主流浏览器不认）。留着 DENY 会把 CSP 刚
-    放行的那个源又挡回去，而且是浏览器优先采信的那一个。
+    配了名单时不再发 ``X-Frame-Options``：它只有 DENY / SAMEORIGIN 两档，表达不了"只允
+    许某个源"，留着 DENY 会把 CSP 刚放行的那个源又挡回去，而且浏览器优先采信它。
     """
     resp.headers["Content-Security-Policy"] = _CSP
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -88,16 +84,13 @@ def security_headers(resp: Response) -> Response:
 def check_origin(request: Request) -> None:
     """校验请求确实来自本站。
 
-    ``Sec-Fetch-Site`` 是现代浏览器一定会带的，且不可被脚本伪造；``Origin`` 作为
-    老浏览器的回退。两个都没有时放行——非浏览器客户端（curl）本来就不受 CSRF 影响，
-    而卡住它们只会让排障变难。
+    ``Sec-Fetch-Site`` 现代浏览器一定会带且不可被脚本伪造，``Origin`` 作为老浏览器的
+    回退。两个都没有时放行——非浏览器客户端（curl）本来就不受 CSRF 影响。
 
-    显式配进 :data:`_EMBED_ORIGINS` 的来源先行放行，两条分支都绕过。嵌进别的门户时
-    这一步是必需的：门户若用同源反代把后台挂在自己的路径下，浏览器发来的 ``Origin``
-    是门户的源，与我们看到的 ``Host``（自己的内网地址）永远不符，登录一提交就被这里
-    拦下——而拦下的原因和"真有人跨站打你"长得一模一样。放行的只是这一层；真正的防线
-    （SameSite=Strict cookie + double-submit token）一条都没动，而那两条恰恰是攻击者
-    伪造不出来的。
+    显式配进 :data:`_EMBED_ORIGINS` 的来源两条分支都绕过。嵌进别的门户时这一步是必需
+    的：门户用同源反代挂后台时，浏览器发来的 ``Origin`` 是门户的源，与我们看到的
+    ``Host`` 永远不符，登录一提交就被拦下，而拦下的原因和"真有人跨站打你"长得一样。
+    放行的只是这一层，SameSite=Strict cookie 与 double-submit token 一条都没动。
     """
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") in _EMBED_ORIGINS:
@@ -132,10 +125,10 @@ async def require_admin(request: Request):
 
 
 async def guard_mutation(request: Request, csrf_token: str | None) -> None:
-    """**每一个改状态的请求都要过这里。**
+    """每一个改状态的请求都要过这里。
 
-    三层叠加不是冗余：SameSite 挡不住老浏览器；double-submit 挡不住能读到页面的
-    同站脚本注入；Origin 校验挡不住不发这些头的客户端。三层一起才覆盖得住。
+    三层叠加不是冗余：SameSite 挡不住老浏览器，double-submit 挡不住能读到页面的同站
+    脚本注入，Origin 校验挡不住不发这些头的客户端。
     """
     check_origin(request)
     row = await require_admin(request)
@@ -145,10 +138,8 @@ async def guard_mutation(request: Request, csrf_token: str | None) -> None:
 
 
 def read_theme(request: Request) -> str:
-    """当前主题，用于 ``<html data-theme="...">``。
-
-    返回 ``""``（跟随系统）、``"light"`` 或 ``"dark"``。cookie 里是别的值就当没设——
-    那一格是用户可写的，不能直接塞进 HTML 属性。
+    """当前主题，用于 ``<html data-theme="...">``。返回 ``""``（跟随系统）、``"light"``
+    或 ``"dark"``；cookie 里是别的值就当没设——那一格用户可写，不能直接塞进 HTML 属性。
     """
     value = request.cookies.get(C.THEME_COOKIE, "system")
     if value not in C.THEMES or value == "system":
@@ -157,22 +148,16 @@ def read_theme(request: Request) -> str:
 
 
 def cookie_secure(request: Request) -> bool:
-    """会话与 CSRF cookie 要不要带 ``Secure``。**跟随请求自身的协议，不写死。**
+    """会话与 CSRF cookie 要不要带 ``Secure``。跟随请求自身的协议，不写死。
 
-    写死 ``True`` 的代价：纯 HTTP 部署下浏览器**直接丢掉** cookie，症状是"密码
-    输对了却一直跳回登录页"，而服务端日志显示登录成功、会话已签发——两边看起来
-    都正常，是最难查的一类。（``localhost`` 例外：浏览器把它当安全上下文，所以
-    本机开发看不出问题，只有换成局域网 IP 才炸。）
+    写死 ``True``：纯 HTTP 部署下浏览器直接丢掉 cookie，症状是"密码输对了却一直跳回
+    登录页"而服务端日志显示登录成功（``localhost`` 例外，所以本机开发看不出问题，换成
+    局域网 IP 才炸）。写死 ``False``：HTTPS 部署下攻击者能把受害者引到同域的 http 链接，
+    让浏览器把凭证明文发出来。所以只有问这次请求本身一个答案。
 
-    写死 ``False`` 的代价：HTTPS 部署下，攻击者可以把受害者引到同域的 http 链接，
-    让浏览器把凭证明文发出来。
-
-    所以只有一个正确答案——问这次请求本身。直连时 ``request.url.scheme`` 就是
-    真实协议。
-
-    **反代后面需要额外一步**：uvicorn 默认不读 ``X-Forwarded-Proto``（读了就等于
-    信任任何人伪造的那个头），所以放了反代之后要显式开 ``proxy_headers`` 并把
-    ``forwarded_allow_ips`` 限定到反代的地址。当前部署是直连 HTTP，没开。
+    反代后面要额外一步：uvicorn 默认不读 ``X-Forwarded-Proto``（读了就等于信任任何人
+    伪造的那个头），所以要显式开 ``proxy_headers`` 并把 ``forwarded_allow_ips`` 限定到
+    反代的地址。
     """
     return request.url.scheme == "https"
 
@@ -212,10 +197,8 @@ def clear_session_cookies(resp: Response) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Csrf:
-    """这一次渲染要用的 CSRF 明文，以及"要不要顺手把它种进 cookie"。
-
-    分成"取值"与"落 cookie"两步，是因为值要先进模板上下文、cookie 要设在最终的
-    ``Response`` 上，而中间隔着一次渲染。
+    """这一次渲染要用的 CSRF 明文，以及"要不要顺手把它种进 cookie"。分两步是因为值要
+    先进模板上下文、cookie 要设在最终的 ``Response`` 上，中间隔着一次渲染。
     """
 
     value: str

@@ -114,9 +114,7 @@ Agent 编辑页的「导出」给你一个目录：`agent.yaml` 是标准的 pyd
 `/v1` 下所有非自有路径**字节级反代**到上游，所以 OpenRouter 有的能力星槎都有。
 
 但 `models.list()` / `models.retrieve()` / 裸模型 / Agent / 流式 / 错误分派这几条
-当前**没有自动验证**。`openai` SDK 本身一直装着（它是 `pydantic-ai-slim[openai]` 的
-传递依赖，uv.lock 锁到 3.8.0，`core/builder.py` 每次都 import 它），缺的是拿它当
-**客户端**去跑一遍这些端点——守着那件事的测试随 `e298423` 一起没了。
+当前**没有自动验证**——缺的是拿 `openai` SDK 当客户端跑一遍这些端点的测试。
 
 业务代码要改的就是两行：
 
@@ -128,9 +126,8 @@ client = OpenAI(base_url="https://<地址>:8443/v1", api_key="sk-xc-1-...")
 两个已知的坑：
 
 - **机器上设了 socks 代理**（`ALL_PROXY=socks5://...`）时，openai SDK 在构造阶段就抛
-  `ImportError: ... 'socksio' package is not installed`。这跟星槎无关。而指向星槎之后
-  你本来就不需要那个代理了——去掉它即可；非要留就给 SDK 传
-  `http_client=httpx.Client(trust_env=False)`。
+  `ImportError: ... 'socksio' package is not installed`。指向星槎之后你本来就不需要那个
+  代理了，去掉即可；要保留就给 SDK 传 `http_client=httpx.Client(trust_env=False)`。
 - **浏览器里跑的客户端**（Open WebUI 一类）要 CORS。星槎默认不发任何 CORS 头，
   放开：`XINGCHA_CORS_ORIGINS=https://webui.example.com`。
 
@@ -160,7 +157,7 @@ DC="docker compose -f deploy/linux/docker-compose.yml --env-file .env"
 中断 1–2 秒。已完成的请求不受影响，已签发的密钥永不失效，**正在跑的长请求会被切断**
 （`stop_grace_period: 30s`；设成和 `request_timeout` 一样长的话每次升级要等 10 分钟）。
 
-调用方不会被打断，靠三件事：契约冻结、迁移是 expand-contract 的（一次升级**只允许加**）、
+调用方不会被打断，靠三件事：契约冻结、迁移是 expand-contract 的（一次升级只允许加）、
 迁移前自动备份。
 
 ### 回滚
@@ -218,10 +215,9 @@ $DC exec xingcha xingcha doctor    # 权限、schema、磁盘、代理环境变�
 ## 对外契约
 
 上线之后 **key 与调用方式永不改变**：路径归属、令牌格式、`model` 命名空间、响应形状、
-错误码、SSE 帧序列全部冻结在下面这一节里，此后只能加、不能改。
+错误码、SSE 帧序列全部冻结在下面这一节里。
 
-那一节由 `src/xingcha/contract/` 的常量**生成**而不是手写，并有一套黄金测试锁着：
-任何改动闭集的提交都会让 CI 变红。那不是测试坏了，是在提醒你正在做一次破坏性变更。
+这一节由 `src/xingcha/contract/` 的常量**生成**而不是手写，并有一套黄金测试锁着。
 
 <!-- BEGIN GENERATED · python -m xingcha.contract.doc · 不要手工编辑 -->
 
@@ -471,15 +467,10 @@ import 任何层。它们登记在 `tests/test_layering.py` 的 `UNLAYERED` 白�
 新加一个顶层模块而不登记，会被 `test_every_module_is_placed` 直接拦下——
 守卫漏查比没有守卫更糟，它还挂着一盏绿灯。
 
-#### 为什么方向比"能不能跑"重要
-
-反向 import 不会立刻坏事。它的代价在**以后**：
-
-* `core` 一旦依赖 `services`，导出 bundle 那条「零星槎依赖」的卖点就开始漏；
-* `contract` 一旦依赖任何东西，"契约是实现的约束"就倒挂成"契约跟着实现走"，
-  而这一步不可逆——改实现从此会改契约。
-
-这类退化每次只退一小步，且每一步都有当时看来合理的理由。所以要机械地拦。
+反向 import 不会立刻坏事，代价在以后：`core` 一旦依赖 `services`，导出 bundle 那条
+「零星槎依赖」的卖点就开始漏；`contract` 一旦依赖任何东西，"契约是实现的约束"就倒挂成
+"契约跟着实现走"，而这一步不可逆。这类退化每次只退一小步、每一步都有当时看来合理的
+理由，所以要机械地拦。
 
 ### 一次调用怎么走
 
@@ -501,14 +492,14 @@ POST /v1/chat/completions
        └ services/quota 在**检查时**就占掉次数（见下）
 ```
 
-两条路径共用记账，是因为它们花的是同一把上游 key 的钱——分开记会让
-「这个月一共花了多少」变成一次 UNION，而那正是最常被问的问题。
+两条路径共用记账，是因为它们花的是同一把上游 key 的钱——分开记会让最常被问的
+「这个月一共花了多少」变成一次 UNION。
 
 ### 几个不好从代码里读出来的决定
 
-**上游只有一个出口。** 同一时刻只有一份 `(api_key, base_url)` 生效，存在
-`setting` 表里（加密）。环境变量只是**发现**来源，不是长期存放处——它会进
-`docker inspect` 与 `/proc/<pid>/environ`。切换见 `web/admin/upstreams.py`。
+**上游只有一个出口。** 同一时刻只有一份 `(api_key, base_url)` 生效，加密存在
+`setting` 表里。环境变量只是**发现**来源，不是长期存放处（它会进 `docker inspect` 与
+`/proc/<pid>/environ`）。切换见 `web/admin/upstreams.py`。
 
 **配额的计数在内存里，数据库只是持久记录。** 用量是异步批量落库的，
 每次去查表求和会漏算刚发生的调用。且**检查时就预留**，不等调用结束——
@@ -617,17 +608,12 @@ src/xingcha/
 | 后台默认不可被嵌入；放行只对指名来源生效 | `tests/test_admin_embedding.py` |
 | 容器 healthy、`/v1` 无凭据 401 | CI：真起整栈 |
 
-契约测试变红时**不是测试坏了**，是在提醒你正在做一次破坏性变更。
-
 期望值写死在测试文件里，不从 `contract` 反向读取——从常量读的"测试"只能证明常量
 等于它自己，改一个闭集照样绿。
 
-> 上一轮重构把整个 `tests/` 清空了（`e298423`）。上表里的守卫是之后一条条补回来的：
-> 先是契约、分层、部署产物三份**静态守卫**（不建库、不起服务、不碰网络，跑一遍是
-> 秒级的），之后每修一个 bug 补一条回归测试。尚未恢复的运行时测试有配额、流式、
-> 直通反代、导出物零依赖，以及后台页面那一组（模板不写内联脚本、深浅两套主题
-> token 同步）——那几条约束当前**没有任何自动检查**。「模板引用的静态文件都在」
-> 只在镜像那一层有守卫（CI 的「镜像里的静态资源齐不齐」），源码树那一层没有。
+> **尚未覆盖的**：配额、流式、直通反代、导出物零依赖，以及后台页面那一组（模板不写
+> 内联脚本、深浅两套主题 token 同步）——这几条当前没有任何自动检查。「模板引用的静态
+> 文件都在」只在镜像那一层有守卫（CI 的「镜像里的静态资源齐不齐」），源码树那一层没有。
 
 ---
 

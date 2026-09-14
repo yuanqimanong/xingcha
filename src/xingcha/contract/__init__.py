@@ -1,19 +1,12 @@
 """星槎对外契约的唯一定义处。
 
-这个文件是整个项目的底座：所有正则、闭集、字段清单、类型纪律都以常量存在于此，
-别处**只许引用、不许重新定义**。
+所有正则、闭集、字段清单只在这里定义，别处只许引用。本模块处在依赖图最底层，
+不 import 任何 xingcha 模块。
 
-依赖方向：本模块处在依赖图最底层，**不 import 任何 xingcha 模块**。
-
-**为什么这些东西必须冻结**
-
-上线后调用方手里只有三样东西：``base_url``、一把 ``sk-xc-`` key、一个 ``model``
-字符串。凡是改动会打断这三样中任意一环的，都必须在第一次部署之前定死，此后
-**只能加、不能改**。每个常量下面的 ``演进规则`` 注释说明允许怎么扩展。
-
-``tests/test_contract_frozen.py`` 是这些常量的黄金测试：改动任一闭集都会让 CI 变红。
-那不是测试坏了，是在提醒你正在做一次破坏性变更——要么换个设计，要么走 §12 的
-契约号协商流程。
+调用方手里只有 ``base_url``、一把 ``sk-xc-`` key、一个 ``model`` 字符串。凡是会
+打断这三样的改动都必须上线前定死，此后只能加、不能改；各常量下的「演进规则」说明
+允许怎么扩展。``tests/test_contract_frozen.py`` 守着这些值——它变红不是测试坏了，
+是你正在做破坏性变更，走 §12 的契约号协商。
 """
 
 from __future__ import annotations
@@ -29,10 +22,8 @@ from typing import Final
 
 #: 对外契约版本。通过 ``X-Xingcha-Contract`` 请求/响应头双向协商。
 #:
-#: 这不是软件版本（那是 ``xingcha.__version__``）。软件可以天天发版，契约号只在
-#: 发生**破坏性变更**时 +1——而破坏性变更本身应当几乎不发生。它存在的意义是：万一
-#: 真的必须收紧某个行为（例如给直通路径加配额闸），有一条非硬切的发布通道，而不是
-#: 让调用方某天突然收到 429。
+#: 不是软件版本（那是 ``xingcha.__version__``）。只在破坏性变更时 +1，为的是万一
+#: 真要收紧某个行为（例如给直通路径加配额闸），有一条非硬切的发布通道。
 CONTRACT_VERSION: Final = 1
 
 #: 能力位。随 ``GET /version`` 返回，让调用方无需试探即可知道服务端支持什么。
@@ -49,12 +40,11 @@ FEATURES: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: 直通路径的配额执行**默认关闭**，由管理员显式打开。
+#: 直通路径的配额执行默认关闭，由管理员显式打开。
 #:
-#: 契约 §8 把 ``PASSTHROUGH_ENFORCES_QUOTA`` 冻结成 False，演进规则写明"给直通层
-#: 加配额闸是**收紧**，必须经协商入口发布"。所以这里的做法是能力做好、默认关，
-#: 打开之后 ``/version`` 的 features 里会多一项 ``quota_passthrough``——
-#: 那样它对既有调用方就不是一次静默的行为改变，而是部署者的显式决定。
+#: §8 把 ``PASSTHROUGH_ENFORCES_QUOTA`` 冻结成 False：给直通层加闸是收紧。所以能力
+#: 做好、默认关，打开后 ``/version`` 的 features 多一项 ``quota_passthrough``——
+#: 对既有调用方就不是静默的行为改变，而是部署者的显式决定。
 FEATURE_QUOTA_PASSTHROUGH: Final = "quota_passthrough"
 
 
@@ -65,14 +55,11 @@ FEATURE_QUOTA_PASSTHROUGH: Final = "quota_passthrough"
 #: 对外的四个前缀。除此之外不暴露任何路径。
 PUBLIC_PREFIXES: Final[tuple[str, ...]] = ("/v1", "/api/v1", "/admin", "/healthz")
 
-#: 星槎在 ``/v1`` 下自己实现的路径（相对 ``/v1/``，已归一化）。
+#: 星槎在 ``/v1`` 下自己实现的路径（相对 ``/v1/``，已归一化）。闭集。
 #:
-#: **这是一个闭集。** ``/v1`` 下其余一切路径全部字节级反代到上游，因此往这个集合里
-#: 加一项 = 从反代手里"收回"一条路径 = 破坏性变更（调用方原本能用的上游端点突然
-#: 变成星槎的语义）。
-#:
-#: 演进规则：新增星槎自有端点只能落在 ``/v1/xc/*``（见 RESERVED_V1_PREFIX）——该前缀
-#: 从第一天起就永不反代，所以往里加东西不会从任何人手上拿走什么。
+#: 其余一切 ``/v1`` 路径字节级反代到上游，所以往这里加一项 = 从反代收回一条路径 =
+#: 破坏性变更。演进规则：新增自有端点只能落在 ``/v1/xc/*``（见 RESERVED_V1_PREFIX），
+#: 该前缀从不反代，加东西不会从任何人手上拿走什么。
 OWN_V1_PATHS: Final[frozenset[str]] = frozenset(
     {
         "models",
@@ -85,16 +72,14 @@ OWN_V1_PATHS: Final[frozenset[str]] = frozenset(
 #: 这是唯一能在不破坏兼容的前提下新增自有端点的地方。
 RESERVED_V1_PREFIX: Final = "xc"
 
-#: ``GET /v1/models/{id}`` 也是自有路径，但**只在 id 为单段时**。
+#: ``GET /v1/models/{id}`` 也是自有路径，但只在 id 为单段时。
 #:
-#: 为什么要这条：``/v1/models/{model}`` 是 OpenAI 标准的 retrieve-model，Cherry Studio
-#: 与 Continue 一类客户端会用它验证模型是否存在。不把它列为自有路径就归反代——于是
-#: 客户端拿 Agent slug 去问，请求打到 OpenRouter，拿回上游的 404，据此判定"这个模型
-#: 不存在"。而按演进规则事后再从反代收回它算破坏性变更，等于**这个端点永久坏掉**。
+#: 它是 OpenAI 标准的 retrieve-model，Cherry Studio / Continue 一类客户端拿它验证
+#: 模型存在。归反代的话，客户端拿 Agent slug 去问会打到上游、拿回 404，判定模型不
+#: 存在；而事后从反代收回算破坏性变更，等于这个端点永久坏掉。
 #:
-#: 为什么限定单段：Agent slug 永不含 ``/``（见 SLUG_RE），所以查 Agent 一定是单段。
-#: 而上游 model id 一定含 ``/``（``vendor/name``），加上 OpenRouter 自己的
-#: ``/v1/models/{author}/{slug}/endpoints``，多段的情形全部属于上游，留给反代才正确。
+#: 限定单段：Agent slug 永不含 ``/``（见 SLUG_RE），上游 id 一定含 ``/``，多段的
+#: （如 ``/v1/models/{author}/{slug}/endpoints``）全属上游，留给反代才正确。
 MODELS_ITEM_SEGMENTS: Final = 1
 
 _MULTI_SLASH_RE: Final = re.compile(r"/+")
@@ -103,12 +88,11 @@ _MULTI_SLASH_RE: Final = re.compile(r"/+")
 def normalize_v1_path(rel_path: str) -> str:
     """把 ``/v1/`` 之后的路径归一化成用于闭集匹配的形式。
 
-    折叠重复斜杠、去掉首尾斜杠。**大小写敏感**（一律不折叠大小写）。
+    折叠重复斜杠、去掉首尾斜杠，大小写敏感。
 
-    没有这一步会有一个上线第一天就存在的静默 bug：``GET /v1/models/`` 带尾斜杠时，
-    FastAPI 的 ``redirect_slashes`` 在 catch-all 路由存在的情况下**不生效**，请求
-    直接落进 catch-all 被反代出去——客户端拿到 200、拿到 400 多个上游模型、
-    **一个 Agent 都看不到，而且没有任何报错**。
+    没有这一步会有一个静默 bug：``GET /v1/models/`` 带尾斜杠时 FastAPI 的
+    ``redirect_slashes`` 在有 catch-all 的情况下不生效，请求直接被反代出去——
+    客户端拿到 200、拿到一堆上游模型、一个 Agent 都看不到，且不报错。
     """
     return _MULTI_SLASH_RE.sub("/", rel_path).strip("/")
 
@@ -132,9 +116,8 @@ def is_own_v1_path(rel_path: str) -> bool:
 
 #: 任何 ``/v1`` 路径的 OPTIONS 一律由星槎应答，永不反代。
 #:
-#: 不这么做的话，浏览器客户端（Open WebUI、自建前端）直连星槎时，CORS 预检会由
-#: OpenRouter 的策略决定，而星槎自己的响应又不带 CORS 头——表现为"非流式偶尔能用、
-#: 浏览器直连必挂"。而等到要支持浏览器客户端时再拦截 OPTIONS，按演进规则算破坏性变更。
+#: 否则浏览器客户端（Open WebUI、自建前端）直连时，CORS 预检由上游策略决定而星槎
+#: 自己的响应不带 CORS 头，表现为"浏览器直连必挂"；事后再拦 OPTIONS 算破坏性变更。
 OPTIONS_ALWAYS_OWN: Final = True
 
 
@@ -149,16 +132,12 @@ AUTH_SCHEME: Final = "bearer"  # 比对时大小写不敏感
 
 #: token 明文信封。``sk-xc-<scheme>-<kid>-<secret>``
 #:
-#: 三段各自的作用：
-#:
-#: - ``scheme`` —— 哈希算法分派位。换算法 = 新 scheme 数字，服务端**永久保留**全部
-#:   历史 scheme 的校验分支，已签发的 key 不重签、不失效。
-#: - ``kid`` —— **唯一查表键**，与 secret 无关、不可推导。这是整个设计的关键：
-#:   如果拿"hash 本身"当查表键（很自然的做法），将来换成带盐的 argon2id 就无法反查，
-#:   只能全表逐行 verify，``O(n)`` 次 argon2 每请求 = 送上门的 DoS。也就是说
-#:   "已签发 key 永不失效"这个承诺会在迁移当天破掉。
-#:   ``kid`` 同时让**对外显示的前缀不是活体秘密**——用"明文前 N 字符"当 prefix 的做法
-#:   会把秘密本体的若干字符印在 UI、日志和 ``token list`` 里。
+#: - ``scheme`` —— 哈希算法分派位。换算法 = 新 scheme 数字，历史 scheme 的校验分支
+#:   永久保留，已签发的 key 不重签、不失效。
+#: - ``kid`` —— 唯一查表键，与 secret 无关、不可推导。拿 hash 本身当查表键的话，
+#:   将来换带盐的 argon2id 就无法反查，只能全表逐行 verify（每请求 ``O(n)`` 次
+#:   argon2 = 送上门的 DoS），"已签发 key 永不失效"当场破掉。它同时让对外显示的
+#:   前缀不含秘密本体——用明文前 N 字符当 prefix 会把秘密印进 UI 与日志。
 #: - ``secret`` —— 真正的随机部分。长度按 scheme 可变，所以这里是范围而非定长。
 TOKEN_ENVELOPE_RE: Final = re.compile(
     r"^sk-xc-(?P<scheme>[1-9][0-9]{0,2})-(?P<kid>[0-9a-z]{16})-(?P<secret>[A-Za-z0-9_-]{16,86})$"
@@ -186,10 +165,9 @@ def token_display_prefix(scheme: int, kid: str) -> str:
 # 3 · model 命名空间与分派
 # =============================================================================
 
-#: Agent slug。**禁含** ``/`` ``:`` ``.`` ``_`` 与大写字母。
+#: Agent slug。禁含 ``/`` ``:`` ``.`` ``_`` 与大写字母。
 #:
-#: 演进规则：字符集只能**收缩到更严**，绝不可放宽——放宽会让原本返回 404 的字符串
-#: 突然变成一个有效 Agent，那是行为的静默改变。
+#: 演进规则：字符集只能收紧。放宽会让原本 404 的字符串突然变成有效 Agent。
 SLUG_RE: Final = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 SLUG_MIN_LEN: Final = 2
 SLUG_MAX_LEN: Final = 48
@@ -202,34 +180,23 @@ SLUG_RESERVED: Final[frozenset[str]] = frozenset(
 #: 保留前缀：留给星槎将来可能内置的 Agent。
 SLUG_RESERVED_PREFIX: Final = "xc-"
 
-#: **隐式**上游裸模型 id：一定含 ``/``（``vendor/name``），可带 ``:free`` / ``:batch``
-#: 变体后缀。这条不能放宽——含不含 ``/`` 正是隐式分派的判据（见 classify_model）。
+#: 隐式上游裸模型 id：一定含 ``/``（``vendor/name``），可带 ``:free`` / ``:batch``
+#: 后缀。不能放宽——含不含 ``/`` 正是隐式分派的判据（见 classify_model）。
 UPSTREAM_MODEL_RE: Final = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$")
 
-#: **显式**上游模型 id（``xc:model/<id>``）：不要求含 ``/``。
+#: 显式上游模型 id（``xc:model/<id>``）：不要求含 ``/``。
 #:
-#: **为什么显式通道要比隐式宽**
+#: 上游可切换，而聚合方（OpenRouter / 硅基流动 / Together）的 id 含斜杠、直连厂商
+#: （DeepSeek / Moonshot / Groq / 智谱）不含。只认含斜杠的话，切到直连厂商后直通
+#: 完全不可用——不含斜杠的名字会被当成 Agent slug，返回 model_not_found。
 #:
-#: 上游是可切换的（见 UPSTREAM_ENV_CANDIDATES），而各家的 id 命名习惯不同：
-#:
-#:   聚合方（OpenRouter / 硅基流动 / Together）   ``vendor/name``      含斜杠
-#:   直连厂商（DeepSeek / Moonshot / Groq / 智谱） ``deepseek-v4-flash`` **不含斜杠**
-#:
-#: 只认含斜杠的话，切到任何直连厂商之后直通就完全不可用——不含斜杠的名字会被当成
-#: Agent slug，返回 model_not_found。实测踩过。
-#:
-#: 但**隐式规则绝不放宽**：那条"不含 / 就是 Agent slug，查不到直接 404"守着一件事——
-#: 一个拼错的 slug 不能静默变成一次真实的付费调用。所以放宽只发生在调用方**显式
-#: 写了 xc:model/** 的时候：那一刻意图没有歧义，不存在"以为在调 Agent"的可能。
-#:
-#: 这是纯加法（原先 400 的输入现在 200），不影响任何既有调用方。
+#: 隐式规则绝不跟着放宽：它守的是"拼错的 slug 不能静默变成一次真实的付费调用"。
+#: 放宽只发生在调用方显式写了 ``xc:model/`` 时，那一刻意图没有歧义。纯加法。
 EXPLICIT_UPSTREAM_MODEL_RE: Final = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 
-#: 星槎显式命名空间前缀。
-#:
-#: 为什么用 ``xc:`` 而不是 ``xc/``：冒号让显式命名空间在**结构上**不可能与上游的
-#: ``vendor/model`` 混淆。``xc/agent/extract`` 长得就像一个上游 model id，只能靠
-#: 规则顺序才不撞——能靠形状区分就不要靠顺序区分。
+#: 星槎显式命名空间前缀。用 ``xc:`` 而不是 ``xc/``：冒号让它在结构上不可能与上游的
+#: ``vendor/model`` 混淆。``xc/agent/extract`` 只能靠规则顺序才不撞，形状能区分就
+#: 不要靠顺序区分。
 EXPLICIT_NS: Final = "xc:"
 EXPLICIT_KIND_AGENT: Final = "agent"
 EXPLICIT_KIND_MODEL: Final = "model"
@@ -258,21 +225,16 @@ class ModelRefInvalid(ValueError):
 def classify_model(model: str) -> ModelRef:
     """把请求里的 ``model`` 字段解析成 Agent 引用或上游模型引用。
 
-    **这是整个星槎唯一的路由分派点，也是最不能改的一条规则**——它编码在每一个
-    调用方的 model 字符串里。
+    整个星槎唯一的路由分派点，也是最不能改的规则——它编码在每个调用方的 model
+    字符串里。按顺序三条，无例外：
 
-    按顺序三条，无例外：
-
-    1. 以 ``xc:`` 开头 → 星槎显式命名空间（``xc:agent/<slug>`` 或 ``xc:model/<上游 id>``）
+    1. 以 ``xc:`` 开头 → 显式命名空间（``xc:agent/<slug>`` 或 ``xc:model/<上游 id>``）
     2. 否则含 ``/`` → 上游裸模型 id，原样透传
-    3. 其余 → Agent slug；查不到直接 404，**绝不猜测性地转发给上游**
+    3. 其余 → Agent slug；查不到直接 404，绝不猜测性地转发给上游
 
-    第 1 条与第 2 条对"合法的上游 id"要求不同：显式通道**不要求含 ``/``**，
-    因为直连厂商（DeepSeek / Groq / 智谱）的 id 没有斜杠。隐式那条必须要求，
-    否则第 3 条就无从判断。
-
-    第 3 条的"绝不回落"很重要：如果查不到 Agent 就试着当上游模型转发出去，那么一个
-    拼错的 slug 会静默变成一次真实的付费调用，而调用方以为自己在调 Agent。
+    第 1 条不要求含 ``/``（直连厂商的 id 没有斜杠），第 2 条必须要求，否则第 3 条
+    无从判断。第 3 条绝不回落：查不到就当上游模型转发的话，一个拼错的 slug 会静默
+    变成一次真实的付费调用。
     """
     if not model or not isinstance(model, str):
         raise ModelRefInvalid("model 不能为空")
@@ -331,17 +293,14 @@ OWNED_BY_UPSTREAM: Final = "openrouter"
 OWNED_BY_VALUES: Final[frozenset[str]] = frozenset({OWNED_BY_XINGCHA, OWNED_BY_UPSTREAM})
 
 #: 列表顺序：Agent 行（按 created_at 升序）在前，上游行（按 catalog 原序）在后，
-#: 按 id 去重且 Agent 优先。
-#:
-#: **顺序必须冻结**：部分客户端取 ``data[0]`` 当默认模型，换排序即静默换模型。
+#: 按 id 去重且 Agent 优先。顺序必须冻结——部分客户端取 ``data[0]`` 当默认模型。
 MODELS_AGENTS_FIRST: Final = True
 
-#: catalog 拉取失败或过期且刷新失败时的语义：返回上次成功的快照，并在 ``x_xingcha``
-#: 里标 ``catalog_stale=true`` 与 ``fetched_at``。
+#: catalog 拉取失败或过期且刷新失败时：返回上次成功的快照，并在 ``x_xingcha`` 里标
+#: ``catalog_stale=true`` 与 ``fetched_at``。
 #:
-#: **降级语义必须冻结**，因为客户端会缓存这个列表并把 id 写进会话配置：
-#: 一次上游抖动如果让接口只返回 Agent 行而不报错，用户配置里的上游模型会被
-#: **静默抹掉**；如果返回 502，客户端可能整体判定端点不可用，连 Agent 也用不了。
+#: 降级语义必须冻结——客户端会缓存这个列表并把 id 写进会话配置。只返回 Agent 行会
+#: 静默抹掉用户配置里的上游模型；返回 502 又可能让客户端判定整个端点不可用。
 MODELS_STALE_WHILE_ERROR: Final = True
 
 
@@ -368,30 +327,23 @@ REQUEST_HONOR: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: 接受但**永久无语义**的字段。
+#: 接受但永久无语义的字段。
 #:
-#: 元规则（这条本身也是契约）：**列入 ignore 的字段永久无语义，永不 honor。**
-#: 需要新语义必须用新字段名，或走 ``x_xingcha`` 入参对象。
-#:
-#: 为什么：``user`` 正是 OpenAI 语义里天然的租户位，v2 做多用户/配额时一定会想拿它
-#: 当 subject——而那一刻，所有在 v1 往 ``user`` 里塞了任意字符串的调用方，行为全部
-#: 改变（突然被归到某个不存在的子账号、突然撞上别人的配额）。所以 ``user`` 在星槎里
-#: **永久只作日志维度，租户归属永远只来自 token**。
+#: 元规则（这条本身也是契约）：列入 ignore 的字段永久无语义，永不 honor；需要新语义
+#: 必须用新字段名或走 ``x_xingcha`` 入参对象。典型是 ``user``——它是 OpenAI 语义里
+#: 天然的租户位，一旦哪天拿它当 subject，所有往里塞过任意字符串的调用方行为全变
+#: （被归到不存在的子账号、撞上别人的配额）。租户归属永远只来自 token。
 REQUEST_IGNORE: Final[frozenset[str]] = frozenset({"user", "store", "metadata", "n"})
 
 #: 直接 400 拒绝的字段。
 #:
-#: 演进规则：**reject 表只能缩小**，永不把字段从 honor/ignore 移进来（那是收紧）。
-#: 把一个字段从 reject 移出去（开始支持它）是加法，允许。
+#: 演进规则：reject 表只能缩小。移出去（开始支持）是加法；把字段从 honor/ignore
+#: 移进来是收紧，禁止。
 #:
 #: ``retries`` / ``max_retries`` / ``usage_limits`` 必须在这里：实测 ``run(retries=)``
-#: 与 ``run(spec=)`` 都能覆盖 Agent 构造时的值，不拦住等于让调用方自行放大重试预算、
-#: 绕过费用护栏。``response_format`` 也必须拦——输出形状由 Agent 定义决定，让调用方
-#: 覆盖会让"200 即符合 schema"这个承诺失效。
-#:
-#: ``session_id`` 在 v1 就拒绝，而不是"先忽略、以后支持"：同一个请求在两个版本里
-#: 两种语义（v1 无状态、v2 有状态）是无法回退的毁约。将来要支持就叫
-#: ``x_xingcha.session_id``，或者把这个 400 放宽成 200（放宽是加法）。
+#: 与 ``run(spec=)`` 都能覆盖 Agent 构造时的值，不拦等于让调用方自行放大重试预算。
+#: ``response_format`` 同理——让调用方覆盖输出形状会让"200 即符合 schema"失效。
+#: ``session_id`` 直接拒绝而不是先忽略：同一请求在两个版本里两种语义无法回退。
 REQUEST_REJECT: Final[frozenset[str]] = frozenset(
     {
         "retries",
@@ -420,41 +372,34 @@ EXT_KEY: Final = "x_xingcha"
 #: 同时提供新旧键。
 EXT_SHAPE_VERSION: Final = 1
 
-#: 结构化输出的承载形式：``message.content`` **永远是字符串**
+#: 结构化输出的承载形式：``message.content`` 永远是字符串
 #: （``json.dumps(dict, ensure_ascii=False)``，不缩进）。调用方 ``json.loads`` 取回 dict。
 #:
-#: 永不改成把 dict 直接放进 content——那会让所有按 str 处理 content 的客户端崩掉。
-#: 将来若要提供已解析形式，只能作为 ``x_xingcha.parsed`` **并行**提供，content 照旧。
+#: 永不改成把 dict 直接放进 content——按 str 处理 content 的客户端会全崩。要提供
+#: 已解析形式只能并行加 ``x_xingcha.parsed``。
 CONTENT_ALWAYS_STR: Final = True
 
-#: 金额的 JSON 类型：**字符串形式的 Decimal，或 null**。不是 number。
-#:
-#: 用 float 存不住 Decimal，而 ``null``（无法定价）与真实的 0 费用必须可区分——
-#: 实测 OpenRouter 在售模型里约 1/3 在 genai-prices 查不到价。
+#: 金额的 JSON 类型：字符串形式的 Decimal，或 null。不是 number——float 存不住
+#: Decimal，而 ``null``（无法定价）与真实的 0 费用必须可区分。
 COST_AS_STRING: Final = True
 
-#: ``usage`` 的口径：**整轮累计**，包含全部 schema 重试与工具往返产生的 token 与费用。
+#: ``usage`` 的口径：整轮累计，含全部 schema 重试与工具往返的 token 与费用。
 #:
-#: **这条必须冻结。** 一次 200 背后可能有 ``1 + retries`` 次模型调用（实测 retries=3
-#: 时是 4 次）。等发现"一次调用怎么花了 4 倍"时，最自然的"修正"是只报最后一次尝试——
-#: 那会让所有基于 usage 的账单核对、配额窗口聚合、成本看板**同时改变口径**，
-#: 是无法回退的数值毁约。调用方要折算真实产出成本，用 ``x_xingcha.schema_retries``
-#: 自行换算。
+#: 必须冻结。一次 200 背后可能有 ``1 + retries`` 次模型调用；日后改成只报最后一次，
+#: 会让账单核对、配额聚合、成本看板同时改变口径。调用方要折算真实产出成本，用
+#: ``x_xingcha.schema_retries`` 自行换算。
 USAGE_IS_WHOLE_RUN: Final = True
 
 #: 失败响应（429 / 422）也必须带 usage，否则失败 run 的花费不可见。
 USAGE_ON_ERROR: Final = True
 
-#: 具体是哪两种错误必须带 usage。**闭集，一处定义。**
+#: 具体是哪两种错误必须带 usage。闭集，一处定义。
 #:
-#: 只有这两种：它们背后可能有真实的模型调用（schema 重试耗尽是 1+retries 次；
-#: usage 超限是跑到一半被拦）。其余错误（401 / 400 / 413）在打到上游之前就返回了，
-#: 给它们加 usage 只是噪音。
+#: 只有这两种背后可能有真实的模型调用（重试耗尽是 1+retries 次；配额超限是跑到
+#: 一半被拦）。其余错误（401 / 400 / 413）在打到上游前就返回了。
 #:
-#: **即使这一次真的零调用（例如配额在模型调用之前就拒了），也要给 0 而不是不给。**
-#:
-#: 不给的话调用方读 ``.usage.total_tokens`` 要分两种情况处理，而"分情况"是所有
-#: 客户端 bug 的温床——形状统一比字段省几个字节重要得多。
+#: 即使这次真的零调用也要给 0——不给的话调用方读 ``.usage.total_tokens`` 要分情况
+#: 处理，形状统一比省几个字节重要。
 USAGE_ON_ERROR_TYPES: Final[frozenset[str]] = frozenset(
     {
         "quota_exceeded",
@@ -465,14 +410,11 @@ USAGE_ON_ERROR_TYPES: Final[frozenset[str]] = frozenset(
 #: SSE 终止行。
 SSE_DONE: Final = "data: [DONE]\n\n"
 
-#: SSE 帧序列。**v0.2 的伪流式与 v0.4 的真流式逐字相同**——真流式上线时唯一的可观测
-#: 变化是 ``content`` 帧变多了，而帧数变多对客户端是兼容的。这正是当初发伪流式而不是
-#: 400 的理由：客户端会为一个 400 **写死绕过逻辑**（探测到就改走非流式），等真流式
-#: 上线时反而打断它们。
+#: SSE 帧序列。伪流式与真流式逐字相同，真流式上线时唯一的变化是 ``content`` 帧变多，
+#: 对客户端兼容。当初发伪流式而不是 400 就是为此：客户端会为 400 写死绕过逻辑。
 #:
-#: 中途失败的表达方式也在这里冻结：200 已经发出去之后无法改状态码，所以**不发
-#: ``[DONE]``** 就是失败信号（OpenAI 自己也是这个行为）。调用方应当按"流是否以
-#: ``[DONE]`` 结尾"判成败，而不是只看状态码。
+#: 中途失败的表达也冻结在这里：200 发出后改不了状态码，所以不发 ``[DONE]`` 就是失败
+#: 信号（OpenAI 也是这个行为）。调用方按"流是否以 ``[DONE]`` 结尾"判成败。
 SSE_FRAME_ORDER: Final[tuple[str, ...]] = (
     "role",  # {"delta": {"role": "assistant"}}
     "content",  # {"delta": {"content": "..."}}  × N
@@ -510,15 +452,12 @@ class ErrorType(StrEnum):
     INTERNAL_ERROR = "internal_error"
 
 
-#: 每个 error type 的 HTTP 状态码。**永不改动。**
+#: 每个 error type 的 HTTP 状态码。永不改动。
 #:
-#: 两处刻意的拆分：
-#:
-#: - ``agent_spec_invalid`` (400) vs ``agent_build_failed`` (500) —— 用户填错和上游
-#:   版本变动是两个完全不同的处置路径，一码两 HTTP 会让调用方无法分支。
-#: - ``upstream_timeout`` (单次上游请求超时) vs ``request_timeout`` (整轮墙钟超时)
-#:   —— ``Agent.run`` 没有 timeout 参数，per-Agent 超时走 ``model_settings['timeout']``，
-#:   整轮墙钟只能靠 ``asyncio.timeout``，两者来源不同，排查路径也不同。
+#: 两处刻意的拆分：``agent_spec_invalid`` (400) vs ``agent_build_failed`` (500)——
+#: 用户填错与上游版本变动是两条处置路径；``upstream_timeout`` (单次上游请求) vs
+#: ``request_timeout`` (整轮墙钟)——前者走 ``model_settings['timeout']``，后者只能靠
+#: ``asyncio.timeout``，来源与排查路径都不同。
 ERROR_HTTP_STATUS: Final[dict[ErrorType, int]] = {
     ErrorType.INVALID_API_KEY: 401,
     ErrorType.QUOTA_EXCEEDED: 429,
@@ -536,16 +475,12 @@ ERROR_HTTP_STATUS: Final[dict[ErrorType, int]] = {
     ErrorType.INTERNAL_ERROR: 500,
 }
 
-#: 5xx 对外只给固定文案 + run_id，细节只进日志。
-#:
-#: ``UserError`` / httpx / openai 的异常文本经常带完整 URL、偶尔带 header——直接回显
-#: 就是一条上游 key 的泄漏路径。
+#: 5xx 对外只给固定文案 + run_id，细节只进日志：``UserError`` / httpx / openai 的
+#: 异常文本常带完整 URL、偶尔带 header，回显就是一条上游 key 泄漏路径。
 INTERNAL_ERROR_MESSAGE: Final = "服务内部错误。请把 run_id 提供给管理员以便排查。"
 
-#: 对外**不区分** token 无效 / 禁用 / 过期，一律 ``invalid_api_key``。
-#:
-#: 区分等于给公网一个 token 有效性 oracle（"这个 key 存在但过期了"是白送的信息）。
-#: 区分只进日志。
+#: 对外不区分 token 无效 / 禁用 / 过期，一律 ``invalid_api_key``——区分等于给公网一个
+#: token 有效性 oracle。区分只进日志。
 AUTH_ERRORS_INDISTINGUISHABLE: Final = True
 
 
@@ -553,11 +488,10 @@ AUTH_ERRORS_INDISTINGUISHABLE: Final = True
 # 8 · 直通层的透明性与卫生
 # =============================================================================
 
-#: 转发给上游前必须**剥离**的请求头。
+#: 转发给上游前必须剥离的请求头。
 #:
-#: 全部是客户端 IP 类的头。不剥掉的话真实来源 IP 就直接交给上游了——中转形同白建。
-#: 注意这与"客户端 → 星槎"那一跳相反：那一跳恰恰**需要** XFF/X-Real-IP 才能记录
-#: 真实来源，两处不能照抄同一条配置。
+#: 主体是客户端 IP 类的头，不剥掉就把真实来源交给上游了，中转形同白建。注意这与
+#: "客户端 → 星槎"那一跳相反：那一跳需要 XFF/X-Real-IP 才能记录来源。
 STRIP_REQUEST_HEADERS: Final[frozenset[str]] = frozenset(
     {
         "x-forwarded-for",
@@ -586,10 +520,10 @@ STRIP_REQUEST_HEADERS: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: 回给客户端的上游响应头**白名单**。不在名单里的一律丢弃。
+#: 回给客户端的上游响应头白名单。不在名单里的一律丢弃。
 #:
-#: 必须是白名单而不是黑名单：黑名单只剥 hop-by-hop 就逐字节透传的话，上游的
-#: ``Set-Cookie`` 会落在你自己的域上，任何 echo/debug 头也一并出去。
+#: 必须是白名单：黑名单只剥 hop-by-hop 的话，上游的 ``Set-Cookie`` 会落在你自己的
+#: 域上，echo/debug 头也一并出去。
 ALLOW_RESPONSE_HEADERS: Final[frozenset[str]] = frozenset(
     {
         "content-type",
@@ -604,16 +538,12 @@ ALLOW_RESPONSE_HEADERS: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: 直通路径**从第一天就强制鉴权**：无有效 sk-xc- key 一律 401，绝不转发给上游。
-#:
-#: 这条配一条会红的测试。一个不鉴权的 catch-all 反代 + 一把付费 key = 开放代理，
-#: 是本项目唯一的"一天烧光余额"级事故。
+#: 直通路径强制鉴权：无有效 sk-xc- key 一律 401，绝不转发给上游。不鉴权的 catch-all
+#: 反代 + 一把付费 key = 开放代理，是本项目唯一的"一天烧光余额"级事故。
 PASSTHROUGH_REQUIRES_AUTH: Final = True
 
-#: v1 的直通路径记 run 行与 token，但**不执行配额**。
-#:
-#: 这一点必须写进 RUNBOOK，不能让人误以为 v1 有费用护栏。v1 唯一真正的钱刹车在
-#: OpenRouter 侧——给服务端那把上游 key 单独设一个低额信用上限。
+#: v1 的直通路径记 run 行与 token，但不执行配额。唯一真正的钱刹车在上游侧——给那把
+#: 上游 key 单独设一个低额信用上限。
 PASSTHROUGH_ENFORCES_QUOTA: Final = False
 
 
@@ -623,9 +553,8 @@ PASSTHROUGH_ENFORCES_QUOTA: Final = False
 
 #: 请求体上限。超过即 413 ``request_too_large``。
 #:
-#: 直通层把 body 整块缓冲成 bytes（异步迭代器会强制 chunked，部分中转会拒），
-#: 所以没有上限时一个大 POST 就能打死这个同时承载全部流量、SQLite 写入和用量缓冲的
-#: 单进程。**这个值进契约**：事后调小是破坏性变更。
+#: 直通层把 body 整块缓冲成 bytes（异步迭代器会强制 chunked，部分中转会拒），没有
+#: 上限时一个大 POST 就能打死这个单进程。进契约是因为事后调小算破坏性变更。
 MAX_BODY_BYTES: Final = 8 * 1024 * 1024
 
 #: 单个 JSON Schema 的上限（schema_guard）。
@@ -634,26 +563,18 @@ SCHEMA_MAX_DEPTH: Final = 8
 SCHEMA_MAX_PROPS: Final = 120
 SCHEMA_MAX_ENUM: Final = 200
 
-#: schema 里被拒绝的关键字。
-#:
-#: ``pattern`` / ``patternProperties`` 由 jsonschema 用 Python ``re`` 在事件循环上执行，
-#: 且**每次 schema 重试都会重跑一遍**。一条 ``(a+)+$`` 就能把一核打满，整个单进程
-#: 服务停摆。
+#: schema 里被拒绝的关键字。``pattern`` / ``patternProperties`` 由 jsonschema 用
+#: Python ``re`` 在事件循环上执行，且每次重试重跑；一条 ``(a+)+$`` 就能打满一核。
 SCHEMA_FORBIDDEN_KEYWORDS: Final[frozenset[str]] = frozenset({"pattern", "patternProperties"})
 
-#: 只允许指向文档自身的 ``$ref``。
-#:
-#: jsonschema 在未给定封闭 registry 时会**真的去取**非本地 ``$ref``——
-#: ``{"$ref": "http://attacker/x.json"}`` 是一个校验期 SSRF。除了这条前缀检查，
-#: 构造 validator 时还必须传入**空的** ``referencing.Registry``，让远程取回在结构上
-#: 不可能发生。
+#: 只允许指向文档自身的 ``$ref``。jsonschema 未给定封闭 registry 时会真的去取远程
+#: ``$ref``，那是校验期 SSRF。除这条前缀检查外，构造 validator 还必须传入空的
+#: ``referencing.Registry``，让远程取回在结构上不可能发生。
 SCHEMA_REF_ALLOWED_PREFIX: Final = "#/"
 
-#: 单进程 worker 数。**``serve`` 直接把它传给 uvicorn，不是一条建议。**
-#:
-#: 进程级 ConcurrencyLimiter、内存用量缓冲、SQLite 单写者全都依赖它。任何人为了
-#: "提高性能"改成 2，会同时静默打破上游并发封顶、丢一半用量缓冲、并引入
-#: ``database is locked``——三个症状互不相关，排查成本极高。
+#: 单进程 worker 数。``serve`` 直接把它传给 uvicorn，不是一条建议：进程级
+#: ConcurrencyLimiter、内存用量缓冲、SQLite 单写者全都依赖它。改成 2 会同时打破
+#: 上游并发封顶、丢一半用量缓冲、并引入 ``database is locked``。
 REQUIRED_WORKERS: Final = 1
 
 
@@ -665,18 +586,13 @@ DB_FILENAME: Final = "xingcha.db"
 SECRET_FILENAME: Final = "secret.key"
 BACKUP_DIRNAME: Final = "backups"
 
-#: 容器内的运行 UID。**固定值，不是随机分配的**——宿主上的 bind mount 目录必须
-#: 属于它，否则容器起来就是 Permission denied，而那句报错离根因很远。
-#:
-#: Dockerfile 的 useradd、deploy.sh 的 chown、以及数据目录不可写时的报错文案都引用
-#: 这一个值。写三处的结果是改了一处忘两处，而症状只在真正部署时才出现。
+#: 容器内的运行 UID。固定值：宿主上的 bind mount 目录必须属于它，否则容器起来就是
+#: Permission denied。Dockerfile 的 useradd、deploy.sh 的 chown 与报错文案都引用这
+#: 一个值，免得改一处忘两处。
 CONTAINER_UID: Final = 10001
 
-#: 后台密码的最短长度。
-#:
-#: 收进契约是因为它出现在四处：登录页的首次设密、设置页的修改密码、两个页面的
-#: 前端 ``minlength``、以及 CLI 重置后的提示文案。写四遍的结果是改一处忘三处，
-#: 而"前端说 12、后端要 10"这种不一致会让用户被一个说不清的错误挡住。
+#: 后台密码的最短长度。收进契约是因为它出现在四处（两个页面的校验与 ``minlength``、
+#: CLI 提示），而"前端说 12、后端要 10"会让用户被一个说不清的错误挡住。
 MIN_ADMIN_PASSWORD_LEN: Final = 12
 
 #: 目录 0700、文件 0600。共享 VPS 上 0644 的库文件等于把 token hash 与 Fernet 密文
@@ -685,59 +601,41 @@ DIR_MODE: Final = 0o700
 FILE_MODE: Final = 0o600
 UMASK: Final = 0o077
 
-#: SQLite 必须跑在 WAL 上，启动时断言，否则**拒绝启动**。
-#:
-#: bind mount 落在网络盘或异常文件系统上时 WAL 会静默降级，症状是零星的
-#: ``database is locked``——是最难查的一类问题。宁可起不来。
+#: SQLite 必须跑在 WAL 上，启动时断言，否则拒绝启动：bind mount 落在网络盘上时 WAL
+#: 会静默降级，症状是零星的 ``database is locked``。宁可起不来。
 REQUIRED_JOURNAL_MODE: Final = "wal"
 
-#: 上游 key 的来源优先级：DB 里的加密值优先，环境变量只在首次启动时一次性导入。
-#:
+#: 上游 key 的来源优先级：DB 里的加密值优先，环境变量只在首次启动时一次性导入——
 #: 环境变量会进 ``docker inspect`` 与 ``/proc/<pid>/environ``，不是长期存放处。
 SETTING_KEY_OPENROUTER_API_KEY: Final = "openrouter.api_key"
 SETTING_KEY_OPENROUTER_BASE_URL: Final = "openrouter.base_url"
 
-#: 当前生效的上游来自哪个环境变量名。**只用于展示**，不参与解析。
-#:
-#: 真正生效的 key 与 base_url 仍然存在上面那两个加密项里——切换只是把选中的那把
-#: 复制进去。这样 ``load_upstream`` 一行都不用改，切换功能的爆炸半径被限制在
-#: 一次 setting 写入。
+#: 当前生效的上游来自哪个环境变量名。只用于展示，不参与解析：真正生效的 key 与
+#: base_url 仍在上面那两个加密项里，切换只是把选中的那把复制进去，``load_upstream``
+#: 一行都不用改。
 SETTING_KEY_UPSTREAM_ACTIVE_ENV: Final = "upstream.active_env"
 
-#: 用户手动添加的供应商列表（加密的 JSON 数组）。
+#: 用户手动添加的供应商列表（加密的 JSON 数组）。自动发现只看得到环境变量里的厂商
+#: key，手填的中转也必须能留在切换列表里，否则切走就回不来。
 #:
-#: 为什么要存：自动发现只能看到环境变量里的厂商 key，而"我自己填的那个中转"必须
-#: 也能在切换列表里出现——否则手填一次之后就只能再手填一次，切走了就回不来。
-#:
-#: 存成**一个** blob 而不是每家一行：``setting_svc`` 已经对整个值做加密，一个 key
-#: 一次读写就够；拆成多行要自己维护索引，而索引与内容不一致是最难查的一类状态。
+#: 存成一个 blob 而不是每家一行：``setting_svc`` 已对整个值加密，拆成多行要自己维护
+#: 索引，而索引与内容不一致是最难查的一类状态。
 SETTING_KEY_UPSTREAM_PROVIDERS: Final = "upstream.providers"
 
 #: 手动添加的供应商名字长度上限。够写"公司内网中转"，短到能进表格一列。
 PROVIDER_NAME_MAX: Final = 40
 
-#: 可切换的上游：环境变量名 → 该厂商的 OpenAI 兼容 base_url。**闭集，一处定义。**
+#: 可切换的上游：环境变量名 → 该厂商的 OpenAI 兼容 base_url。闭集，一处定义。
 #:
-#: **为什么按环境变量名建表，而不是猜 key 的前缀**
-#:
-#: 猜前缀不可行：硅基流动、DeepSeek、Moonshot、Together、Fireworks、Requesty
-#: **全都发 ``sk-`` 开头的 key**，彼此不可区分。猜错的后果不是"配置不生效"，
-#: 是把凭据发给错误的 base_url —— 一次真实的 key 外泄。
-#:
-#: 按变量名建表则有一个关键优势：**表里存的是 base_url，而端点地址比变量名稳定得多。**
-#: 变量名各家文档天天变（``DEEPINFRA_API_KEY`` / ``DEEPINFRA_TOKEN``、
-#: ``AIMLAPI_`` / ``AIML_``、``GOOGLE_`` / ``GEMINI_``），所以同一个厂商允许多个
-#: 变量名指向同一个 base_url；而端点几年不动。
-#:
-#: 表里没有的变量名不会被扫出来（见 :func:`is_known_upstream_env`）——宁可少认，
+#: 按变量名建表而不是猜 key 前缀：硅基流动、DeepSeek、Moonshot、Together、Fireworks、
+#: Requesty 全都发 ``sk-`` 开头的 key，猜错的后果是把凭据发给错误的 base_url。
+#: 而端点地址比变量名稳定得多——变量名各家文档天天变（``DEEPINFRA_API_KEY`` /
+#: ``DEEPINFRA_TOKEN``、``AIMLAPI_`` / ``AIML_``），所以允许多个变量名指向同一个
+#: base_url。表里没有的不会被扫出来（见 :func:`is_known_upstream_env`）——宁可少认，
 #: 也不要把 ``GITHUB_TOKEN`` 当成模型 key 列进管理面。
 #:
-#: **只收 OpenAI 兼容的厂商**
-#:
-#: 星槎的整条链路是 OpenAI 兼容协议（``/v1/chat/completions``）。所以
-#: **Anthropic / Google Gemini 原生 / AWS Bedrock / Replicate 这些不在表里**：
-#: 它们的协议不同，填进来只会在第一次调用时以一个难懂的 4xx 失败。
-#: 需要它们请走 OpenRouter 一类的聚合方，那才是星槎设计里的位置。
+#: 只收 OpenAI 兼容的厂商。Anthropic / Gemini 原生 / Bedrock / Replicate 协议不同，
+#: 填进来只会在第一次调用时以一个难懂的 4xx 失败；需要它们请走聚合方。
 UPSTREAM_ENV_CANDIDATES: Final[dict[str, str]] = {
     # 聚合方（推荐：一把 key 打通几乎所有模型，也是星槎的默认形态）
     "OPENROUTER_API_KEY": "https://openrouter.ai/api/v1",
@@ -775,17 +673,13 @@ UPSTREAM_ENV_CANDIDATES: Final[dict[str, str]] = {
     "HYPERBOLIC_API_KEY": "https://api.hyperbolic.xyz/v1",
 }
 
-#: 这些上游**没有 /models 端点**（实测 404），而星槎的模型目录是判档与定价的主价源。
-#:
-#: 后果不是不能用，是：切到它们之后目录为空 → 每条记录 `cost_source=unknown`、
-#: 判档一律回落 T2。管理面要把这句话说出来，否则用户会以为是星槎坏了。
+#: 这些上游没有 /models 端点（实测 404）。后果不是不能用，是目录为空 → 每条记录
+#: ``cost_source=unknown``、判档一律回落 T2。管理面要说出来，否则用户以为星槎坏了。
 UPSTREAM_ENV_WITHOUT_CATALOG: Final[frozenset[str]] = frozenset({"PERPLEXITY_API_KEY"})
 
-#: 主题 cookie 的名字。
-#:
-#: 用 cookie 而不是 localStorage：**服务端渲染时就得知道选了哪个**，否则
-#: `data-theme` 要靠 JS 在首屏之后补上，用户会看到一次闪白/闪黑。而内联 script
-#: 又被 CSP（``script-src 'self'``）挡着，加不进 <head>。
+#: 主题 cookie 的名字。用 cookie 而不是 localStorage：服务端渲染时就得知道选了哪个，
+#: 否则 ``data-theme`` 要靠 JS 在首屏之后补，用户会看到一次闪白/闪黑；而内联 script
+#: 被 CSP（``script-src 'self'``）挡着，加不进 <head>。
 THEME_COOKIE: Final = "xc_theme"
 
 #: 三态主题的闭集。``system`` 表示不写 ``data-theme``，交给 CSS 的
@@ -793,15 +687,12 @@ THEME_COOKIE: Final = "xc_theme"
 THEMES: Final = frozenset({"system", "light", "dark"})
 
 
-#: 只属于**编排层**的 ``XINGCHA_*`` 变量名。
+#: 只属于编排层的 ``XINGCHA_*`` 变量名。
 #:
-#: 它们出现在 ``.env`` 里，供 compose 插值端口/地址/挂载点，或供 ``deploy/linux/xc``
-#: 选择拓扑。应用本身不认识它们，而 ``env_file`` 会把整份 ``.env`` 注进容器——
-#: 所以必须在这里登记，否则 :func:`config.warn_unknown_env` 每次启动都会说
-#: 「未知的配置项 XINGCHA_WEB_PORT 被忽略（拼错了？）」。
-#:
-#: 那条假警报的代价很具体：用户配得完全正确，却被告知拼错了，于是要么去改对的
-#: 东西，要么学会忽略这类警告——而忽略之后，**真的拼错时也不会有人看**。
+#: 它们供 compose 插值端口/地址/挂载点，或供 ``deploy/linux/xc`` 选拓扑；应用本身不
+#: 认识，而 ``env_file`` 会把整份 ``.env`` 注进容器。不登记的话
+#: :func:`config.warn_unknown_env` 每次启动都会误报「拼错了？」，而人学会忽略这类
+#: 警告之后，真的拼错时也不会有人看。
 ORCHESTRATION_ENV_NAMES: Final = frozenset(
     {
         # 走不走共享网关。空 = 独立跑明文 HTTP；有值 = 那个 docker 网络的名字。
@@ -821,19 +712,14 @@ ORCHESTRATION_ENV_NAMES: Final = frozenset(
 )
 
 
-#: 星槎自己的默认上游变量名。**这一对优先于 ``UPSTREAM_ENV_CANDIDATES`` 里的任何
-#: 一个厂商名。**
-#:
-#: 用通用名而不是把厂商名写进变量名：上游是可切换的，名字里带 ``OPENROUTER``
-#: 会在切到别家之后变成谎言。
+#: 星槎自己的默认上游变量名，优先于 ``UPSTREAM_ENV_CANDIDATES`` 里的任何厂商名。
+#: 用通用名：上游可切换，名字里带 ``OPENROUTER`` 会在切到别家之后变成谎言。
 ENV_DEFAULT_API_KEY: Final = "XINGCHA_API_KEY"
 ENV_DEFAULT_BASE_URL: Final = "XINGCHA_BASE_URL"
 
 
-#: 星槎自己那一对默认变量的可接受写法。**大小写不敏感，且认旧名。**
-#:
-#: 旧名 ``XINGCHA_OPENROUTER_API_KEY`` 必须继续认：改配置项名是破坏性变更，
-#: 而"升级对用户无感"是这个项目的头号承诺。
+#: 那一对默认变量的可接受写法。大小写不敏感，且永远认旧名——改配置项名是破坏性
+#: 变更，而"升级对用户无感"是这个项目的头号承诺。
 ENV_API_KEY_ALIASES: Final[tuple[str, ...]] = (
     ENV_DEFAULT_API_KEY,
     "XINGCHA_OPENROUTER_API_KEY",
@@ -847,8 +733,8 @@ ENV_BASE_URL_ALIASES: Final[tuple[str, ...]] = (
 def is_known_upstream_env(name: str) -> bool:
     """这个环境变量名是否是已知厂商的上游 key。
 
-    **大小写不敏感。** ``.env`` 里写小写（``deepseek_api_key``）是常见习惯，而
-    ``os.environ`` 在 Linux 上区分大小写——只认大写会让人以为功能坏了。
+    大小写不敏感：``.env`` 里写小写是常见习惯，而 ``os.environ`` 在 Linux 上区分
+    大小写，只认大写会让人以为功能坏了。
     """
     return name.upper() in UPSTREAM_ENV_CANDIDATES
 
@@ -866,8 +752,7 @@ def has_catalog(name: str) -> bool:
 def vendor_label(name: str) -> str:
     """给管理面显示的厂商名：去掉 ``_API_KEY`` / ``_TOKEN`` 后缀。
 
-    不另建一张"变量名 → 中文名"的表：那是第二份需要维护的映射，而它带来的
-    可读性提升不值得（``DEEPSEEK`` 已经足够清楚）。
+    不另建"变量名 → 中文名"表——第二份映射要维护，而 ``DEEPSEEK`` 已经够清楚。
     """
     upper = name.upper()
     for suffix in ("_API_KEY", "_API_TOKEN", "_TOKEN", "_KEY"):
@@ -876,46 +761,36 @@ def vendor_label(name: str) -> str:
     return upper
 
 
-#: Langfuse 凭据。**走加密存储而不是环境变量**，理由与上游 key 完全相同：
-#: 环境变量会出现在 ``docker inspect`` 与 ``/proc/<pid>/environ`` 里。
+#: Langfuse 凭据。走加密存储而不是环境变量，理由同上游 key。
 SETTING_KEY_TRACE_ENDPOINT: Final = "trace.endpoint"
 SETTING_KEY_TRACE_PUBLIC_KEY: Final = "trace.public_key"
 SETTING_KEY_TRACE_SECRET_KEY: Final = "trace.secret_key"
 
-#: 上报的**开关**，与"地址配没配"分开。
-#:
-#: 原先只有一个状态：地址非空即开启，清空即关闭——而清空会把两把 key 一起删掉
-#: （留着一份用不上的 secret key 只是多一处泄漏面）。于是"先停一下上报"的代价是
-#: 下次要把 Langfuse 凭据重新找出来贴一遍，人自然就不停了，而"不好停"的开关等于
-#: 一个默认开着的开关。
-#:
-#: 拆成两项之后：地址与凭据是**配置**，这一项是**状态**。停用不丢配置。
-#: 判定是 ``endpoint and enabled``——没配地址时这一项无意义。
+#: 上报的开关，与"地址配没配"分开：地址与凭据是配置，这一项是状态，停用不丢配置。
+#: 合在一起的话"先停一下上报"就得清空地址、连带删掉两把 key，下次要重新找凭据贴一遍，
+#: 而不好停的开关等于默认开着。判定是 ``endpoint and enabled``。
 SETTING_KEY_TRACE_ENABLED: Final = "trace.enabled"
 
-#: 上报目标**列表**（加密的 JSON 数组）与当前生效的那一个的名字。
+#: 上报目标列表（加密的 JSON 数组）与当前生效的那一个的名字。
 #:
-#: 上面那四个键是它们的前身：只存得下一份配置，改地址就是覆盖，而实际用法是
-#: "本机自建那个"和"云上那个"来回切——覆盖一次就把另一份的两把 key 弄丢了。
-#: 迁移见 :func:`services.trace_targets.import_legacy_once`，一次性，做完删旧键。
+#: 上面四个键是前身，只存得下一份配置，而实际用法是"本机自建"与"云上"来回切，覆盖
+#: 一次就丢了另一份的两把 key。迁移见
+#: :func:`services.trace_targets.import_legacy_once`，一次性，做完删旧键。
 #:
-#: ``trace.active`` 是**一个名字**，空 = 全部停用。同一时刻只有一个生效不是产品
-#: 取舍：追踪管道只有一条，装配的是一个 exporter。
+#: ``trace.active`` 是一个名字，空 = 全部停用。同一时刻只有一个生效不是产品取舍：
+#: 追踪管道只有一条，装配的是一个 exporter。
 SETTING_KEY_TRACE_TARGETS: Final = "trace.targets"
 SETTING_KEY_TRACE_ACTIVE: Final = "trace.active"
 
-#: 后台里声明过的 Agent 分组名，JSON 数组。
-#:
-#: 分组本身仍然只是 ``agent.group_name`` 上的一个字符串——这个键存的是**还没有任何
-#: 成员的分组**。不存的话"新建分组"按钮点完什么都不会发生（没有成员的分组查不出来），
-#: 于是只能先建 Agent 再分组，而人的顺序通常是反的。
+#: 后台里声明过的 Agent 分组名，JSON 数组。分组本身只是 ``agent.group_name`` 上的
+#: 字符串，这个键存的是还没有任何成员的分组——不存的话"新建分组"点完什么都不会发生，
+#: 只能先建 Agent 再分组，而人的顺序通常是反的。
 SETTING_KEY_AGENT_GROUPS: Final = "agent.groups"
 
 #: 官方 OpenRouter 地址。中转时由管理员在设置里改写。
 #:
-#: 注意：``OPENROUTER_BASE_URL`` 这个环境变量**不被 pydantic-ai 读取**（源码里只有
-#: ``OPENROUTER_API_KEY`` / ``_APP_URL`` / ``_APP_TITLE``）。中转只能靠自建
-#: ``AsyncOpenAI(base_url=...)`` 注入，见 core/builder.py。
+#: ``OPENROUTER_BASE_URL`` 不被 pydantic-ai 读取（源码里只有 ``OPENROUTER_API_KEY`` /
+#: ``_APP_URL`` / ``_APP_TITLE``），中转只能靠自建 ``AsyncOpenAI(base_url=...)`` 注入。
 OPENROUTER_DEFAULT_BASE_URL: Final = "https://openrouter.ai/api/v1"
 
 
@@ -925,14 +800,14 @@ OPENROUTER_DEFAULT_BASE_URL: Final = "https://openrouter.ai/api/v1"
 
 
 class CostSource(StrEnum):
-    """费用数字的来源。**四态从第一天就定死。**
+    """费用数字的来源。四态从第一天就定死。
 
-    只有 ``UPSTREAM`` 是上游报的真实费用；``CATALOG`` 与 ``GENAI_PRICES`` 都是**估价**。
-    UI 与 CLI 必须把两者区分显示，绝不把估价说成账单——实测两者能差几百倍。
+    只有 ``UPSTREAM`` 是上游报的真实费用，``CATALOG`` 与 ``GENAI_PRICES`` 都是估价。
+    UI 与 CLI 必须区分显示——实测两者能差几百倍。
 
-    pydantic-ai 自动填的 ``usage.cost`` 属于估价（genai-prices），而上游 body 里真实的
-    ``cost`` 因为是 float 被 ``isinstance(v, int)`` 过滤掉，哪儿都没留。所以 ``UPSTREAM``
-    只能在 HTTP 层抓（见 ``core/costsink.py``）。
+    pydantic-ai 自动填的 ``usage.cost`` 属于估价；上游 body 里真实的 ``cost`` 是
+    float，被 ``isinstance(v, int)`` 过滤掉，所以 ``UPSTREAM`` 只能在 HTTP 层抓
+    （见 ``core/costsink.py``）。
     """
 
     #: OpenRouter /v1/models 自带的价格。**主价源**——424/424 全有，抽样与 genai-prices 相等。
@@ -946,19 +821,12 @@ class CostSource(StrEnum):
 
 
 class Tier(StrEnum):
-    """输出保证档位。**四档从第一天就进 DB 的 CHECK 约束**，现已全部实现
-    （见 core/guarantee.AVAILABLE_TIERS）。
+    """输出保证档位。四档从第一天就进 DB 的 CHECK 约束，现已全部实现
+    （见 core/guarantee.AVAILABLE_TIERS）——CHECK 里不预留的话补档就是一次重建表。
 
-    后补 T1 / T1P 是纯加法；但如果 CHECK 里没有预留这两个值，补的时候就是一次
-    需要重建表的迁移。
-
-    ``NONE`` 是后加的第五个值，而它是**修一个谎**：没有配置 schema 的纯文本 Agent
-    此前被报成 ``T3``。T3 的含义是"schema 只进提示词、不做校验"——那至少还有一份
-    schema；纯文本 Agent 一份都没有。调用方读 ``x_xingcha.tier`` 想知道的正是
-    "这次调用有没有结构保证、代价是什么"，而 T3 对纯文本给出的是一个错误答案。
-
-    加值而不是把 ``tier`` 置空：契约里这个字段一直是必填的字符串，改成可缺失会
-    让所有读它的调用方都要加一条判空。加一个值是纯加法。
+    ``NONE`` 是第五个值：没有 schema 的纯文本 Agent 此前被报成 T3，而 T3 的含义是
+    "schema 只进提示词、不做校验"，至少还有一份 schema。加一个值而不是把 ``tier``
+    置空，是因为契约里它一直是必填字符串，改成可缺失会让所有调用方加一条判空。
     """
 
     T1 = "T1"  # 原生约束解码（strict=True 提交 schema）
@@ -977,21 +845,14 @@ class RunStatus(StrEnum):
     CLIENT_ERROR = "client_error"
 
 
-#: 判档只能看这个参数，**不能看 ``response_format``**。
-#:
-#: 实测今天 OpenRouter 的 424 个模型里 ``response_format`` 365 个、
-#: ``structured_outputs`` 340 个——有 25 个只有前者。混用会把 T2 误判成 T1，
-#: 于是对用户谎称"有原生保证"。
-#:
-#: 另：``supported_parameters`` 为空 list 的模型语义是「未声明」而不是「全支持」，
-#: 必须保守判成 T2/T3。
+#: 判档只能看这个参数，不能看 ``response_format``：实测 OpenRouter 的 424 个模型里
+#: 有 25 个只有后者，混用会把 T2 误判成 T1，于是对用户谎称"有原生保证"。
+#: ``supported_parameters`` 为空 list 的语义是「未声明」而不是「全支持」，保守判 T2/T3。
 CATALOG_NATIVE_SCHEMA_PARAM: Final = "structured_outputs"
 
-#: 目录里代表「这个模型会推理」的参数名。**两个都要认。**
-#:
-#: 实测当前这份目录：``reasoning`` 与 ``include_reasoning`` 各 304 个、成对出现；
-#: ``reasoning_effort``（思考力度可调）只有 165 个，是前者的子集。只认后者会把
-#: 一半会推理的模型误判成不会。
+#: 目录里代表「这个模型会推理」的参数名。两个都要认：实测 ``reasoning`` 与
+#: ``include_reasoning`` 成对出现各 304 个，而 ``reasoning_effort`` 只有 165 个、是
+#: 前者的子集，只认后者会把一半会推理的模型误判成不会。
 CATALOG_REASONING_PARAMS: Final[frozenset[str]] = frozenset({"reasoning", "include_reasoning"})
 
 #: 目录里代表「能调工具」的参数名。T2 的**工具通道**依赖它——模型不支持 tools 时，
