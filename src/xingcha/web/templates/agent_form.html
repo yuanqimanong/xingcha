@@ -136,9 +136,14 @@
               {# 选完模型就报它能干什么，不用等到第一次真调用。
                  绑 change 而不是 keyup：这个输入框带 datalist，边打字边请求会为每一个
                  中间态发一次，而中间态没有一个是真模型名。 #}
+              {# hx-include **必须带上 #cap-list**：这次响应用 hx-swap-oob 重渲染整个能力
+                 列表，而勾选状态只能由请求自己带回去（见 agent_trial.agent_model_report
+                 里的 checked = {cap_*}）。只发 #model 的话 checked 永远是空集，而 trigger
+                 里还有 load——于是打开一个已开能力的 Agent，页面加载完那一瞬勾就被冲掉，
+                 再点保存就把它静默清空了。守卫见 tests/test_agent_form_htmx.py。 #}
               <div id="model-report"
                    hx-get="/admin/agents/model-report" hx-trigger="change from:#model, load"
-                   hx-include="#model" hx-target="#model-report" hx-swap="innerHTML"></div>
+                   hx-include="#model, #cap-list input" hx-target="#model-report" hx-swap="innerHTML"></div>
             </div>
           </div>
           <div class="form-row">

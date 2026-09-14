@@ -54,6 +54,12 @@ def serve(
     bind_host = host or settings.host
     bind_port = port or settings.port
 
+    # ``--host/--port`` 是**最终生效值**，写回进程单例。app.lifespan 的就绪日志读的是
+    # ``settings.host``：不写回的话 ``--host 0.0.0.0`` 之后它仍然印「监听 127.0.0.1」，
+    # 而这行谎话恰好出现在排查「别的机器连不上」的时候。（``--reload`` 下 uvicorn 另起
+    # 子进程重新读配置，那条开发路径仍以配置值为准。）
+    settings.host, settings.port = bind_host, bind_port
+
     # 数据目录预检。真正的建目录在 app.lifespan 里，但那已经在 uvicorn 之内——
     # 失败会以一段 ASGI 栈回溯的形式出现，而运维需要的那句话被埋在最底下。
     # 这里先跑一次（幂等），让它走 CLI 的运维错误通道：只印一行可执行的指引。

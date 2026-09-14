@@ -115,6 +115,67 @@ def runnable_capabilities(spec: dict[str, Any]) -> dict[str, Any]:
     return spec
 
 
+#: OpenRouter 的联网开关：请求体里的 ``plugins``。
+#:
+#: 不带 ``engine`` 是**刻意的**——留空等同 ``:online``（由 OpenRouter 自己选，grok 这类
+#: 自带检索的模型走上游 native 搜索，其余回退 Exa）。实测同一个 grok-4.3：留空注入
+#: ~11K token / 15 条引用，写死 ``engine="exa"`` 只剩 ~2.7K / 5 条——写死等于把所有模型
+#: 拉到最低那一档。
+_WEB_SEARCH_PLUGIN: Final[dict[str, Any]] = {"id": "web"}
+
+
+def _capability_name(item: Any) -> str | None:
+    """capability 条目 → 名字。收 ``"X"`` / ``{"X": {...}}`` / ``{"name": "X"}`` 三种形状。"""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict) and len(item) == 1:
+        if isinstance(item.get("name"), str):
+            return item["name"]
+        only = next(iter(item))
+        return only if isinstance(only, str) else None
+    return None
+
+
+def websearch_to_plugin(spec: dict[str, Any]) -> dict[str, Any]:
+    """把 ``WebSearch`` 能力翻成 OpenRouter 的 ``plugins``，并**摘掉这个 capability**。
+
+    没有这一层的话，勾了「联网搜索」的 Agent **不报错也不搜索**：pydantic-ai 的
+    ``WebSearchTool`` 在 ``OpenAIChatModel`` 上翻成 OpenAI 自家的 ``web_search_options``，
+    而 OpenRouter **不实现那个字段**。实测（2026-09-13）：
+
+    * ``web_search_options={"search_context_size":"banana"}`` → **200**，与一个瞎编的
+      字段待遇完全相同；而 ``reasoning_effort="banana"`` / ``plugins=[{"id":"banana"}]``
+      都会 400 并列出合法值——也就是说前者根本没被解析。
+    * 那道本该拦住它的门禁是失效的：``OpenRouterProvider.model_profile`` 按厂商前缀取
+      各家原生 profile，实测 grok / glm / gemini / gpt / deepseek 的
+      ``openai_chat_supports_web_search`` **全是 True**，于是 pydantic-ai 永远不会抛
+      "not supported by this model"，只会安静地发一个没人接的字段。
+
+    结果是最坏的失败形态：模型没拿到任何材料，照常编一个自信的答案，**成品上看不出来**
+    （BTC 实价 $77,665 那天它答 $67K）。
+
+    **必须摘掉 capability**——只加 plugins 不摘它的话，那个死字段照发。
+
+    合并而不是覆盖：手写 spec 的人可以在 ``model_settings.extra_body.plugins`` 里自己
+    写一条带 ``max_results`` / ``engine`` 的 web 插件，那条优先，这里不再重复添加。幂等。
+    """
+    caps = spec.get("capabilities")
+    if not isinstance(caps, list):
+        return spec
+    kept = [c for c in caps if _capability_name(c) != "WebSearch"]
+    if len(kept) == len(caps):
+        return spec
+
+    settings = dict(spec.get("model_settings") or {})
+    extra_body = dict(settings.get("extra_body") or {})
+    plugins = list(extra_body.get("plugins") or [])
+    if not any(isinstance(p, dict) and p.get("id") == "web" for p in plugins):
+        plugins.append(dict(_WEB_SEARCH_PLUGIN))
+    extra_body["plugins"] = plugins
+    settings["extra_body"] = extra_body
+    return {**spec, "capabilities": kept, "model_settings": settings}
+
+
 def custom_capability_types() -> tuple[type, ...]:
     """自定义 capability。v0.2 为空——逃生舱在后续版本。
 
@@ -371,9 +432,13 @@ FORM_CAPABILITIES: Final[tuple[tuple[str, str, str, dict[str, Any] | None], ...]
     (
         "WebSearch",
         "联网搜索",
-        "**由上游去搜**，不占这台机器的网络——这是这条 API 通道上唯一能交给上游做的"
-        "能力。两个条件：上游要是 OpenRouter 这一类（厂商直连一律被拒），模型自己也"
-        "要支持。拿不准用下面的「试运行」跑一次，一次就知道。",
+        "**由上游去搜**，不占这台机器的网络。勾上之后星槎把它翻成 OpenRouter 的 "
+        "`plugins`（见 websearch_to_plugin）——**不能原样交给 pydantic-ai**，它发的是 "
+        "OpenAI 的 `web_search_options`，OpenRouter 不认那个字段且静默丢弃。"
+        "检索引擎由 OpenRouter 自选：grok 这类自带检索的走 native（约 15 条来源），"
+        "其余回退 Exa（5 条）。**材料按 token 计费**，一次调用常多花 1~2 万 prompt "
+        "token，别在不需要时序上勾。验证方法：看返回里的 `usage.prompt_tokens`，"
+        "上万才是真搜了，几百就是没搜。",
         None,
     ),
 )
@@ -580,9 +645,22 @@ def model_report(model_id: str, provider: Provider, info: Any) -> list[Capabilit
         CapabilityCheck(
             "web_search",
             "联网搜索",
-            # **问 profile，不问目录。** 目录里的 web_search_options 只有 17 个模型
-            # 有，而实测 glm-5.3-flash 经 OpenRouter 能搜——OpenRouter 自己有一层
-            # 通用的搜索插件，与模型声明无关。这里的判据必须是那道真闸。
+            # **问 profile，不问目录。** 结论对，但理由曾经写错，订正如下：
+            #
+            # 目录里的 `web_search_options` 只有少数模型声明——那是 **OpenAI 自家**
+            # 那个字段的支持情况，而 OpenRouter 根本不实现它（实测：塞非法值照样
+            # 200，与瞎编的字段同待遇）。所以拿目录当判据是问错了问题。
+            #
+            # 星槎走的是 OpenRouter 的 `plugins`（见 websearch_to_plugin）——那是
+            # 上游的一层**通用注入**，与模型是否声明无关，任何模型都能用。检索引擎
+            # 由 OpenRouter 自选：自带检索的走 native，其余回退 Exa。
+            #
+            # profile 的这个 flag 对 OpenRouter 全系为 True（实测 grok / glm /
+            # gemini / gpt / deepseek），恰好等于"经 plugins 都能搜"，所以判据成立；
+            # 厂商直连全 False，也正确——那条路上确实没有这层插件。
+            #
+            # 注意它**不是** pydantic-ai 那道门禁的真相：那道门禁同样读这个 flag，
+            # 全 True 意味着它永远不抛"模型不支持"，这正是翻译层必须存在的原因。
             tri(bool(profile.get("openai_chat_supports_web_search", False))),
             "由上游去搜。OpenRouter 这类上游整体放行，厂商直连一律不放行。",
         ),
@@ -815,6 +893,8 @@ def build(
     spec = json.loads(spec_json) if isinstance(spec_json, str) else dict(spec_json)
     # 库里可能存着 0.1 时期写下的、from_spec 收不下的 capability 形状。
     spec = runnable_capabilities(spec)
+    # 「联网搜索」必须在这里翻成 OpenRouter 的 plugins，否则勾了等于没勾。
+    spec = websearch_to_plugin(spec)
     schema = json.loads(out_schema) if isinstance(out_schema, str) else out_schema
 
     model_id = spec.get("model")
