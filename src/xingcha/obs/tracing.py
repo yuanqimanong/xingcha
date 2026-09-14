@@ -1,23 +1,15 @@
 """OTel trace 装配。
 
-**它解决的是哪个问题**
+管理面的运行列表回答"跑了几次、花了多少、有没有报错"，回答不了"模型到底看到了什么、
+又吐回了什么"——而调 Agent 的时间几乎全花在后一个问题上。
 
-管理面的运行列表回答"跑了几次、花了多少、有没有报错"。它回答不了**"模型到底看到了
-什么、又吐回了什么"**——而调 Agent 的时间几乎全花在这个问题上：提示词改了一版，
-输出变差了，为什么？
+pydantic-ai 自带 OTel 埋点，把每次模型请求的消息与响应记成 span 属性。所以这里做的不
+是"实现可观测"，而是把 SDK 装好、把导出接上，再补一层星槎自己的 span 把 ``run_id``
+带进去——不然 trace 与运行记录两边对不上，排查时只能靠时间戳猜。
 
-pydantic-ai 自带 OTel 埋点，把每次模型请求的消息与响应都记成 span 属性。所以这里
-要做的不是"实现可观测"，而是**把 SDK 装好、把导出接上**，再补一层星槎自己的 span
-把 ``run_id`` 带进去——不然 trace 与运行记录两边对不上，排查时只能靠时间戳猜。
-
-**三条不能违反的规矩**
-
-1. **默认关。** 打开意味着提示词与模型输出会离开这台机器。这个项目存在的理由就是
-   不想让请求经过别人手里，所以这件事必须是一次显式的决定。
-2. **装配失败不能影响服务。** endpoint 写错、证书过期、Langfuse 挂了——一律降级成
-   "没有 trace"，绝不降级成"服务起不来"。
-3. **关停要 flush。** BatchSpanProcessor 攒批后台发，不 flush 就会丢掉最后那批——
-   而"升级前最后那几次调用"恰好是排查升级问题时最想看的。
+三条规矩：默认关（打开意味着提示词与模型输出会离开这台机器，必须是一次显式决定）；
+装配失败一律降级成"没有 trace"，绝不降级成"服务起不来"；关停要 flush，否则
+BatchSpanProcessor 会丢掉最后那批——而那恰好是排查升级问题时最想看的。
 """
 
 from __future__ import annotations
@@ -68,10 +60,8 @@ class Tracing:
 
 
 def langfuse_headers(public_key: str, secret_key: str) -> dict[str, str]:
-    """Langfuse 的 OTLP 入口用 HTTP Basic。
-
-    这里直接拼而不是让用户自己 base64：让人手算 base64 再贴进配置，是一个必然会
-    出错、而且错了之后只表现为"trace 没上去"的步骤。
+    """Langfuse 的 OTLP 入口用 HTTP Basic。直接拼而不是让用户自己 base64——那是一个
+    必然会出错、而且错了之后只表现为"trace 没上去"的步骤。
     """
     raw = f"{public_key}:{secret_key}".encode()
     return {"Authorization": "Basic " + base64.b64encode(raw).decode("ascii")}
@@ -105,14 +95,10 @@ def setup(
         processor = BatchSpanProcessor(exporter)
         provider.add_span_processor(processor)
 
-        # **必须设成 OTel 全局 provider。**
-        #
-        # 可观测是"按 Agent 开"的（见 builder.enable_instrumentation）：想上报的
-        # Agent 在 spec 里声明 ``capabilities: [Instrumentation]``。而那个 capability
-        # 的默认构造**不带 tracer_provider**——它去拿 OTel 的全局 provider。
-        #
-        # 不设全局的话：声明了能力的 Agent 拿到一个 no-op provider，**一个 span 都
-        # 不发，而且不报错**。实测确认过：设全局之前 +0 个 span，设之后 +2 且带内容。
+        # 必须设成 OTel 全局 provider：可观测是按 Agent 开的（Agent 在 spec 里声明
+        # ``capabilities: [Instrumentation]``），而那个 capability 的默认构造不带
+        # tracer_provider，它去拿 OTel 的全局 provider。不设的话声明了能力的 Agent 拿到
+        # 一个 no-op provider，一个 span 都不发而且不报错（实测：设之前 +0，设之后 +2）。
         from opentelemetry import trace as otel_trace
 
         otel_trace.set_tracer_provider(provider)
@@ -138,9 +124,8 @@ def run_span(
     """一次调用的 span。``tracing`` 为 None 时是零开销的空操作。
 
     用 ``start_as_current_span`` 而不是自己管 context：pydantic-ai 的 span 靠环境
-    context 找父节点，而 context 是 contextvar（按任务隔离）。手动 attach/detach
-    一旦跨了 await 边界就会出现"detach 了别人的 token"这类难查的问题。词法作用域
-    是免费的正确性——代价只是调用点得放在工作真正发生的地方。
+    context 找父节点，而 context 是按任务隔离的 contextvar，手动 attach/detach 一旦跨了
+    await 边界就会出现"detach 了别人的 token"这类难查的问题。
     """
     if tracing is None:
         yield None
@@ -165,12 +150,9 @@ def record_outcome(
 ) -> None:
     """把一次调用的结论写到 span 上。
 
-    收显式关键字而不是"随便给个对象让我 getattr"：命令式路径手上是 ``RunRecord``，
-    流式路径手上是 ``RunOutcome``，两者字段名不完全一样。鸭子类型在这里的结果是
-    某一路悄悄少记几个属性而没人发现——看板上表现为"有些运行没有费用"。
-
-    **不重算任何东西。** span 与 run 行必须是同一份事实的两个视图；这里自己算一遍
-    费用的话，看板和账单就会给出两个不同的数字。
+    收显式关键字而不是随便给个对象来 getattr：命令式路径手上是 ``RunRecord``、流式路径
+    是 ``RunOutcome``，字段名不完全一样，鸭子类型的结果是某一路悄悄少记几个属性而没人
+    发现。也不重算任何东西——span 与 run 行必须是同一份事实的两个视图。
     """
     if span is None:
         return

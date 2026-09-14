@@ -77,7 +77,7 @@ def _restart_hint(key: str) -> None:
     if key not in _STARTUP_ONLY_KEYS:
         return
     typer.secho(
-        "  这一项在启动时读取，**需要重启才生效**：\n"
+        "  这一项在启动时读取，需要重启才生效：\n"
         "    docker compose restart xingcha        （容器部署）\n"
         "    systemctl restart xingcha             （或你自己的方式）\n"
         "  在后台的「设置」页改则当场生效，不用重启。",

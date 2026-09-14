@@ -1,11 +1,8 @@
 """Agent 的增删改查与版本管理。
 
-**版本不可变。** 每次保存产生一个新的 ``agent_version`` 行，``agent.current_version_id``
-指向当前生效的那个。回滚就是把指针挪回去——不是把旧内容写回来。
-
-这样做的直接收益是运行时缓存不需要失效逻辑：Agent 实例按 ``(agent_id, version)``
-缓存，编辑产生新版本号，旧条目自然不再被命中。缓存失效是这类系统最容易出错的地方，
-用不可变版本把它绕过去。
+版本不可变：每次保存产生一个新的 ``agent_version`` 行，``agent.current_version_id``
+指向当前生效的那个，回滚就是把指针挪回去。直接收益是运行时缓存不需要失效逻辑——Agent
+实例按 ``(agent_id, version)`` 缓存，编辑产生新版本号，旧条目自然不再命中。
 """
 
 from __future__ import annotations
@@ -59,13 +56,9 @@ async def resolve(
     也查别名表：slug 发布后不可改名，改名的唯一出路是新建 Agent 并把旧 slug
     登记成别名，让老调用方继续能用。
 
-    ``include_inactive`` 分开**运行时**与**管理面**两种读法，这不是可选的方便：
-
-    * 运行时（``/v1``）必须只看启用的——停用的 slug 就该回 model_not_found，
-      那正是"停用"的含义。
-    * 管理面必须看得见停用的。否则停用之后编辑页 404：**改不了、看不了、连它
-      为什么被停都查不到**，只剩列表页上一个开关。停用本该是可逆的，而一个进去
-      就出不来的状态不叫可逆。实测踩到——把 Agent 全停之后整页的「编辑」全是死链。
+    ``include_inactive`` 分开运行时与管理面两种读法：运行时（``/v1``）只看启用的，停用
+    的 slug 就该回 model_not_found；管理面必须看得见停用的，否则停用之后编辑页 404，
+    改不了也看不了，而停用本该是可逆的。
     """
     active_only = [] if include_inactive else [Agent.is_active.is_(True)]
     row = (
@@ -103,10 +96,8 @@ async def resolve(
 
 
 async def list_active(session: AsyncSession) -> list[ResolvedAgent]:
-    """列出启用的 Agent，按创建时间升序。
-
-    顺序进了契约：``GET /v1/models`` 里 Agent 行必须稳定排在前面且顺序固定，
-    因为部分客户端取 ``data[0]`` 当默认模型。
+    """列出启用的 Agent，按创建时间升序。顺序进了契约：``GET /v1/models`` 里 Agent 行
+    必须稳定在前且顺序固定，因为部分客户端取 ``data[0]`` 当默认模型。
     """
     rows = (
         (
@@ -188,9 +179,8 @@ def parse_bundle(
 ) -> SpecBundle:
     """``agent.yaml`` 文本 → 可以交给 :func:`apply_bundle` 的一束。
 
-    **导入的规矩集中在这一个函数里。** CLI 的 ``agent apply`` 与后台的「导入」
-    都走它——两边各写一遍的话，其中一条路总会先漏掉某个字段，而症状是"导回来的
-    Agent 少了点什么"：表单上看着正常，只有输出变了。
+    导入的规矩集中在这一个函数里，CLI 的 ``agent apply`` 与后台的「导入」都走它——各写
+    一遍的话总有一条路先漏掉某个字段，而症状是表单上看着正常、只有输出变了。
     """
     try:
         spec = yaml.safe_load(yaml_text)
@@ -207,11 +197,9 @@ def parse_bundle(
     if not isinstance(model, str) or not model:
         raise AgentSpecInvalid("AgentSpec 里没有 model。")
 
-    # schema 有两处可能的来源，都要认：
-    #   · 单独给的 schema.json（export 的三文件形状）
-    #   · spec 里内嵌的 output_schema（`agent show` 的输出、手写的 agent.yaml）
-    # 只认前者的话，`agent show x > f.yaml && agent apply f.yaml` 会**静默把结构化
-    # Agent 降成纯文本**——200 依旧，只是再也没有校验了，是最难发现的一种回归。
+    # schema 两处来源都要认：单独给的 schema.json（export 的三文件形状），以及 spec 里
+    # 内嵌的 output_schema（`agent show` 的输出、手写的 agent.yaml）。只认前者的话，
+    # `agent show x > f.yaml && agent apply f.yaml` 会静默把结构化 Agent 降成纯文本。
     if schema_text is None and isinstance(spec.get("output_schema"), dict):
         schema_text = json.dumps(spec["output_schema"], ensure_ascii=False)
 
@@ -431,23 +419,18 @@ class AgentStillActive(XingchaError):
 
 
 async def delete(session: AsyncSession, slug: str) -> None:
-    """彻底删掉一个 Agent。**必须先停用**。
+    """彻底删掉一个 Agent。必须先停用——停用可逆而删除不可逆，所以拆成两下。删完之后
+    调用方收到 ``model_not_found``，而且这个 slug 重新变得可被占用，下一个同名 Agent 会
+    悄悄接管那些调用。
 
-    停用是可逆的那一步，删除不是——所以它被拆成两下，而不是一个按钮。为什么这个操作
-    本身就危险，见 :func:`set_active` 的调用点注释：调用方代码里写着这个 slug，删掉
-    之后它们收到 ``model_not_found``，而且**这个 slug 会重新变得可被占用**——下一个
-    同名 Agent 会悄悄接管那些调用。
-
-    连带处理三类数据，三种不同的取舍：
+    连带处理三类数据，三种取舍：
 
     * ``agent_version`` / ``agent_alias`` —— 外键 ``ondelete=CASCADE``，跟着走。
-    * ``agent_test_run`` / ``quota`` —— **必须手工清**。前者按 slug 存、后者按
-      agent id 存，都没有外键。不清的话：下一个占用同名 slug 的 Agent 会继承别人的
-      试运行记录；而 SQLite 会复用 rowid，一条留下来的配额可能**静默套到将来某个
-      毫不相干的 Agent 头上**。
-    * ``run`` / ``run_usage`` —— **保留**。``run.agent_id`` 是裸整数、没有外键正是
-      为了这一刻：调用记录与账单是已经发生的事实，不该因为清理一个 Agent 而消失，
-      否则「这个月一共花了多少」会对不上。
+    * ``agent_test_run`` / ``quota`` —— 必须手工清（前者按 slug、后者按 agent id 存，
+      都没有外键）。不清的话，下一个占用同名 slug 的 Agent 会继承别人的试运行记录；
+      而 SQLite 复用 rowid，留下来的配额可能静默套到将来某个不相干的 Agent 头上。
+    * ``run`` / ``run_usage`` —— 保留。``run.agent_id`` 是裸整数、没有外键正是为了这
+      一刻：调用记录与账单是已发生的事实，删掉会让「这个月花了多少」对不上。
     """
     row = (await session.execute(select(Agent).where(Agent.slug == slug))).scalar_one_or_none()
     if row is None:
@@ -539,8 +522,8 @@ async def all_groups(session: AsyncSession, keyring: Any) -> list[str]:
 async def rename_group(session: AsyncSession, keyring: Any, old: str, new: str) -> int:
     """把一个分组下的 Agent 全部挪到另一个名字下。返回挪了几个。
 
-    新名字为空 = 挪回默认分组（写 NULL），并把这个名字从登记表里删掉——不然它会
-    以一个空分组的身份留在下拉框里，而用户刚做的动作是"把它去掉"。
+    新名字为空 = 挪回默认分组（写 NULL），并把这个名字从登记表里删掉，否则它会以一个
+    空分组的身份留在下拉框里。
     """
     rows = (await session.execute(select(Agent).where(Agent.group_name == old))).scalars().all()
     target = " ".join(new.split())[:GROUP_NAME_MAX] or None
@@ -556,8 +539,8 @@ async def rename_group(session: AsyncSession, keyring: Any, old: str, new: str) 
 async def current_group(session: AsyncSession, slug: str) -> str | None:
     """某个 Agent 现在在哪个分组。不存在或在默认组都返回 ``None``。
 
-    给 CLI 用：``save`` 把分组当**表单里的一项**处理（不传 = 挪回默认组），而命令行
-    里"这次没提这一项"不等于"把它挪走"。所以 ``agent apply`` 先问一次现值再传回去。
+    给 CLI 用：``save`` 把分组当表单里的一项处理（不传 = 挪回默认组），而命令行里"这次
+    没提"不等于"把它挪走"，所以 ``agent apply`` 先问一次现值再传回去。
     """
     return (
         await session.execute(select(Agent.group_name).where(Agent.slug == slug))

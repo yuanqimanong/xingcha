@@ -1,14 +1,10 @@
-"""裸模型透明直通。
+"""裸模型透明直通。``/v1`` 下所有非自有路径原样反代到上游，包括流式。
 
-**两份既有文档从头到尾没有这一层**——它们把星槎设想成"只暴露 Agent"的控制面。
-但用户的真实痛点是"本地不挂代理就能用任意模型"，所以 ``/v1`` 下所有非自有路径
-原样反代到上游，包括流式。
+这一层刻意做得很笨：除了识别路径与记录用量，它不解析任何东西。笨是优点——上游明天加
+新端点、新参数、新响应字段，这里都不需要改。
 
-这一层刻意做得**很笨**：除了识别路径与记录用量，它不解析任何东西。笨是优点——
-OpenRouter 明天加一个新端点、新参数、新的响应字段，这里都不需要改。
-
-安全上它是本项目风险最高的一段：一个 catch-all 反代后面挂着一把付费 key。
-下面每条卫生措施对应契约 §8 的一行，都不是可选项。
+安全上它是本项目风险最高的一段：一个 catch-all 反代后面挂着一把付费 key。下面每条卫生
+措施对应契约 §8 的一行，都不是可选项。
 """
 
 from __future__ import annotations
@@ -36,11 +32,9 @@ class PathRejected(ValueError):
 
 
 def sanitize_path(rel_path: str) -> str:
-    """归一化并拒绝穿越。
-
-    上游 origin 是 pin 死的，但如果不挡 ``..``，一个 ``/v1/../../admin`` 之类的路径
-    仍可能被上游解释成别的资源。配合可被 CSRF 改写的 base_url（见准入项 A2），
-    这个反代就会变成一个"给任意请求附加付费 key"的通用代理。
+    """归一化并拒绝穿越。上游 origin 是 pin 死的，但不挡 ``..`` 的话，
+    ``/v1/../../admin`` 之类的路径仍可能被上游解释成别的资源——配合可被 CSRF 改写的
+    base_url，这个反代就变成一个"给任意请求附加付费 key"的通用代理。
     """
     p = C.normalize_v1_path(rel_path)
     if not p:
@@ -56,11 +50,9 @@ def sanitize_path(rel_path: str) -> str:
 def forward_headers(incoming: Mapping[str, str], api_key: str) -> dict[str, str]:
     """构造转发给上游的请求头。
 
-    剥掉的是**全部**客户端 IP 类头，不只是 ``X-Forwarded-For``。只剥 XFF 的话，
-    ``Forwarded`` 与 ``CF-Connecting-IP`` 会把真实来源交给上游——中转形同白建。
-
-    注意这与"客户端 → 星槎"那一跳相反：那一跳恰恰**需要** XFF 才能记录真实来源 IP。
-    两处不能照抄同一条配置。
+    剥掉全部客户端 IP 类头，不只是 ``X-Forwarded-For``——只剥 XFF 的话 ``Forwarded``
+    与 ``CF-Connecting-IP`` 会把真实来源交给上游。这与"客户端 → 星槎"那一跳相反：那一
+    跳需要 XFF 才能记录真实来源 IP。
     """
     out = {k: v for k, v in incoming.items() if k.lower() not in C.STRIP_REQUEST_HEADERS}
     out["authorization"] = f"Bearer {api_key}"
@@ -68,10 +60,8 @@ def forward_headers(incoming: Mapping[str, str], api_key: str) -> dict[str, str]
 
 
 def response_headers(upstream: Mapping[str, str]) -> dict[str, str]:
-    """按**白名单**过滤上游响应头。
-
-    必须是白名单：黑名单式只剥 hop-by-hop 就逐字节透传的话，上游的 ``Set-Cookie``
-    会落在你自己的域上（实测上游确实会带），任何 echo/debug 头也一并出去。
+    """按白名单过滤上游响应头。黑名单式只剥 hop-by-hop 的话，上游的 ``Set-Cookie``
+    会落在你自己的域上（实测上游确实会带），echo/debug 头也一并出去。
     """
     return {k: v for k, v in upstream.items() if k.lower() in C.ALLOW_RESPONSE_HEADERS}
 
@@ -79,13 +69,12 @@ def response_headers(upstream: Mapping[str, str]) -> dict[str, str]:
 async def read_body_capped(request: Request) -> bytes:
     """读取请求体，超过上限即 413。
 
-    整块缓冲而不是流式转发是有意的：把异步迭代器交给 httpx2 会强制 chunked 编码，
-    而部分中转（New API 一类）会拒收 chunked 的请求体。代价是必须自己设上限——
-    没有上限时一个大 POST 就能打死这个同时承载全部流量、SQLite 写入和用量缓冲的
-    单进程。
+    整块缓冲而不是流式转发：把异步迭代器交给 httpx2 会强制 chunked 编码，而部分中转
+    （New API 一类）拒收 chunked 请求体。代价是必须自己设上限，否则一个大 POST 就能
+    打死这个单进程。
 
-    ``Content-Length`` 先查一次是为了**在读之前**就拒掉，不给攻击者免费的带宽；
-    但它可以撒谎（或者根本没有，chunked 就没有），所以边读边累计才是真正的防线。
+    ``Content-Length`` 先查一次是为了在读之前就拒掉；但它可以撒谎（chunked 干脆没有），
+    所以边读边累计才是真正的防线。
     """
     declared = request.headers.get("content-length")
     if declared is not None:
@@ -106,10 +95,8 @@ async def read_body_capped(request: Request) -> bytes:
 
 
 def wants_stream(body: bytes) -> bool:
-    """粗判是否流式请求。
-
-    只做一次极轻的探测：这一层的原则是不解析上游语义，判错的代价也只是选错了
-    转发方式（两种方式对客户端等价），所以不值得为它引入完整的 JSON 解析开销。
+    """粗判是否流式请求。只做一次极轻的探测：这一层不解析上游语义，判错的代价也只是
+    选错转发方式（两种对客户端等价），不值得引入完整的 JSON 解析开销。
     """
     return b'"stream"' in body and b'"stream": false' not in body and b'"stream":false' not in body
 
@@ -120,10 +107,7 @@ def wants_stream(body: bytes) -> bool:
     include_in_schema=False,
 )
 async def passthrough(path: str, request: Request) -> Response:
-    """把请求原样转发给上游。
-
-    这条路由**必须最后注册**：它是 catch-all，先注册会把自有路径也吞掉。
-    """
+    """把请求原样转发给上游。必须最后注册：它是 catch-all，先注册会把自有路径吞掉。"""
     state = request.app.state.xc
 
     try:
@@ -152,22 +136,15 @@ async def passthrough(path: str, request: Request) -> Response:
 
 
 def reserve_passthrough_quota(request: Request, tracker: RunTracker) -> None:
-    """给直通请求占配额名额。**两条直通路径共用这一份。**
+    """给直通请求占配额名额。两条直通路径共用这一份。
 
-    **为什么必须共用**
+    直通有两个入口：``/v1/chat/completions`` 里 model 带 ``/`` 的那一支由
+    ``openai_compat`` 处理（``chat/completions`` 是自有路径），其余 ``/v1/*`` 走
+    catch-all。只写在 catch-all 里的话，``quota_on_passthrough=True`` 对裸模型完全无效
+    ——而裸模型直通恰恰是这个项目的首要用途。
 
-    直通有两个入口，很容易被当成一个：
-
-    - ``/v1/chat/completions`` 里 model 带 ``/`` 的那一支（裸模型），由
-      ``openai_compat`` 处理——因为 ``chat/completions`` 是**自有路径**；
-    - 其余 ``/v1/*`` 的 catch-all（embeddings、models/x/y/endpoints……），由这里处理。
-
-    这段逻辑原先只写在 catch-all 里，于是 ``quota_on_passthrough=True``
-    **对裸模型完全无效**——而裸模型直通恰恰是这个项目的首要用途。开关看着打开了、
-    钱刹车根本没落在要刹的那条路上。
-
-    配额**默认不执行**（契约 §8 冻结了这一点，打开它是一次收紧）。打开之后
-    ``/version`` 的 features 会多一项，调用方能探测到这个变化。
+    配额默认不执行（契约 §8 冻结，打开它是一次收紧）。打开后 ``/version`` 的 features
+    会多一项，调用方能探测到。
     """
     state = request.app.state.xc
     if state.quota is None or not state.settings.quota_on_passthrough:
@@ -183,10 +160,8 @@ def reserve_passthrough_quota(request: Request, tracker: RunTracker) -> None:
 
 
 def _model_hint(body: bytes, rel: str) -> str:
-    """从请求体里粗取 model，取不到就用路径。
-
-    直通层不解析上游语义，但 run 记录里没有 model 就几乎没法看——所以这里做一次
-    极轻的探测，失败就退回路径名，不为此引入完整解析。
+    """从请求体里粗取 model，取不到就用路径。直通层不解析上游语义，但 run 记录里没有
+    model 就几乎没法看，所以做一次极轻的探测，失败退回路径名。
     """
     import json
 
@@ -210,8 +185,8 @@ async def execute_forward(
 ) -> Response:
     """执行转发并记录。Agent 路径与直通路径共用这一条。
 
-    流式与非流式的**提交时机不同**：非流式在这里就提交；流式交给
-    ``tracker.wrap_stream``，因为用量在最后一帧里，此刻流还没开始发。
+    流式与非流式的提交时机不同：非流式在这里就提交，流式交给 ``tracker.wrap_stream``
+    ——用量在最后一帧里，此刻流还没开始发。
     """
     try:
         if wants_stream(body):
@@ -263,12 +238,11 @@ async def forward_streaming(
 ) -> Response:
     """流式转发。
 
-    用 ``aiter_raw()`` 而不是 ``aiter_bytes()``：前者给的是**未解码**的字节，配合原样
-    转发的 ``content-encoding`` 才自洽。用 ``aiter_bytes()`` 会解压，但响应头里仍写着
-    ``gzip``，客户端会二次解压失败。
+    用 ``aiter_raw()`` 而不是 ``aiter_bytes()``：前者给的是未解码的字节，配合原样转发的
+    ``content-encoding`` 才自洽；后者会解压而响应头里仍写着 ``gzip``，客户端二次解压失败。
 
-    ``client.stream()`` 的上下文必须活到整个响应体发送完毕，所以这里在生成器**内部**
-    打开它，而不是先拿到 response 再返回——后者会在返回时关掉连接，客户端只收到空流。
+    ``client.stream()`` 的上下文必须活到整个响应体发完，所以在生成器内部打开——先拿到
+    response 再返回的话，连接会在返回时关掉，客户端只收到空流。
     """
     # 用一个 Future 把状态码与响应头从生成器里传出来，因为 StreamingResponse 需要
     # 在开始迭代之前就知道它们。

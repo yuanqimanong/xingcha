@@ -61,8 +61,8 @@
       </div>
     </form>
     <div class="hint mt4">
-      两个上限至少设一个。<strong>次数上限精确</strong>；金额上限是事后判定，
-      最多超出「在飞请求数 × 单次费用」。查不到单价的模型只受次数上限约束。
+      两个上限至少设一个。<strong>次数上限精确</strong>；金额上限在调用结束后才判定，
+      最多超出「并发中的请求数 × 单次费用」。查不到单价的模型只受次数上限约束。
     </div>
   </div>
 </div>
@@ -107,7 +107,7 @@
 <div class="card">
   <div class="card-head">
     <h2>当前状态</h2>
-    <span class="small muted">窗口口径一律 UTC</span>
+    <span class="small muted">窗口按 UTC 计算</span>
   </div>
   <div class="card-body flush">
     {% if rules %}

@@ -1,10 +1,8 @@
-"""表定义。
-
-**这里的每一条约束都各自挡住一类事故，理由写在字段边上。**
+"""表定义。每一条约束各自挡住一类事故，理由写在字段边上。
 
 SQLite 的 ``ALTER TABLE`` 能力有限：事后给一列加 ``NOT NULL`` 或 ``UNIQUE`` 要走
-「建新表 → 拷数据 → 换名」，在有真实数据的线上库上就是一次停机迁移。而升级档位是
-「重启 + 自动迁移」，停机迁移直接违背它。所以下面这些必须在 0001 就写对：
+「建新表 → 拷数据 → 换名」，在有数据的线上库上就是一次停机迁移，而升级档位是
+「重启 + 自动迁移」。所以下面这些必须在 0001 就写对：
 
 - 所有主体表的 ``user_id NOT NULL``（v1 单用户，但 v2 加多用户不能停机）
 - ``agent.slug`` 的 **UNIQUE**（slug 是全局命名空间，见契约 §3）
@@ -15,9 +13,8 @@ SQLite 的 ``ALTER TABLE`` 能力有限：事后给一列加 ``NOT NULL`` 或 ``
 - ``run_usage.cost_usd`` 声明为 **TEXT**（存 Decimal 的 str；float 存不住，
   且 NULL「无法定价」必须与真实的 0 费用可区分）
 
-时间一律存 **ISO-8601 UTC 字符串**。不用 DateTime 列类型：SQLite 无原生日期类型，
-SQLAlchemy 的 SQLite 方言在取回时会丢掉 tzinfo，而配额窗口的口径必须是明确的 UTC。
-存字符串让这件事在 schema 层面就是显式的。
+时间一律存 ISO-8601 UTC 字符串。不用 DateTime 列类型：SQLite 无原生日期类型，
+SQLAlchemy 的 SQLite 方言取回时会丢掉 tzinfo，而配额窗口的口径必须是明确的 UTC。
 """
 
 from __future__ import annotations
@@ -47,8 +44,7 @@ class Base(DeclarativeBase):
 class Setting(Base):
     """键值配置。敏感值（OpenRouter key）Fernet 加密后存 ``value_enc``。
 
-    上游 key 的**唯一**长期存放处。环境变量只在首次启动时一次性导入——环境变量会进
-    ``docker inspect`` 与 ``/proc/<pid>/environ``。
+    上游 key 的唯一长期存放处，环境变量只在首次启动时一次性导入。
     """
 
     __tablename__ = "setting"
@@ -65,10 +61,8 @@ class Setting(Base):
 
 
 class User(Base):
-    """v1 只有一行（``id=1``，由 0001 seed）。
-
-    但表从第一天就存在且所有主体表都 ``NOT NULL`` 引用它——v2 加多用户时只需往这张表
-    插行，不需要动任何既有表结构。
+    """v1 只有一行（``id=1``，由 0001 seed）。表从第一天就存在且所有主体表都
+    ``NOT NULL`` 引用它，加多用户时只需往这张表插行，不用动既有表结构。
     """
 
     __tablename__ = "user"
@@ -85,9 +79,9 @@ class User(Base):
 
 
 class Token(Base):
-    """API 令牌。**永不存明文**，明文只在签发时展示一次。
+    """API 令牌。永不存明文，明文只在签发时展示一次。
 
-    ``kid`` 是唯一查表键，与 secret 无关、不可推导（为什么不用 hash：见契约里
+    ``kid`` 是唯一查表键，与 secret 无关、不可推导（为什么不用 hash 见契约的
     ``TOKEN_ENVELOPE_RE``）。
     """
 
@@ -130,11 +124,10 @@ class Token(Base):
 
 
 class Agent(Base):
-    """``slug`` 就是对外的 model id。
+    """``slug`` 就是对外的 model id，是全局唯一命名空间而不是 per-user。
 
-    ``slug`` 是 **全局** 唯一命名空间，不是 per-user。v2 加多用户时若改成 per-user，
-    同一个 ``model="extract"`` 会随调用 token 的归属解析到不同 Agent——所有既有
-    调用方的语义静默改变。per-user 命名空间只能通过新前缀 ``xc:u/<user>/<slug>``
+    改成 per-user 的话，同一个 ``model="extract"`` 会随调用 token 的归属解析到不同
+    Agent，所有既有调用方的语义静默改变。per-user 只能通过新前缀 ``xc:u/<user>/<slug>``
     引入，裸 slug 的解析规则永不改变。
     """
 
@@ -146,11 +139,9 @@ class Agent(Base):
     description: Mapped[str | None] = mapped_column(sa.Text)
     is_active: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=True)
 
-    #: 分组，只用于后台的归类展示。**不进 slug、不进 /v1/models**——分组是给人
-    #: 整理用的，一旦它能影响解析，改个分组就静默改变了调用方看到的 model id。
-    #:
-    #: NULL = 还没分过组。不给默认值是因为"没分过"和"被明确放进一个叫默认的组"
-    #: 是两件事，而前者才是历史行的真相。
+    #: 分组，只用于后台的归类展示。不进 slug、不进 /v1/models——一旦它能影响解析，改个
+    #: 分组就静默改变了调用方看到的 model id。NULL = 还没分过组，与"被明确放进一个叫
+    #: 默认的组"是两件事。
     group_name: Mapped[str | None] = mapped_column(sa.Text)
 
     current_version_id: Mapped[int | None] = mapped_column(sa.Integer)
@@ -163,14 +154,11 @@ class Agent(Base):
 
 
 class AgentTestRun(Base):
-    """后台「试运行」的记录。**与 run 分开，这是有意的。**
+    """后台「试运行」的记录。与 run 分开是有意的。
 
-    ``run`` 是账单与配额的事实来源；试运行是管理员按未保存的表单跑的一次实验，
-    既不进任何调用方的账、也不占配额。混进去的后果是"这个月花了多少"里掺着调试
-    开销——而那个数是要拿去对账的。
-
-    另一半理由是隐私取舍不同：这张表**存内容**（提示词原文与模型输出的完整链路），
-    而 ``run`` 从来不存。两种保留期不该被同一张表的清理策略绑在一起。
+    ``run`` 是账单与配额的事实来源，而试运行既不进账也不占配额——混进去会让"这个月
+    花了多少"掺上调试开销，而那个数是要拿去对账的。另一半理由是隐私取舍不同：这张表
+    存内容（提示词原文与模型输出的完整链路），``run`` 从来不存。
 
     按 slug 只留最近 3 条，写入时顺手删旧的（见 services/agent_test.py）。
     """
@@ -205,9 +193,9 @@ class AgentTestRun(Base):
 class AgentAlias(Base):
     """slug 改名的唯一出路。
 
-    slug 发布后不可改名——调用方的代码里写着它。改名的正确做法是新建 Agent 并把旧
-    slug 登记成别名，永久解析到新 Agent。这张表必须在 0001 就存在，否则第一次改名时
-    就得加表 + 改解析逻辑，而那时候线上已经有调用方了。
+    slug 发布后不可改名——调用方的代码里写着它。正确做法是新建 Agent 并把旧 slug 登记
+    成别名，永久解析到新 Agent。表必须在 0001 就存在，否则第一次改名时要动解析逻辑，
+    而那时线上已经有调用方了。
     """
 
     __tablename__ = "agent_alias"
@@ -221,14 +209,11 @@ class AgentAlias(Base):
 
 
 class AgentVersion(Base):
-    """``spec_json`` 整块存 AgentSpec dict，不拆列。
+    """``spec_json`` 整块存 AgentSpec dict，不拆列——拆列意味着 pydantic-ai 每改一次
+    字段就要迁移一次。整块存 + 写库前用官方 schema 校验，版本适配集中在 core/builder.py。
 
-    拆列意味着 pydantic-ai 每次改字段都要迁移一次。整块存 + 写库前用官方 schema
-    校验，把所有版本适配集中在 core/builder.py 一个文件里。
-
-    注意 ``spec_json`` 必须是 ``model_dump(by_alias=True)`` 的结果：
-    ``json_schema_path`` 字段的 alias 是 ``$schema`` 且未开 ``populate_by_name``，
-    写全名会被静默丢弃，round-trip 会丢字段。
+    必须是 ``model_dump(by_alias=True)`` 的结果：``json_schema_path`` 的 alias 是
+    ``$schema`` 且未开 ``populate_by_name``，写全名会被静默丢弃。
     """
 
     __tablename__ = "agent_version"
@@ -243,10 +228,8 @@ class AgentVersion(Base):
     #: 四档全列。当初只跑 T2，不预留的话补 T1 时就是一次重建表的迁移；现已全开。
     tier: Mapped[str] = mapped_column(sa.Text, nullable=False, default=C.Tier.T2.value)
 
-    #: 输出 JSON Schema，NULL = 纯文本。
-    #:
-    #: 存的是 **$defs 内联展开后** 的 schema，不是用户提交的原文。否则 validator 用
-    #: 带 $ref 的原文、模型收到展开版，两边不是同一份约束。
+    #: 输出 JSON Schema，NULL = 纯文本。存的是 $defs 内联展开后的 schema 而不是用户
+    #: 提交的原文，否则 validator 用带 $ref 的原文、模型收到展开版，两边不是同一份约束。
     out_schema: Mapped[str | None] = mapped_column(sa.Text)
 
     changelog: Mapped[str | None] = mapped_column(sa.Text)
@@ -271,10 +254,8 @@ class AgentVersion(Base):
 
 
 class Run(Base):
-    """一次调用一行。Agent 路径与直通路径**共用**这张表。
-
-    共用是有意的：两条路径花的是同一把上游 key 的钱，分表会让「这个月一共花了多少」
-    变成一次 UNION，而那正是最常被问的问题。用 ``kind`` 区分。
+    """一次调用一行。Agent 路径与直通路径共用这张表，用 ``kind`` 区分——两条路径花的
+    是同一把上游 key 的钱，分表会让最常被问的「这个月一共花了多少」变成一次 UNION。
     """
 
     __tablename__ = "run"
@@ -300,11 +281,9 @@ class Run(Base):
     #: 对应 contract.ErrorType 的值。
     error_type: Mapped[str | None] = mapped_column(sa.Text)
 
-    #: 请求从哪来。**key 泄漏时第一个要回答的问题是"它现在被谁在用"**，而
-    #: 只记 token_id 答不了——那只说明用的是哪把钥匙，不说明是谁在开门。
-    #:
-    #: 取自 X-Forwarded-For（仅在 trusted_proxies 允许时）或直连的 peer 地址。
-    #: 历史行是 NULL，如实表示"那时候没记"，不是 "unknown"。
+    #: 请求从哪来。key 泄漏时第一个要回答的是"它现在被谁在用"，而只记 token_id 只说明
+    #: 用的是哪把钥匙。取自 X-Forwarded-For（仅在 trusted_proxies 允许时）或直连的 peer
+    #: 地址；历史行是 NULL，如实表示"那时候没记"。
     client_ip: Mapped[str | None] = mapped_column(sa.Text)
     #: User-Agent 原文，截断存。用来区分"业务代码"和"某人拿 curl 在试"。
     user_agent: Mapped[str | None] = mapped_column(sa.Text)
@@ -324,10 +303,9 @@ class Run(Base):
 class RunUsage(Base):
     """token 明细与费用。字段对齐 pydantic-ai 的 ``RunUsage``。
 
-    **口径：整轮累计**，包含全部 schema 重试与工具往返产生的 token 与费用。
-    一次 200 背后可能有 ``1 + retries`` 次模型调用。要折算真实产出成本，用
-    ``schema_retries`` 自行换算——这个口径写进了契约，事后"修正"成只报最后一次
-    会让所有历史账单数字漂移。
+    口径是整轮累计，含全部 schema 重试与工具往返的 token 与费用（一次 200 背后可能有
+    ``1 + retries`` 次模型调用）。要折算真实产出成本用 ``schema_retries`` 自行换算——
+    这个口径写进了契约，事后改成只报最后一次会让所有历史账单数字漂移。
     """
 
     __tablename__ = "run_usage"
@@ -349,10 +327,8 @@ class RunUsage(Base):
 
     #: schema 违规的**次数**（自己数）。
     schema_violations: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
-    #: 框架真实的重试序号（读 ``RunContext.retry``）。
-    #:
-    #: 两个必须分开：自己数的计数器在重试耗尽时会多计 1（预算耗尽后不再重试却仍计了
-    #: 一次），正好在最需要精确告警的失败 run 上系统性偏移一格。
+    #: 框架真实的重试序号（读 ``RunContext.retry``）。与自己数的计数器必须分开：后者在
+    #: 重试耗尽时会多计 1，正好在最需要精确告警的失败 run 上系统性偏移一格。
     schema_retries: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
 
     #: **TEXT，存 Decimal 的 str。** NULL = 无法定价，与真实的 0 费用可区分。
@@ -362,11 +338,9 @@ class RunUsage(Base):
         sa.Text, nullable=False, default=C.CostSource.UNKNOWN.value
     )
 
-    #: 上游返回的额外计量维度（reasoning tokens、audio tokens 等）。
-    #:
-    #: 存 JSON 而不是加列：``RunUsage.__init__`` 接受任意 kwargs 并 setattr 成动态属性，
-    #: provider 会借此塞新字段（实测 OpenRouter 会塞 ``output_reasoning_tokens``）。
-    #: 上游每加一个维度就加一列的话，迁移会没完没了。
+    #: 上游返回的额外计量维度（reasoning tokens、audio tokens 等）。存 JSON 而不是加列：
+    #: ``RunUsage.__init__`` 接受任意 kwargs 并 setattr 成动态属性，provider 会借此塞新
+    #: 字段，每加一个维度就加一列的话迁移会没完没了。
     extra_json: Mapped[str | None] = mapped_column(sa.Text)
 
     __table_args__ = (
@@ -385,12 +359,10 @@ class RunUsage(Base):
 class Quota(Base):
     """三级主体 × 三种窗口。
 
-    表结构在 0001 就位，执行逻辑后来才加（services/quota.py）——建表不花什么成本，
-    而补执行逻辑时不用再动 schema，这正是 expand-contract 想要的形状。契约 §8
-    冻结的是另一件事：**直通路径**默认不执行配额。
+    表结构在 0001 就位，执行逻辑后来才加（services/quota.py）——补逻辑时不用再动
+    schema。契约 §8 冻结的是另一件事：直通路径默认不执行配额。
 
-    窗口口径一律 **UTC**。用本地时区会让"今天"的边界随部署机时区变化，跨时区对账
-    时对不上。
+    窗口口径一律 UTC：用本地时区会让"今天"的边界随部署机时区变化。
     """
 
     __tablename__ = "quota"
@@ -418,10 +390,9 @@ class Quota(Base):
 
 
 class WebSession(Base):
-    """管理后台的登录会话。
-
-    与 API token 完全分开：``sk-xc-`` 是给机器用的、走 Bearer 头；后台会话是给浏览器
-    用的、走 SameSite=Strict 的 cookie。混用会让一个泄漏的 API key 直接拿到后台权限。
+    """管理后台的登录会话。与 API token 完全分开：``sk-xc-`` 给机器用、走 Bearer 头，
+    后台会话给浏览器用、走 SameSite=Strict 的 cookie。混用会让一个泄漏的 API key 直接
+    拿到后台权限。
     """
 
     __tablename__ = "web_session"

@@ -1,10 +1,9 @@
 """把一次 ``/v1`` 调用记成一行 run。
 
-Agent 路径与直通路径**共用**这条链路：两条路径花的是同一把上游 key 的钱，分开记
-会让「这个月一共花了多少」变成一次 UNION，而那正是最常被问的问题。
+Agent 路径与直通路径共用这条链路：两条路径花的是同一把上游 key 的钱，分开记会让最常
+被问的「这个月一共花了多少」变成一次 UNION。
 
-流式的用量在最后一帧里。为了不丢掉流式调用的费用，这里给流套一层很薄的嗅探——
-只看尾部，不缓冲整个流（缓冲整个流就等于取消了流式）。
+流式的用量在最后一帧里，所以这里给流套一层很薄的嗅探，只看尾部不缓冲整个流。
 """
 
 from __future__ import annotations
@@ -26,9 +25,7 @@ _TAIL_BYTES = 64 * 1024
 
 
 def extract_usage(payload: dict[str, Any]) -> dict[str, int]:
-    """从 OpenAI 形状的响应里取 token 明细。
-
-    上游随时可能加维度，所以这里只认已知字段、其余交给 ``extra_json``——
+    """从 OpenAI 形状的响应里取 token 明细。只认已知字段、其余交给 ``extra_json``——
     一个因为多了个键就抛异常的解析器会让计量在某天早上突然全线失败。
     """
     u = payload.get("usage") or {}
@@ -45,15 +42,12 @@ def extract_usage(payload: dict[str, Any]) -> dict[str, int]:
 
 
 def extract_upstream_cost(payload: dict[str, Any]) -> Decimal | None:
-    """取上游**自己报的**费用。
-
-    OpenRouter 会在 ``usage.cost`` 里回真实扣费（还有
+    """取上游自己报的费用（``usage.cost``，还有
     ``usage.cost_details.upstream_inference_cost``）。这是唯一非预估的数字。
 
-    为什么必须自己取：pydantic-ai 会自动填 ``RunUsage.cost``，但填的是
-    **genai-prices 的估价**，不是上游账单——上游 body 里那个 ``cost`` 因为是 float
-    被 ``_map_usage`` 的 ``isinstance(v, int)`` 过滤掉了，哪儿都没留（实测）。
-    所以"预估 vs 实际"这件事只能在 HTTP 层做。
+    必须自己取：pydantic-ai 填的 ``RunUsage.cost`` 是 genai-prices 的估价，而上游 body
+    里那个 ``cost`` 是 float，被 ``_map_usage`` 的 ``isinstance(v, int)`` 过滤掉了
+    （实测）。所以"预估 vs 实际"只能在 HTTP 层做。
     """
     u = payload.get("usage")
     if not isinstance(u, dict):
@@ -76,11 +70,11 @@ def price(
 ) -> tuple[Decimal | None, str]:
     """按目录价算费用，返回 ``(金额, 来源)``。
 
-    catalog 是主价源：实测它对在售模型 424/424 全有价格，而 genai-prices 只覆盖
-    66.7%（漏的全是新模型与 ``:free`` / ``:batch`` 变体，恰好是最省钱那些）。
+    catalog 是主价源：实测它对在售模型 424/424 全有价格，而 genai-prices 只覆盖 66.7%
+    （漏的全是新模型与 ``:free`` / ``:batch`` 变体）。
 
-    ``cache_read_tokens`` 是 ``input_tokens`` 的**子集**（包含式语义），所以要先减
-    再按缓存单价补回来。不做这一步会系统性高估——实测同一次调用高估约 16%。
+    ``cache_read_tokens`` 是 ``input_tokens`` 的子集，所以要先减再按缓存单价补回来——
+    不做这一步会系统性高估，实测同一次调用高估约 16%。
     """
     info: ModelInfo | None = catalog.get(model_id)
     if info is None or info.prompt_price is None or info.completion_price is None:
@@ -120,11 +114,9 @@ def _apply(rec: RunRecord, payload: dict[str, Any], catalog: ModelsCatalog) -> N
     executed_model = payload.get("model") or rec.model
     rec.usage_model = executed_model
 
-    # **上游自己报的费用优先。** 那是唯一非预估的数字。
-    #
-    # 目录价是好的回落，但它算的是"按标价应该花多少"，而上游实际扣费会受平台抽成、
-    # 缓存计价、provider 路由影响。两者有系统性差异，而 cost_source 让这件事
-    # 在数据里是可见的——不至于让人把预估当账单。
+    # 上游自己报的费用优先，那是唯一非预估的数字。目录价算的是"按标价应该花多少"，而
+    # 实际扣费受平台抽成、缓存计价、provider 路由影响；cost_source 让这个差异在数据里
+    # 可见，不至于让人把预估当账单。
     upstream = extract_upstream_cost(payload)
     if upstream is not None:
         rec.cost_usd = upstream
@@ -201,10 +193,9 @@ def _scan_sse_tail(tail: bytes, rec: RunRecord, catalog: ModelsCatalog) -> None:
 class RunTracker:
     """一次调用的记录器。Agent 路径与直通路径共用。
 
-    **提交时机对流式和非流式不同**，这是这个类存在的理由：非流式在处理器返回时
-    用量就齐了；流式的用量在最后一帧里，处理器返回时流还没开始发。所以流式必须
-    等 :meth:`wrap_stream` 的迭代器耗尽才提交——放在 ``finally`` 里提交会得到一条
-    永远 0 token 的记录。
+    这个类存在的理由是提交时机对流式和非流式不同：非流式在处理器返回时用量就齐了，流式
+    的用量在最后一帧里、处理器返回时流还没开始发，必须等 :meth:`wrap_stream` 的迭代器
+    耗尽才提交——放在 ``finally`` 里提交会得到一条永远 0 token 的记录。
     """
 
     __slots__ = ("_buffer", "_catalog", "_reservation", "_submitted", "_t0", "rec")
@@ -216,12 +207,10 @@ class RunTracker:
 
         state = request.app.state.xc
         principal = getattr(request.state, "principal", None)
-        # **client.host 已经是可信的那个值，不要自己解 X-Forwarded-For。**
-        #
-        # uvicorn 在 `forwarded_allow_ips` 命中时才用 XFF 改写 scope["client"]，
-        # 而那个白名单来自 XINGCHA_TRUSTED_PROXIES（默认谁都不信）。在这里自己
-        # 读一遍头，就是把信任判定写第二遍——而写第二遍的那份必然更宽松：任何人
-        # 都能伪造 XFF，于是调用记录里的来源 IP 变成"调用方说他是谁"。
+        # client.host 已经是可信的那个值，不要自己解 X-Forwarded-For：uvicorn 只在
+        # `forwarded_allow_ips`（来自 XINGCHA_TRUSTED_PROXIES，默认谁都不信）命中时才用
+        # XFF 改写 scope["client"]。自己再读一遍头就是把信任判定写第二遍，而那一份必然
+        # 更宽松——任何人都能伪造 XFF，来源 IP 就变成"调用方说他是谁"。
         self.rec = RunRecord(
             id=new_run_id(),
             kind=kind,

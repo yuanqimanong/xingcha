@@ -217,7 +217,7 @@
                （见 _model_report.html 末尾）。分成两张卡，用户得同时盯着两处才看得出
                "换模型之后哪些东西变了"。 #}
             <p class="muted small mb4">
-              <strong>能力</strong>：只列<strong>这条 API 通道上能用的</strong>，随所选模型变化。
+              <strong>能力</strong>：只列<strong>当前模型支持的</strong>，换模型会跟着变。
             </p>
             {# 这一块随模型变——见 _model_report.html 末尾的 hx-swap-oob。 #}
             <div id="cap-list">
@@ -355,8 +355,8 @@
               <textarea id="output_schema" name="output_schema" rows="16" class="mono"
                         placeholder='{&#10;  "type": "object",&#10;  "properties": {&#10;    "客户名称": {"type": "string", "description": "合同甲方的完整名称"}&#10;  },&#10;  "required": ["客户名称"]&#10;}'>{{ form.schema }}</textarea>
               <div class="hint">
-                顶层必须是 <code>"type": "object"</code>。不支持 <code>pattern</code>（正则会在
-                服务进程里执行，一条灾难性回溯就能让服务停摆）与指向外部的 <code>$ref</code>。
+                顶层必须是 <code>"type": "object"</code>。出于安全限制，不支持 <code>pattern</code>
+                与指向外部的 <code>$ref</code>。
                 <strong>留空即纯文本输出。</strong>
               </div>
               {# 从零手写 JSON Schema 是这一页最劝退的一步。给一个能直接改的样板，
@@ -410,7 +410,7 @@
                     </label>
                     <div class="hint mt4">
                       按 Agent 单独开，而不是全局一刀切：一个跑客户合同的 Agent 与一个跑内部
-                      分类的 Agent，对"对话内容能不能离开这台机器"的答案通常不一样。
+                      分类的 Agent，对「对话内容能不能离开这台机器」的答案通常不一样。
                     </div>
                     {% else %}
                     <div class="notice mb4">

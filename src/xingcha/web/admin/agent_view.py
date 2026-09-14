@@ -158,9 +158,9 @@ async def form_shell(request: Request) -> dict[str, Any]:
 def settings_view(spec: dict[str, Any]) -> dict[str, Any]:
     """提示词组装/模型参数/能力/可观测 几块的回填值。
 
-    **这里逐项挑键，所以 form_view 新增字段时必须同步。** 漏掉一项不会报错——
-    模板里读到的是 Jinja 的 Undefined，渲染成空串，于是编辑页那一栏看起来"从来
-    没填过"，一保存就把用户设过的东西清掉。刚在 user_template 上踩过一次。
+    这里逐项挑键，所以 form_view 新增字段时必须同步。漏掉一项不会报错——模板读到 Jinja
+    的 Undefined、渲染成空串，编辑页那一栏看起来"从来没填过"，一保存就把用户设过的东西
+    清掉。
     """
 
     view = builder.form_view(spec)
@@ -206,9 +206,8 @@ def model_report_ctx(request: Request, model: str) -> dict[str, Any]:
     def usable(cap_key: str) -> bool:
         """这个模型明确说了不支持才算不支持。
 
-        ``unknown`` 按**可用**处理：目录没有能力信息时（厂商直连的 /models 常常
-        只回一个 id）把选项藏起来，等于因为"不知道"而把一个明明能用的能力拿走。
-        实测 DeepSeek 直连的深度思考就是这种情况——目录一片空白，而它真的会想。
+        ``unknown`` 按可用处理：目录没有能力信息时（厂商直连的 /models 常常只回一个 id）
+        把选项藏起来，等于因为"不知道"而把一个明明能用的能力拿走。
         """
         c = by_key.get(cap_key)
         return c is None or c.state != "no"
@@ -240,10 +239,9 @@ def model_report_ctx(request: Request, model: str) -> dict[str, Any]:
 def take_saved(request: Request, session: Any) -> Any:
     """取走"刚保存成 vN"的一次性提示。
 
-    保存走的是 POST-redirect-GET，所以结果必须经 flash 带过来——直接在 GET 里写死
-    ``None`` 的话，模板里那一块永远不显示，而它同时承载着**判档降级的说明**
-    （"你请求了 T1，但这个模型不支持原生约束，已降级到 T2"）。那句话丢了，
-    用户会以为自己拿到了 T1 的原生约束，而实际跑的是 T2 的校验后重试。
+    保存走 POST-redirect-GET，结果必须经 flash 带过来：模板里那一块同时承载着判档降级的
+    说明（"你请求了 T1，但这个模型不支持原生约束，已降级到 T2"），那句话丢了用户会以为
+    自己拿到了 T1。
     """
     if session is None:
         return None
@@ -284,12 +282,9 @@ def chain_rows(messages: list[Any]) -> list[Any]:
     """
     rows: list[Any] = []
 
-    # 系统指令**排在最前**，而且只出现一次。
-    #
-    # 它挂在 ModelRequest 上，而上游只挂在**最后一个**上——照原位渲染的话，它会
-    # 夹在少样本示例中间，读起来像是"演示完两轮之后才告诉模型它是谁"。而实际上
-    # 它对整轮都生效。单拎出来还有一个好处：看得见 Agent 自己的指令与调用方追加
-    # 的那段拼在一起之后长什么样。
+    # 系统指令排在最前且只出现一次：它挂在 ModelRequest 上、而上游只挂在最后一个上，
+    # 照原位渲染会夹在少样本示例中间，读起来像"演示完两轮之后才告诉模型它是谁"。单拎
+    # 出来还能看见 Agent 自己的指令与调用方追加的那段拼起来是什么样。
     for msg in messages:
         text = getattr(msg, "instructions", None)
         if text:

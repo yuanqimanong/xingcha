@@ -57,9 +57,9 @@ MAX_IMPORT_BYTES = 1024 * 1024
 def _read_bundle(raw: bytes, filename: str, slug: str | None) -> tuple[str, str | None, str | None]:
     """从上传的文件里取出 ``agent.yaml`` 与 ``schema.json``。
 
-    zip 里的目录名就是 slug（导出物的形状是 ``<slug>/agent.yaml``），所以整包传回来
-    不用再填一次标识。**只按名字取这两个文件，不解压任何别的东西**——zip 里还有
-    ``run.py``，而"把上传的压缩包整个展开到磁盘"是一类经典漏洞。
+    zip 里的目录名就是 slug（导出物的形状是 ``<slug>/agent.yaml``），所以整包传回来不用
+    再填一次标识。只按名字取这两个文件，不解压任何别的东西——"把上传的压缩包整个展开到
+    磁盘"是一类经典漏洞。
     """
     if not filename.lower().endswith(".zip"):
         return raw.decode("utf-8", "replace"), None, slug
@@ -242,11 +242,10 @@ async def toggle_agent(request: Request, slug: str, csrf_token: str = Form(defau
 
 @router.post("/agents/{slug}/delete")
 async def delete_agent(request: Request, slug: str, csrf_token: str = Form(default="")) -> Response:
-    """彻底删掉一个 Agent。**只有停用了的才能删。**
+    """彻底删掉一个 Agent。只有停用了的才能删。
 
-    为什么要拆成两下：停用是可逆的（slug 仍被占着，随时开回来），删除不是——删完这个
-    slug 重新可被占用，下一个同名 Agent 会悄悄接管老调用方的请求。所以先停用、再删，
-    中间隔一次确认。连带删了什么、保留了什么，见 services.agent.delete 的注释。
+    拆成两下是因为停用可逆（slug 仍被占着）而删除不可逆——删完 slug 重新可被占用，下一个
+    同名 Agent 会悄悄接管老调用方的请求。连带删了什么、保留了什么见 services.agent.delete。
     """
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
@@ -461,12 +460,9 @@ async def agent_save(
             },
         )
 
-    # 保存结果经 flash 带过重定向。
-    #
-    # 不带的话编辑页的 `{% if saved %}已保存为 v… %}` 那一块**永远不显示**——用户
-    # 保存完看不到任何确认，更要紧的是同一块里的 `tier_note` 也一起丢了：
-    # "你请求了 T1，但这个模型不支持原生约束，已降级到 T2" 这句话是静默消失的，
-    # 而两档的失败形态完全不同。
+    # 保存结果经 flash 带过重定向。不带的话编辑页那块「已保存为 v…」永远不显示，更要紧
+    # 的是同一块里的 `tier_note` 也一起丢了——"你请求了 T1，但这个模型不支持原生约束，
+    # 已降级到 T2"会静默消失，而两档的失败形态完全不同。
     session = await current_session(request)
     if session is not None:
         state.flash.put(f"{session.id}:saved_agent", f"{result.version}\n{result.tier_note or ''}")
@@ -496,19 +492,13 @@ async def agent_import(
     slug: str = Form(default=""),
     csrf_token: str = Form(default=""),
 ) -> Response:
-    """导入一个 Agent。**「导出」的反向操作。**
+    """导入一个 Agent。「导出」的反向操作——只有导出没有导入的话，那扇门是单向的。
 
-    只有导出没有导入的话，那扇门是单向的——而「可带走」这个卖点要求两个方向都通。
-    CLI 早就有 ``xingcha agent apply``，后台却没有，于是"改完导回来"这件事在页面上
-    是做不到的。
+    两种入口对应两种真实用法：传 zip（「导出」给你的那个，原样传回来），或贴 YAML（在
+    别处改过的 ``agent.yaml``，或从 ``agent show`` 拷出来的）。
 
-    两种入口，对应两种真实用法：
-
-    * **传 zip** —— 「导出」给你的就是它，原样传回来，不用先解压再找文件；
-    * **贴 YAML** —— 在别处改了一份 ``agent.yaml``，或从 ``agent show`` 拷出来的。
-
-    解析与字段映射走 :func:`services.agent.parse_bundle` / :func:`apply_bundle`，
-    与 CLI 是**同一条代码路径**——两边各写一遍的话，其中一条总会先漏掉某个字段。
+    解析与字段映射走 :func:`services.agent.parse_bundle` / :func:`apply_bundle`，与 CLI
+    是同一条代码路径——各写一遍的话总有一条先漏掉某个字段。
     """
     await guard_mutation(request, csrf_token)
     state = request.app.state.xc
@@ -569,9 +559,9 @@ async def agent_import(
 async def agent_export(slug: str, request: Request) -> Response:
     """把 bundle 打成 zip 下载。
 
-    zip 在内存里装配：几 KB 的下载不值得为一个临时 zip 管清理、并发同名、以及
-    "进程被 kill 之后残留"。bundle 那几个文件仍要落盘——``exporter.export`` 的接口
-    是写进一个目录，所以用 ``TemporaryDirectory`` 接住，``with`` 退出即清。
+    zip 在内存里装配：几 KB 的下载不值得为一个临时文件管清理、并发同名与残留。bundle
+    那几个文件仍要落盘（``exporter.export`` 的接口是写进一个目录），用
+    ``TemporaryDirectory`` 接住，``with`` 退出即清。
     """
 
     await require_admin(request)

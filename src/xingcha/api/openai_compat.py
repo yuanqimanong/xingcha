@@ -1,9 +1,9 @@
 """OpenAI 兼容层：``/v1/models`` 与 ``/v1/chat/completions``。
 
-``GET /v1/models`` 是卖点丙的全部——Agent 以 slug 出现在客户端的模型下拉框里。
-OpenRouter 的 Presets 可以被调用，但实测**不出现在**模型列表里，这是关键区别。
+``GET /v1/models`` 让 Agent 以 slug 出现在客户端的模型下拉框里。OpenRouter 的 Presets
+可以被调用，但实测不出现在模型列表里，这是关键区别。
 
-**注册顺序有意义**：自有路径必须在 catch-all 直通之前注册，否则会被吞掉。
+注册顺序有意义：自有路径必须在 catch-all 直通之前注册，否则会被吞掉。
 """
 
 from __future__ import annotations
@@ -122,16 +122,14 @@ async def list_models(
 
 @router.get("/models/{model_id}", include_in_schema=False)
 async def retrieve_model(model_id: str, request: Request) -> dict[str, Any]:
-    """OpenAI 标准的 retrieve-model。
+    """OpenAI 标准的 retrieve-model，必须由星槎自己实现。
 
-    **这个端点必须由星槎自己实现。** Cherry Studio、Continue 一类客户端会用它验证
-    模型是否存在；如果归给反代，客户端拿 Agent slug 来问就会打到 OpenRouter 拿回
-    上游 404，据此判定「这个模型不存在」。而按演进规则事后从反代收回它算破坏性变更
-    ——那就等于这个端点永久坏掉。
+    Cherry Studio、Continue 一类客户端用它验证模型是否存在。归给反代的话，客户端拿
+    Agent slug 来问会打到上游拿回 404、据此判定「这个模型不存在」，而事后从反代收回它
+    算破坏性变更——那等于这个端点永久坏掉。
 
-    只处理**单段** id：Agent slug 永不含 ``/``，而上游 model id 一定含 ``/``，
-    多段的情形（含 OpenRouter 自己的 ``/models/{author}/{slug}/endpoints``）
-    由 catch-all 直通处理，路由层已按段数分开。
+    只处理单段 id：Agent slug 永不含 ``/``，上游 model id 一定含 ``/``，多段的情形由
+    catch-all 直通处理。
     """
     body = await _build_model_list(request, None)
     for row in body["data"]:
@@ -146,11 +144,9 @@ async def retrieve_model(model_id: str, request: Request) -> dict[str, Any]:
 
 
 def _reject_unsupported_fields(payload: dict[str, Any]) -> None:
-    """三态里的 reject 表。
-
-    拒绝而不是静默忽略：这些字段会绕过服务端的运行护栏（``retries`` / ``usage_limits``
-    能覆盖 Agent 构造时的值，``response_format`` 能覆盖输出形状），静默忽略会让调用方
-    以为自己设置生效了。
+    """三态里的 reject 表。拒绝而不是静默忽略：这些字段会绕过服务端的运行护栏
+    （``retries`` / ``usage_limits`` 覆盖 Agent 构造时的值，``response_format`` 覆盖输出
+    形状），静默忽略会让调用方以为自己的设置生效了。
     """
     for field in C.REQUEST_REJECT:
         if field in payload and payload[field] is not None:
@@ -165,8 +161,8 @@ async def chat_completions(request: Request) -> Response:
     - 不含 ``/`` → Agent slug，交给 :func:`_run_agent`；slug 不存在时由
       ``agent_svc.resolve`` 抛 ModelNotFound
 
-    404 而不是"猜测性地当上游模型转发"：那样一个拼错的 slug 会静默变成一次真实的
-    付费调用，而调用方以为自己在调 Agent。
+    404 而不是猜测性地当上游模型转发：那样一个拼错的 slug 会静默变成一次真实的付费
+    调用，而调用方以为自己在调 Agent。
     """
     state = request.app.state.xc
     body = await read_body_capped(request)
@@ -224,12 +220,10 @@ async def chat_completions(request: Request) -> Response:
 async def options_handler(path: str, request: Request) -> Response:
     """``/v1`` 下任何路径的 OPTIONS 一律由星槎应答，永不反代。
 
-    不这么做的话，浏览器客户端（Open WebUI、自建前端）直连时的 CORS 预检会由
-    OpenRouter 的策略决定，而星槎自己的响应又不带 CORS 头——表现为"非流式偶尔能用、
-    浏览器直连必挂"。而等到要支持浏览器客户端时再拦截 OPTIONS，按演进规则算
-    破坏性变更。
+    否则浏览器客户端直连时的 CORS 预检由上游策略决定，而星槎自己的响应不带 CORS 头，
+    表现为"浏览器直连必挂"；事后再拦 OPTIONS 算破坏性变更。
 
-    预检请求**不带** Authorization（浏览器规定如此），所以这条路由必须免鉴权。
+    预检请求不带 Authorization（浏览器规定如此），所以这条路由必须免鉴权。
     """
     origins = request.app.state.xc.settings.cors_origin_list
     origin = request.headers.get("origin")
@@ -256,8 +250,7 @@ async def _run_agent(
 ) -> Response:
     """走 Agent：解析 → 取运行时 → 执行 → 转响应。
 
-    结构化 Agent 对 ``stream=true`` **明确返回 400**，而不是流一半 JSON 让客户端
-    解析失败。诚实报错优于假装支持。
+    结构化 Agent 对 ``stream=true`` 明确返回 400，而不是流一半 JSON 让客户端解析失败。
     """
     state = request.app.state.xc
     if state.provider is None:
@@ -275,12 +268,9 @@ async def _run_agent(
         raise ModelInvalid("messages 必须是一个非空数组")
     conv = run_svc.to_conversation(messages)
 
-    # 配额：**检查并占掉名额**，就在最贵的那一步之前。
-    #
-    # 放在这里而不是函数开头，是为了让 stream_unsupported / messages 格式错这类
-    # 早期拒绝不白吃名额——它们根本没打到上游。
-    #
-    # 占用与检查在同一个同步块里，所以并发请求不可能全部通过检查再一起计数。
+    # 配额：检查并占掉名额，就在最贵的那一步之前。放在这里而不是函数开头，是为了让
+    # stream_unsupported / messages 格式错这类早期拒绝不白吃名额。占用与检查在同一个
+    # 同步块里，所以并发请求不可能全部通过检查再一起计数。
     principal = getattr(request.state, "principal", None)
     reservation = None
     if state.quota is not None:
@@ -312,12 +302,9 @@ async def _run_agent(
         tracker.finish_error(e.error_type.value, _status_for(e))
         tracker.rec.schema_violations = rt.counters.violations
         tracker.rec.schema_retries = rt.counters.retries
-        # **失败也要落用量与费用。**
-        #
-        # 原先这里只记了违规/重试次数，token 与费用是 0/None——一次 retries=2 的
-        # 失败打了 3 次上游，账上却是零。少报的恰好是最贵的一类调用，而且金额配额
-        # 结算 None 意味着**这条最贵的路径完全不占金额配额**，钱刹车没落在要刹的
-        # 地方。用量来自 map_errors 挂在异常上的累加器（见 services/run.execute）。
+        # 失败也要落用量与费用：一次 retries=2 的失败打了 3 次上游，记成 0 的话少报的
+        # 恰好是最贵的一类调用，金额配额也刹不住它。用量来自 map_errors 挂在异常上的
+        # 累加器（见 services/run.execute）。
         if e.usage is not None:
             _absorb_usage(tracker, e.usage, rt, state.catalog)
         await tracker.submit()
@@ -353,10 +340,9 @@ async def _stream_agent(
 ) -> Response:
     """真流式（纯文本 Agent）。
 
-    **第一帧要在构造 StreamingResponse 之前拉出来。** ``run_stream()`` 的进入动作
-    会真的发出上游请求，所以这一拉能把连不上、401、模型不存在这类故障变成一个
-    正常的 502/40x JSON；等 ``StreamingResponse`` 一构造，200 就提交了，之后所有
-    失败只能表达成"流没有以 [DONE] 结尾"。
+    第一帧要在构造 StreamingResponse 之前拉出来：``run_stream()`` 的进入动作会真的发出
+    上游请求，这一拉能把连不上、401、模型不存在变成一个正常的 502/40x JSON；等
+    ``StreamingResponse`` 一构造，200 就提交了。
     """
     state = request.app.state.xc
 
@@ -399,11 +385,10 @@ async def _stream_agent(
 
 
 def _absorb_usage(tracker: RunTracker, usage: Any, rt: Any, catalog: Any) -> None:
-    """把**失败路径**的用量与费用写进 run 记录。
+    """把失败路径的用量与费用写进 run 记录。
 
-    与成功路径共用 ``price()``（一处定价），但拿不到 ``provider_response_id``——
-    异常抛出时没有 result 可读，所以取不回上游报的实价，只能用目录价。这是有意的
-    折中：目录估价好过记成 0，而"失败调用的实价"要拿到得改 pydantic-ai 的调用方式。
+    与成功路径共用 ``price()``，但拿不到 ``provider_response_id``（异常抛出时没有 result
+    可读），所以只能用目录价。有意的折中：目录估价好过记成 0。
     """
     from .runlog_mw import price
 
@@ -438,9 +423,8 @@ def _status_for(e: XingchaError) -> str:
 def _absorb(tracker: RunTracker, outcome: run_svc.RunOutcome, catalog: Any, cost_sink: Any) -> None:
     """把运行结果写进 run 记录，并结算费用。
 
-    费用优先用**上游自己报的**（经 CostSink），拿不到才回落目录价。
-    上游那个是唯一非预估的数字，而 pydantic-ai 填的 usage.cost 是估价——
-    实测两者能差 400 倍。
+    费用优先用上游自己报的（经 CostSink），拿不到才回落目录价：上游那个是唯一非预估的
+    数字，而 pydantic-ai 填的 usage.cost 是估价，实测两者能差 400 倍。
     """
     import json as _json
 

@@ -138,7 +138,7 @@ def db_verify(
     if report.ciphertext_rows:
         typer.secho(
             f"\n  这份备份里有 {report.ciphertext_rows} 条密文（上游 key 等）。"
-            f"\n  它们要靠密钥环才能解开，而密钥环**不在这个文件里**："
+            f"\n  它们要靠密钥环才能解开，而密钥环不在这个文件里："
             f"\n    {settings.secret_path}"
             "\n  只恢复数据库不恢复密钥环，服务会拒绝启动（这是有意的——"
             "\n  静默重新生成会让密文永久解不开）。两者都要备份。",

@@ -1,10 +1,7 @@
-"""导出 bundle：把一个 Agent 变成可以脱离星槎运行的三个文件。
+"""导出 bundle：把一个 Agent 变成可以脱离星槎运行的几个文件。
 
-这是"低锁定"的唯一证明。**不是承诺，是可执行的验收**：干净虚拟环境里只装
-``pydantic-ai-slim[openai,spec]`` 与 ``jsonschema``，用导出物跑通并**复现校验行为**
-——验证方式是建一个干净 venv、只装 pydantic-ai，直接跑 ``run.py``。
-
-产出：
+这是"低锁定"的可执行验收：干净 venv 里只装 ``pydantic-ai-slim[openai,spec]`` 与
+``jsonschema``，直接跑 ``run.py`` 就能复现校验行为。产出：
 
 .. code-block:: text
 
@@ -14,17 +11,11 @@
     ├── run.py         校验 runner，只依赖 pydantic-ai + jsonschema
     └── README.md      如实写清保留了什么、丢失了什么
 
-**为什么导出物与线上不是同一条代码路径**
-
-线上：``builder`` 显式把 ``output_type=NativeOutput/ToolOutput(...)`` 传进
-``from_spec``，档位是强制的。
-
-导出物：``Agent.from_file`` **没有** ``output_type`` 注入点，只能靠 spec 里的
-``output_schema`` 走 auto 模式。也就是说导出物永远是 auto，拿不到 T1 的
-``strict=True`` 原生约束。
-
-这不是偷懒，是上游 API 的边界。所以导出的 README 里必须如实写明——
-把"档位强制"也列进"丢失"那一栏，而不是让人以为导出物和线上完全等价。
+导出物与线上不是同一条代码路径：线上由 ``builder`` 显式把
+``output_type=NativeOutput/ToolOutput(...)`` 传进 ``from_spec``，档位是强制的；而
+``Agent.from_file`` 没有 ``output_type`` 注入点，只能靠 spec 里的 ``output_schema`` 走
+auto 模式，拿不到 T1 的 ``strict=True``。这是上游 API 的边界，所以导出的 README 里把
+"档位强制"列进"丢失"那一栏。
 """
 
 from __future__ import annotations

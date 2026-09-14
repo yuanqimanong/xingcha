@@ -1,8 +1,8 @@
 """管理后台的登录会话与 CSRF。
 
-与 API 令牌**完全分开**：``sk-xc-`` 是给机器用的、走 Bearer 头；后台会话是给浏览器
-用的、走 SameSite=Strict 的 cookie。混用会让一把泄漏的 API key 直接拿到后台权限，
-而后台里有一个能改写上游 base_url 的设置页——那等于把付费 key 交出去。
+与 API 令牌完全分开：``sk-xc-`` 给机器用、走 Bearer 头，后台会话给浏览器用、走
+SameSite=Strict 的 cookie。混用会让一把泄漏的 API key 直接拿到后台权限，而后台里有一个
+能改写上游 base_url 的设置页。
 
 CSRF 防护是三层叠加，任何一层单独都不够：
 
@@ -42,11 +42,7 @@ _hasher = PasswordHasher()
 
 
 class LoginRateLimited(RuntimeError):
-    """登录尝试过于频繁。
-
-    公网上的管理后台会被撞库。指数退避让在线爆破变得不划算，同时不影响正常人
-    偶尔输错一次。
-    """
+    """登录尝试过于频繁。指数退避让在线爆破不划算，同时不影响正常人偶尔输错一次。"""
 
     def __init__(self, wait_seconds: float) -> None:
         super().__init__(f"尝试过于频繁，请 {wait_seconds:.0f} 秒后再试。")
@@ -93,35 +89,27 @@ def hash_password(password: str) -> str:
 
 
 def normalize_env_password(env_password: str | None) -> str:
-    """把环境变量里的密码归一化。**空 / 只有空白 = 没设置。**
+    """把环境变量里的密码归一化。空 / 只有空白 = 没设置。
 
-    ``.env`` 里写 ``XINGCHA_ADMIN_PASSWORD=`` （键在、值空）是最常见的形态——
-    ``.env.example`` 抄过来就是这样。它的意思显然是"我还没填"，所以必须与
-    "填了一个坏值"区分开：前者不该有任何抱怨，后者必须报出来。
+    ``XINGCHA_ADMIN_PASSWORD=``（键在、值空）是 ``.env.example`` 抄过来最常见的形态，
+    意思是"我还没填"，必须与"填了一个坏值"区分开。两头的空白一并去掉——``.env`` 的解析
+    对首尾空白本就不可靠，而首尾带空格的密码是纯粹的陷阱。
 
-    两头的空白一并去掉：``.env`` 的解析对首尾空白本来就不可靠，而一个首尾带空格的
-    密码是纯粹的陷阱——你按看到的字符输入，永远登不进去。
-
-    归一化只有这一处，登录校验与"设了没"的判断都走它。分成两份的话会出现最难查的
-    那种状态：**判断说设了、校验却对不上**，于是没人能登进去而日志说一切正常。
+    归一化只有这一处，登录校验与"设了没"的判断都走它；分成两份会出现最难查的那种状态：
+    判断说设了、校验却对不上，没人能登进去而日志说一切正常。
     """
     return (env_password or "").strip()
 
 
 def env_password_usable(env_password: str | None) -> bool:
-    """环境变量里那个密码算不算"设了"。**任意非空即生效，不设长度门槛。**
+    """环境变量里那个密码算不算"设了"。任意非空即生效，不设长度门槛。
 
-    这是一条经过一次决定的放宽。原先非空但短于 :data:`MIN_ADMIN_PASSWORD_LEN`
-    会被**拒用**——理由是后台能改写上游 ``base_url``，等于能把付费 key 指到任意
-    地址，所以弱密码不是"方便"而是洞。但拒用带来的实际后果是：用户在 .env 里写了
-    一行、重启、发现还是要走首次设密，而这条捷径的**全部意义就是省掉那个流程**。
+    短于 :data:`MIN_ADMIN_PASSWORD_LEN` 照用，只在启动时警告一次（见
+    ``app._log_password_source``）：拒用的话，用户在 .env 里写了一行、重启、发现还是要
+    走首次设密，而这条捷径的全部意义就是省掉那个流程。强度交给用户判断。
 
-    现在的取法是：照用，但在启动时警告一次（见 ``app._log_password_source``）。
-    强度的判断交给用户，我们只保证他知道自己选了什么。
-
-    注意这不影响**浏览器首次设密**那条路径——那里仍然要求
-    :data:`MIN_ADMIN_PASSWORD_LEN` 位。两处的差别是有意的：环境变量是运维自己写在
-    自己机器上的文件里，而表单是任何能打开这一页的人在设。
+    不影响浏览器首次设密那条路径，那里仍要求 :data:`MIN_ADMIN_PASSWORD_LEN` 位——环境
+    变量是运维写在自己机器上的文件里，而表单是任何能打开这一页的人在设。
     """
     return bool(normalize_env_password(env_password))
 
@@ -133,20 +121,14 @@ def env_password_is_weak(env_password: str | None) -> bool:
 
 
 def env_password_in_effect(stored: str | None, env_password: str | None) -> bool:
-    """环境变量那个密码**此刻是否真的在生效**。
+    """环境变量那个密码此刻是否真的在生效。先立者为准：库里已有密码就库赢，环境变量
+    被忽略；库里没有且环境变量合格才用环境变量。
 
-    **优先级：先立者为准**
+    反过来会引入一个真实的越权路径：任何能往 ``.env`` 写一行的人（误挂的卷、共享的部署
+    目录、能写文件的漏洞）就能顶掉已建好的管理员密码。
 
-    库里已经有密码 → **库赢**，环境变量被忽略。
-    库里没有密码 + 环境变量合格 → 用环境变量。
-
-    反过来（环境变量总是优先）会引入一个真实的越权路径：任何能往 ``.env`` 写一行
-    的人——一次误挂的卷、一个共享的部署目录、一个能写文件的漏洞——就能顶掉已经
-    建好的管理员密码。"先立者为准"让这条路走不通：密码一旦在库里立起来，只有
-    握着它的人（或显式的 ``admin reset-password``）能改。
-
-    代价是"改 .env 里的密码不生效"这件事必须说清楚，否则用户会以为改了。
-    所以启动时会打一条日志，登录页与设置页也都有说明。
+    代价是"改 .env 里的密码不生效"必须说清楚，所以启动时打一条日志，登录页与设置页也都
+    有说明。
     """
     return not stored and env_password_usable(env_password)
 
@@ -154,14 +136,13 @@ def env_password_in_effect(stored: str | None, env_password: str | None) -> bool
 def verify_admin_password(
     stored: str | None, password: str, env_password: str | None = None
 ) -> bool:
-    """校验后台密码。**这是唯一的判定点。**
+    """校验后台密码。唯一的判定点。
 
-    优先级见 :func:`env_password_in_effect`：库里有就用库里的，没有才看环境变量。
-    绝不"两个都能用"——那种状态没人说得清哪个才是真的，而"我改了密码但旧的还能登"
-    是最坏的一种安全体验。
+    优先级见 :func:`env_password_in_effect`：库里有就用库里的，没有才看环境变量。绝不
+    "两个都能用"——"我改了密码但旧的还能登"是最坏的一种安全体验。
 
-    环境变量那条用 ``compare_digest`` 而不是 argon2：手上是明文，没有哈希可验，
-    而普通的 ``==`` 会按字符逐位短路，泄漏前缀长度。
+    环境变量那条用 ``compare_digest`` 而不是 argon2：手上是明文没有哈希可验，而普通的
+    ``==`` 会按字符逐位短路，泄漏前缀长度。
     """
     if env_password_in_effect(stored, env_password):
         return secrets.compare_digest(password, normalize_env_password(env_password))
@@ -169,10 +150,8 @@ def verify_admin_password(
 
 
 def verify_password(stored: str | None, password: str) -> bool:
-    """校验密码。
-
-    ``stored`` 为空时**仍然走一次哈希计算**再返回 False：直接返回会让"这个用户
-    没设密码"变成一个可测的时序差异。
+    """校验密码。``stored`` 为空时仍然走一次哈希计算再返回 False：直接返回会让"这个
+    用户没设密码"变成一个可测的时序差异。
     """
     if not stored:
         _hasher.hash(password)  # 恒定工作量，避免时序泄漏
@@ -251,10 +230,8 @@ async def destroy(session: AsyncSession, token: str | None) -> None:
 
 
 async def revoke_all(session: AsyncSession) -> int:
-    """吊销所有后台会话，返回被吊销的条数。
-
-    改密码与重置密码都要调。不调的话，一个已登录的浏览器仍然握着完整权限——
-    而这两个操作的场景往往正是"我不确定还有谁登着"。
+    """吊销所有后台会话，返回被吊销的条数。改密码与重置密码都要调——那两个操作的
+    场景往往正是"我不确定还有谁登着"。
     """
     n = (await session.execute(select(func.count()).select_from(WebSession))).scalar() or 0
     await session.execute(delete(WebSession))
@@ -266,10 +243,8 @@ async def get_admin(session: AsyncSession) -> User | None:
 
 
 async def has_password(session: AsyncSession) -> bool:
-    """是否已完成首次设密。
-
-    未设密时后台只暴露一个"设置管理员密码"的向导，其余页面全部拒绝——否则首次部署
-    到设密之间的窗口里，后台是完全敞开的。
+    """是否已完成首次设密。未设密时后台只暴露一个设密向导，其余页面全部拒绝——否则
+    首次部署到设密之间的窗口里，后台是完全敞开的。
     """
     admin = await get_admin(session)
     return bool(admin and admin.password_hash)

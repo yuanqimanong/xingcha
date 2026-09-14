@@ -1,16 +1,16 @@
 """FastAPI 应用装配与启动序列。
 
-**启动顺序是有意的**，第 2–5 步任一失败都会拒绝启动：
+启动顺序是有意的，第 2–5 步任一失败都会拒绝启动：
 
 1. 未知配置项告警 —— 让拼错的环境变量被看见
 2. umask + 数据目录权限 —— 在任何文件被创建之前
 3. 迁移（先备份） —— 失败则拒绝启动，绝不带着半旧 schema 服务
 4. 密钥环 —— 缺环而库里有密文则拒绝启动（单向门）
 5. WAL 断言 —— 静默降级会变成零星的 database is locked
-6. 上游配置 —— 缺 key **不**拒绝启动（首次部署必然缺），调用时才明确报错
+6. 上游配置 —— 缺 key 不拒绝启动（首次部署必然缺），调用时才明确报错
 
-宁可起不来，也不要带病运行：前五条失败后继续跑，症状都会在几小时后以完全
-看不出根因的形式出现。
+宁可起不来也不要带病运行：前五条失败后继续跑，症状都会在几小时后以看不出根因的
+形式出现。
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ log = logging.getLogger(__name__)
 class AppState:
     """进程级共享状态。挂在 ``app.state.xc`` 上。
 
-    显式持有而不是散落成模块级全局：一次调用的生命周期要能用一张图讲完
-    （见 README 的「架构」一节），而全局变量很难说清"该在哪儿失效它"。
+    显式持有而不是散落成模块级全局：一次调用的生命周期要能用一张图讲完，而全局变量
+    很难说清"该在哪儿失效它"。
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -87,11 +87,9 @@ class AppState:
         #: 上游语义，这一层要走 pydantic-ai 的 model 抽象。
         self.provider: Any = None
 
-        # **进程级**并发上限。
-        #
-        # 不能给每个 Agent 传 int：max_concurrency 的信号量是每个 Agent 实例私有的
-        # （实测两个各限 1 的 Agent 全局峰值是 2，传同一个 ConcurrencyLimit 配置对象
-        # 也不共享）。必须是同一个 Limiter 实例——注意是 Limiter 不是 Limit。
+        # 进程级并发上限。不能给每个 Agent 传 int：max_concurrency 的信号量是每个
+        # Agent 实例私有的（实测两个各限 1 的 Agent 全局峰值是 2，传同一个
+        # ConcurrencyLimit 配置对象也不共享）。必须是同一个 Limiter 实例。
         from pydantic_ai.concurrency import ConcurrencyLimiter
 
         self.concurrency = ConcurrencyLimiter(settings.max_concurrency, name="xingcha")
@@ -112,15 +110,13 @@ async def _log_password_source(state: AppState) -> None:
         )
     elif has_db and env:
         log.warning(
-            "环境变量 XINGCHA_ADMIN_PASSWORD **被忽略**：库里已有密码，先立者为准。"
+            "环境变量 XINGCHA_ADMIN_PASSWORD 被忽略：库里已有密码，先立者为准。"
             "要改用环境变量里那个，先跑 `xingcha admin reset-password`。"
         )
     elif ws.env_password_is_weak(env):
-        # 生效了，但短。**只警告不拒绝**：强度是用户自己的取舍，而这条捷径的意义
-        # 就是省掉浏览器设密流程——拒用等于把它废掉。
-        #
-        # 但必须说一次：这个后台能改写上游 base_url，也就是能把付费 key 指到任意
-        # 地址，而端口往往是对整个局域网开的。
+        # 生效了但短。只警告不拒绝：强度是用户自己的取舍，而这条捷径的意义就是省掉
+        # 浏览器设密流程。但必须说一次——这个后台能把付费 key 指到任意地址，而端口
+        # 往往是对整个局域网开的。
         log.warning(
             "环境变量 XINGCHA_ADMIN_PASSWORD 已生效，但只有 %d 位（建议至少 %d 位）。"
             "后台可改写上游 base_url——弱密码的代价是你的上游 key。",
@@ -132,11 +128,10 @@ async def _log_password_source(state: AppState) -> None:
 def _warn_unusable_public_url(settings: Any) -> None:
     """``public_url`` 里出现监听地址时说一句。
 
-    后台首页与「调用记录」空态里印着一条 curl 示例，它直接用这个值拼出来。
-    填成 ``0.0.0.0`` / ``::`` 的话那条命令是 **`https://0.0.0.0:8443/v1/...`**——
-    照着敲必然失败，而失败信息（连接被拒）完全指不到"这是个显示用的配置项"。
+    后台首页与「调用记录」空态里那条 curl 示例直接用这个值拼。填成 ``0.0.0.0`` / ``::``
+    的话照着敲必然失败，而"连接被拒"完全指不到"这是个显示用的配置项"。
 
-    只警告不纠正：正确的值只有部署者知道（可能是 IP、可能是域名），这一层猜不出来。
+    只警告不纠正：正确的值只有部署者知道，这一层猜不出来。
     """
     url = settings.public_url or ""
     for bad in ("0.0.0.0", "[::]", "://::"):
@@ -153,19 +148,11 @@ def _warn_unusable_public_url(settings: Any) -> None:
 async def load_tracing(state: AppState) -> None:
     """从 setting 表读 trace 配置并装配。
 
-    凭据走**加密存储**而不是环境变量，理由与上游 key 一样：环境变量会出现在
-    ``docker inspect`` 与 ``/proc/<pid>/environ`` 里。
+    凭据走加密存储而不是环境变量，理由同上游 key。没配 endpoint 就是关闭——打开意味着
+    提示词与模型输出会离开这台机器，必须是一次显式的决定，不能是升级的副作用。
 
-    没配 endpoint 就是关闭——这是默认状态。打开意味着提示词与模型输出会离开这台
-    机器，而这个项目存在的理由恰恰是不想让请求经过别人手里，所以它必须是一次显式
-    的决定，不能是升级的副作用。
-
-    配置是**一张列表**，生效的是 ``trace.active`` 指名的那一条；没有指名（或指向
-    一个已删掉的名字）就是全部停用。停用不丢配置——没有这一层的话，"先停一下"
-    就得清空地址、连带删掉两把 key，下次再开要把 Langfuse 凭据重新找出来，而不
-    好停的开关等于一个默认开着的开关。
-
-    同一时刻只有一个生效不是产品取舍：管道只有一条，装配的是一个 exporter。
+    配置是一张列表，生效的是 ``trace.active`` 指名的那条；没指名或指向已删掉的名字就
+    是全部停用，停用不丢配置。同一时刻只有一个生效不是产品取舍：管道只有一条。
     """
     assert state.keyring is not None
     from .services import trace_targets
@@ -199,7 +186,7 @@ async def load_tracing(state: AppState) -> None:
 async def load_upstream(state: AppState) -> None:
     """从 setting 表读上游配置并装配客户端。
 
-    缺 key **不**拒绝启动：首次部署必然缺，那时管理员还没机会填。调用时才报
+    缺 key 不拒绝启动：首次部署必然缺，那时管理员还没机会填。调用时才报
     :class:`UpstreamNotConfigured`，消息里写清楚下一步做什么。
     """
     assert state.keyring is not None
@@ -265,9 +252,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 装配失败只丢可观测不丢服务，见 obs/tracing.setup。
     await load_tracing(state)
 
-    # 预热模型目录。**这不只是为了首次 /v1/models 快一点**：目录同时是主价源，
-    # 不预热的话，一个只调 chat/completions、从不列模型的调用方（也就是绝大多数
-    # 业务代码）产生的每一条记录都会是 cost_source=unknown —— 等于没有账单数据。
+    # 预热模型目录。不只是为了首次 /v1/models 快一点：目录同时是主价源，不预热的话，
+    # 一个只调 chat/completions 的调用方产生的每条记录都会是 cost_source=unknown。
     # 尽力而为：上游不可达时不阻塞启动，TTL 到期后会自己再试。
     up_cfg = state.upstream.config
     if up_cfg is not None:
@@ -307,8 +293,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 async def _not_configured_handler(request: Request, exc: Exception) -> JSONResponse:
     """还没配上游 key。
 
-    503 而不是 500：这不是缺陷，是一个待办的配置步骤，而且它是可恢复的。
-    消息里直接给出下一步的命令——首次部署时看到这条的人正需要它。
+    503 而不是 500：这不是缺陷，是一个待办且可恢复的配置步骤。消息里直接给出下一步
+    的命令——首次部署时看到这条的人正需要它。
     """
     return JSONResponse(
         status_code=503,
@@ -324,9 +310,8 @@ async def _not_configured_handler(request: Request, exc: Exception) -> JSONRespo
 
 
 async def _denied_handler(request: Request, exc: Exception) -> Response:
-    """后台的拒绝。未登录跳登录页，其余给一个能看懂的 HTML。
-
-    不走 /v1 的错误契约——那是给 SDK 分支用的 JSON，而这里的读者是浏览器前的人。
+    """后台的拒绝。未登录跳登录页，其余给一个能看懂的 HTML——不走 /v1 的错误契约，
+    那是给 SDK 分支用的 JSON，这里的读者是浏览器前的人。
     """
     assert isinstance(exc, web_admin.Denied)
     if exc.status == 401:
@@ -366,8 +351,8 @@ _FAVICON = _favicon()
 def _configure_logging(settings: Settings) -> None:
     """装配根 logger。幂等：重复调用只替换 formatter，不叠加 handler。
 
-    uvicorn 用 ``log_config=None`` 启动（见 cli.serve），所以它的日志也走根 logger
-    的这个 handler——**上游 key 出现在 uvicorn 的异常里同样会被脱敏**。
+    uvicorn 用 ``log_config=None`` 启动（见 cli.serve），所以它的日志也走这个 handler
+    ——上游 key 出现在 uvicorn 的异常里同样会被脱敏。
     """
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
     formatter = RedactingFormatter("%(asctime)s %(levelname)-7s %(name)s | %(message)s")
@@ -420,26 +405,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _mount_probes(app: FastAPI) -> None:
-    """探针与版本协商。三个都**免鉴权**——这是一个安全关键的闭集。
-
-    往这里加一条就是往公网多开一扇门，加之前先确认它不读任何主体数据。
+    """探针与版本协商。三个都免鉴权，是一个安全关键的闭集——往这里加一条就是往公网
+    多开一扇门，加之前先确认它不读任何主体数据。
     """
 
     @app.get("/", include_in_schema=False)
     async def root() -> Response:
         """根路径跳后台。
 
-        **为什么是 307 而不是直接渲染**
+        不做任何鉴权判断、也不碰数据库，只是把人送去 ``/admin``，由那边的守卫决定给
+        总览还是跳登录页。自己判一遍"登录了没"会让鉴权判定多一个入口，也会把根路径变成
+        一个登录态探测器——公网上任何人都能拿它试探"这台机器上有人登着吗"。
 
-        这条路由**不做任何鉴权判断，也不碰数据库**——它只是把人送去 ``/admin``，
-        由那边现有的守卫决定给总览还是跳登录页。
-
-        自己判一遍"登录了没"会有两个坏处：一是鉴权判定就有了第二个入口（架构标准 2
-        的反面），二是**根路径会因此变成一个登录态探测器**——未登录与已登录返回不同
-        的东西，公网上任何人都能拿它试探"这台机器上有人登着吗"。
-
-        307 而不是 303：303 会把方法改成 GET，而根路径只接 GET，两者等价；但 307
-        语义上是"这个资源就在那边"，更贴近这里的意思。用 302 会被某些客户端缓存。
+        307 而不是 303（303 会把方法改成 GET）或 302（会被某些客户端缓存）。
         """
         return web_admin.security_headers(RedirectResponse("/admin", status_code=307))
 
@@ -453,7 +431,7 @@ def _mount_probes(app: FastAPI) -> None:
         """就绪探针。查数据库可写与磁盘水位。
 
         磁盘要单独报：整个产品就是一个 SQLite 文件，磁盘一满就是写失败 + 迁移失败 +
-        无法启动，而根因（通常是日志涨满）在别处完全看不见。
+        无法启动，而根因（通常是日志涨满）在别处看不见。
         """
         import shutil
 
@@ -505,10 +483,8 @@ def _mount_probes(app: FastAPI) -> None:
 
     @app.get("/version", include_in_schema=False)
     async def version() -> dict[str, Any]:
-        """版本协商与能力探测。
-
-        契约号只在破坏性变更时 +1。``features`` 让调用方无需试探即可知道服务端支持
-        什么——这是万一真的必须收紧某个行为时，唯一的非硬切发布通道。
+        """版本协商与能力探测。契约号只在破坏性变更时 +1；``features`` 让调用方无需
+        试探就知道服务端支持什么，是万一必须收紧某个行为时唯一的非硬切发布通道。
         """
         features = set(C.FEATURES)
         # 直通配额是**打开之后**才公布的：契约把"直通不执行配额"冻结了，

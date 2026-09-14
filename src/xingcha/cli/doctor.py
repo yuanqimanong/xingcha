@@ -81,7 +81,7 @@ def doctor() -> None:
         ):
             typer.secho(
                 "    但这是 socks 代理，而 socksio 没装——客户端会在构造阶段 "
-                "ImportError，星槎兜住之后**退回直连**，等于代理没生效。",
+                "ImportError，星槎兜住之后退回直连，等于代理没生效。",
                 fg=typer.colors.YELLOW,
             )
             typer.echo("    改用 http 代理，或 pip install httpx[socks]。")
