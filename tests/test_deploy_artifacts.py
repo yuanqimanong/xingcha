@@ -196,7 +196,14 @@ def test_xc_actually_extracts_the_uid_from_the_contract():
 # =============================================================================
 
 
-@pytest.mark.parametrize("path", [DEPLOY / "windows" / "xc.bat", DEPLOY / "edge" / "edge.bat"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        DEPLOY / "windows" / "xc.bat",
+        DEPLOY / "windows" / "update.bat",
+        DEPLOY / "edge" / "edge.bat",
+    ],
+)
 def test_bat_files_are_pure_ascii(path: Path):
     """``.bat`` 里**一个非 ASCII 字节都不许有**。
 
@@ -221,3 +228,57 @@ def test_powershell_files_have_utf8_bom(path: Path):
     而症状看起来完全不像编码问题的属性。
     """
     assert path.read_bytes()[:3] == b"\xef\xbb\xbf", f"{path.relative_to(ROOT)} 缺少 UTF-8 BOM"
+
+
+# =============================================================================
+# 更新：两个平台必须是同一套语义
+# =============================================================================
+
+WINDOWS_XC_PS1 = DEPLOY / "windows" / "xc.ps1"
+WINDOWS_UPDATE_BAT = DEPLOY / "windows" / "update.bat"
+
+
+def test_both_platforms_can_update():
+    """Linux 与 Windows 都要有"拉代码再起"的入口。
+
+    少一边的症状很温和、也因此很久都不会被发现：那个平台的人一直跑着旧代码，
+    而服务本身好好的。
+    """
+    assert "git pull --ff-only" in _text(XC_SH), "deploy/linux/xc 没有 update 了？"
+    assert "git pull --ff-only" in _text(WINDOWS_XC_PS1), "Windows 那条没有 update"
+    assert WINDOWS_UPDATE_BAT.is_file(), "缺少可双击的 update.bat"
+
+
+def test_update_refuses_a_dirty_worktree_on_both_platforms():
+    """脏工作区一律拒绝，**两个平台都要**。
+
+    这条守的是 `pull --ff-only` 而不是 `reset --hard` 那个决定（见 deploy/linux/xc
+    的注释）：这两个脚本同样会在**开发机**上被跑，而 reset --hard 会不声不响地毁掉
+    未提交的工作。哪个平台漏了这道闸，哪个平台就会在某天吃掉别人半天的改动。
+    """
+    for path in (XC_SH, WINDOWS_XC_PS1):
+        text = _text(path)
+        assert "git diff --quiet" in text and "git diff --cached --quiet" in text, (
+            f"{path.relative_to(ROOT)} 的 update 没有检查脏工作区"
+        )
+
+
+def test_start_does_not_pull():
+    """``start`` **不许**碰 git —— 它得是可复现的那一下。
+
+    把 pull 塞进 start 之后，「昨天好好的，今天双击一下就变了」会变成一类没法回溯的
+    故障；而且离线的机器再也起不来。要最新代码就显式 update。
+    """
+    # 先剥掉顶上那段 <# 注释式帮助 #>：它讲的就是 update 会 pull，留着会让"第一个
+    # 匹配"落在文档里，测试于是盯着一句说明而不是真代码。
+    ps1 = re.sub(r"<#.*?#>", "", _text(WINDOWS_XC_PS1), count=1, flags=re.S)
+    # Windows 那条：pull 必须被关在 update 分支里。
+    assert 'if ($Cmd -eq "update")' in ps1, "xc.ps1 里 pull 不在 update 分支里"
+    assert ps1.index('if ($Cmd -eq "update")') < ps1.index("git pull --ff-only"), (
+        "xc.ps1 的 git pull 跑在 update 判断之前——start 也会拉代码"
+    )
+    # Linux 那条：start 与 update 是两个 case 分支，pull 只在后者里。
+    sh = _text(XC_SH)
+    assert sh.index("  start)") < sh.index("  update)") < sh.index("git pull --ff-only"), (
+        "deploy/linux/xc 的 git pull 跑出 update 分支了"
+    )

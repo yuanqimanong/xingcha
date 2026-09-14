@@ -2,6 +2,10 @@
 .SYNOPSIS
     星槎 · Windows 本地直跑。真正干活的是这个脚本，xc.bat 只是启动器。
 
+.PARAMETER Cmd
+    start（默认，双击就是它）= 照当前这份代码起来，不碰 git。
+    update = 先 git pull --ff-only 再起。双击 update.bat 等同于它。
+
 .DESCRIPTION
     为什么逻辑在 .ps1 而不是 .bat：cmd.exe 在 chcp 65001 下按字节偏移回溯文件位置，
     而偏移记账在多字节字符上是错的，于是会从一个汉字中间接着读——后半行被当成一条
@@ -16,7 +20,12 @@
     为什么 Windows 上不走 docker、.env 怎么配、防火墙那一步——见 deploy\README.md。
 #>
 [CmdletBinding()]
-param()
+param(
+    # 双击进来就是 start——.bat 双击传不了参数，所以默认值必须是最常用的那个。
+    # update 要在终端里跑 `xc.bat update`，或者双击 update.bat。
+    [ValidateSet("start", "update")]
+    [string]$Cmd = "start"
+)
 
 $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
@@ -74,6 +83,35 @@ if (-not (Test-Path ".env")) {
 # --no-dev：dev 组里有 playwright，几百 MB，跑服务用不上。**注意它会把 dev 依赖从
 #   .venv 里删掉**，之后要跑测试先 `uv sync --frozen` 补回来。
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# update：先把代码拉到最新，再照常启动
+#
+# 为什么**不是**每次 start 都拉：start 得是可复现的那一下——照当前这份代码起来，
+# 不联网也能跑。把 pull 塞进 start 之后，「昨天好好的，今天双击一下就变了」会变成
+# 一类没法回溯的故障。deploy/linux/xc 早就是这么分的，这里补齐同样的语义。
+#
+# `pull --ff-only` 而不是 `reset --hard`：这个脚本同样会在**开发机**上被双击，
+# 而 reset --hard 会不声不响地毁掉未提交的工作。脏工作区直接拒绝，让人自己决定。
+# ---------------------------------------------------------------------------
+if ($Cmd -eq "update") {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Die "找不到 git。装一个，或者自己把代码更新到最新再双击 xc.bat。"
+    }
+    # --quiet 时 git diff 用退出码表态：0 = 干净。两条都要查，暂存区也算脏。
+    & git diff --quiet; $dirty = ($LASTEXITCODE -ne 0)
+    & git diff --cached --quiet; $staged = ($LASTEXITCODE -ne 0)
+    if ($dirty -or $staged) {
+        Die "工作区有未提交的改动。先 commit 或 stash，再 update。"
+    }
+    Say "拉代码"
+    & git pull --ff-only
+    if ($LASTEXITCODE -ne 0) {
+        Die "git pull 失败，原因在上面。分叉了的话先自己 rebase/merge。"
+    }
+    Ok "代码已是最新"
+    Write-Host ""
+}
+
 Say "同步依赖（第一次要下 Python 和依赖包，几分钟；之后是秒级）"
 & uv sync --frozen --no-dev
 if ($LASTEXITCODE -ne 0) { Die "uv sync 失败，原因在上面。" }

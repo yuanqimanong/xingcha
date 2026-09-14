@@ -86,7 +86,16 @@ Docker 用 root 重建挂载点（容器里 UID 10001 写不进去，直接重�
 
 双击 `deploy\windows\xc.bat`：确认有 `uv` → 没有 `.env` 就从**同一份**模板生成 →
 `uv sync --frozen --no-dev` → `uv run xingcha serve`。窗口开着就是跑着，关掉就是停止。
-更新是 `git pull` 之后再双击一次。
+
+**更新代码：双击 `deploy\windows\update.bat`**（等同于终端里 `xc.bat update`）。它先
+`git pull --ff-only` 再走上面同一条启动流程。
+
+两个文件而不是一个"每次都拉"，与 `deploy/linux/xc` 的 `start` / `update` 分法一致：
+`start` 得是**可复现**的那一下——照当前这份代码起来，不联网也能跑。把 pull 塞进 start
+之后，"昨天好好的，今天双击一下就变了"会变成一类没法回溯的故障。
+
+`--ff-only` 而不是 `reset --hard`：这两个脚本同样会在**开发机**上被双击，而
+`reset --hard` 会不声不响地毁掉未提交的工作。所以脏工作区直接拒绝，让人自己决定。
 
 要 HTTPS / 局域网访问，再双击 `deploy\edge\edge.bat` 起网关，并在 `.env` 第一节写一行
 `XINGCHA_GATEWAY=edge`——`XINGCHA_PUBLIC_URL` 与 `XINGCHA_TRUSTED_PROXIES` 由 `xc.ps1`
