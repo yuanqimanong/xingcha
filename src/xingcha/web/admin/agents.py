@@ -122,6 +122,7 @@ async def agents_page(request: Request) -> Response:
         tier = ver.tier if ver else "—"
         st = stats.get(row.id) or NO_RUNS
         prompting = builder.prompting_from_spec(spec)
+        thinking, effort = builder.thinking_view(spec)
         model_id = spec.get("model") or ""
         model_stale = bool(catalog_known and model_id and state.catalog.get(model_id) is None)
         stale_total += 1 if model_stale else 0
@@ -138,6 +139,9 @@ async def agents_page(request: Request) -> Response:
                 structured=bool(ver and ver.out_schema),
                 examples=len(prompting.examples),
                 templated=bool(prompting.user_template),
+                # 思考等级藏在编辑页折叠起来的分区里，而它直接决定花多少钱、等多久。
+                thinking=thinking,
+                effort=effort,
                 total=st.total,
                 ok_rate=st.ok_rate,
                 failed=st.failed,
