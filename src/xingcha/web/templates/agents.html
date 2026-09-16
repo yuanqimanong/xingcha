@@ -193,6 +193,19 @@
             {% if a.model_stale %}<span class="stale-dot" aria-hidden="true"></span>{% endif %}
           </td>
         </tr>
+        {# 唯一上卡片的模型参数。留空时写「上游默认」而不是 medium——星槎留空压根
+           不发这个字段，真正取哪一档是上游决定的。深度思考没开时不摆徽章，那是
+           默认状态，每张卡都印一个"未开"只是噪音。 #}
+        <tr>
+          <td>思考等级</td>
+          <td class="small">
+            {% if a.effort %}<span class="mono">{{ a.effort }}</span>
+            {% else %}<span class="dim">上游默认</span>{% endif %}
+            {% if a.thinking %}
+            <span class="badge info" title="已开启「深度思考」能力">深度思考</span>
+            {% endif %}
+          </td>
+        </tr>
         <tr>
           <td>输出</td>
           <td>

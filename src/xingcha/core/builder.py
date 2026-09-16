@@ -295,6 +295,10 @@ FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ),
 )
 
+#: 「思考等级」在 spec 里的键。表单与 Agent 列表的卡片读同一个常量——两边各写一份
+#: 字面量的话，上游改名之后卡片会静默变成"永远是上游默认"。
+REASONING_EFFORT_FIELD: Final = "openai_reasoning_effort"
+
 #: 厂商专属的参数。不在通用 ``ModelSettings`` 里，所以单独一张表——
 #: :func:`model_settings_fields` 那道校验用的是通用那份，混进去会把构建搞红。
 #:
@@ -303,7 +307,7 @@ FORM_MODEL_SETTINGS: Final[tuple[tuple[str, str, str, str], ...]] = (
 #: 没生效"。取值是闭集而不是数字，所以单独走 ``<select>``。
 FORM_CHOICE_SETTINGS: Final[tuple[tuple[str, str, str, str, tuple[str, ...]], ...]] = (
     (
-        "openai_reasoning_effort",
+        REASONING_EFFORT_FIELD,
         "reasoning_effort",
         "上游默认 medium",
         "思考深度。只有推理型模型认它，别的模型会忽略（不报错）。越高越慢越贵。",
@@ -983,6 +987,22 @@ def capability_names(caps: list[Any]) -> set[str]:
             else:
                 out.update(k for k in cap if isinstance(k, str))
     return out
+
+
+def thinking_view(spec: dict[str, Any]) -> tuple[bool, str]:
+    """(深度思考开没开, 思考等级)。Agent 列表的卡片上要摆这一行。
+
+    卡片上只摆这一项模型参数，是因为它与"这次调用要花多少钱、要等多久"直接挂钩，
+    而它藏在编辑页折叠起来的「模型参数 & 能力」里——一组 Agent 里哪几个开了高等级
+    思考，原先只能一个个点进去看。
+
+    等级留空返回空串而不是 ``"medium"``：星槎留空时压根不发这个字段，真正取哪一档
+    由上游决定，替它写死一个值就是在撒谎（与表单里那句"上游默认 medium"同一个理由，
+    那句是提示，这里是数据）。
+    """
+    effort = (spec.get("model_settings") or {}).get(REASONING_EFFORT_FIELD) or ""
+    thinking = "Thinking" in capability_names(spec.get("capabilities") or [])
+    return thinking, str(effort)
 
 
 def form_view(spec: dict[str, Any]) -> dict[str, Any]:
