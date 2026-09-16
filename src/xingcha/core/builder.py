@@ -784,9 +784,18 @@ class AgentRuntime:
 
 @dataclass(frozen=True, slots=True)
 class BuildOptions:
+    """一次运行的护栏，目前没有开到表单，全站共用这组默认值。
+
+    ``max_tokens`` 是**整次运行所有模型请求加总**的 token 上限（见 ``guarantee.limits_for``），
+    不是单条回复长度。原来的 200_000 在联网 Agent 上会误伤：OpenRouter 的 web 插件一次搜索
+    往上下文塞 6~10 万 token，再算上推理 token 与一次 schema 重发，正常工况就过线，调用方看到
+    的却是一句像配额的 ``quota_exceeded``（2026-09-16 洞察报告的 insight-market-query 实测撞上）。
+    提到 1_000_000：它的职责是兜住失控（工具死循环、无限重试），不是控钱——控钱用 ``max_cost_usd``。
+    """
+
     max_retries: int = 2
     max_tool_steps: int = 8
-    max_tokens: int = 200_000
+    max_tokens: int = 1_000_000
     max_cost_usd: Decimal | None = None
 
 
