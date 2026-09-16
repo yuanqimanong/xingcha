@@ -105,8 +105,24 @@ if ($NoPull) {
     Say "不是 git 仓库（多半是下载的压缩包），跳过拉取"
 } else {
     # --quiet 时 git diff 用退出码表态：0 = 干净。暂存区也算脏，两条都要查。
-    & git diff --quiet 2>$null;        $dirty  = ($LASTEXITCODE -ne 0)
-    & git diff --cached --quiet 2>$null; $staged = ($LASTEXITCODE -ne 0)
+    #
+    # 与下面 git pull 同一个坑，而且更隐蔽：git 会把与"脏不脏"毫无关系的提示写在
+    # stderr 上——最常见的是 core.autocrlf=true 遇到 LF 换行的文件时那句
+    # "LF will be replaced by CRLF"。PowerShell 5.1 把原生命令的 stderr 转成
+    # ErrorRecord，开头那句 $ErrorActionPreference='Stop' 于是**因为一句换行符警告
+    # 就把启动器当场打死**，服务根本没起。
+    #
+    # `2>$null` 挡不住：它丢的是输出，而转成 ErrorRecord 这件事在丢之前就发生了。
+    # 所以这里也得把 Stop 放开，查完立刻放回去。try/finally 不开新作用域，
+    # $dirty / $staged 出了块照样在。
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & git diff --quiet 2>$null
+        $dirty = ($LASTEXITCODE -ne 0)
+        & git diff --cached --quiet 2>$null
+        $staged = ($LASTEXITCODE -ne 0)
+    } finally { $ErrorActionPreference = $eap }
     if ($dirty -or $staged) {
         Warn "工作区有未提交的改动，跳过拉取（不会动你的代码）。"
         Say  "  要更新就先 commit 或 stash，再双击一次。"
