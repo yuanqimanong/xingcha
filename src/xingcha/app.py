@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -38,6 +39,7 @@ from .foundation.crypto import Keyring
 from .foundation.errors import (
     RedactingFormatter,
     XingchaError,
+    install_loop_noise_filter,
     unhandled_error_handler,
     xingcha_error_handler,
 )
@@ -231,6 +233,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state: AppState = app.state.xc
     settings = state.settings
 
+    # 第一件事，早于任何一条出站连接：Windows 上 stdlib 拆闲置连接时会刷一条假 ERROR，
+    # 不滤掉的话它会混在真事故里，而运维分不出哪条要管。见 errors.is_proactor_teardown_reset。
+    restore_loop_handler = install_loop_noise_filter(asyncio.get_running_loop())
+
     # 拼错的环境变量。不致命，但必须被看见——你以为设了某个值，实际跑的是默认值。
     warn_unknown_env()
 
@@ -287,6 +293,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             state.tracing.shutdown()
         await state.upstream.aclose()
         await engine.dispose()
+        # 还原放在关连接之后：关连接池正是这条假 ERROR 最容易冒出来的时刻。
+        restore_loop_handler()
         log.info("星槎已停止")
 
 
