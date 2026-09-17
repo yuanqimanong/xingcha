@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, Request
 
 from ..services.auth import Principal
+from ..services.inflight import InflightRegistry
 from ..services.ratelimit import RateLimiter
 from . import openai_compat, passthrough
 from .deps import rate_limit_key, require_auth
@@ -29,18 +30,28 @@ async def authed_and_limited(
     request: Request,
     principal: Principal = Depends(require_auth),
 ) -> AsyncIterator[Principal]:
-    """鉴权 + 限流。**直通路径也走这里。**
+    """鉴权 + 限流 + 在飞登记。**直通路径也走这里。**
 
     ``finally`` 里的释放不能省：在飞计数泄漏的表现是某个 token 越用越慢直到完全被拒，
     而且只有重启能恢复——很难联想到根因。
+
+    在飞登记挂在同一个 ``finally`` 上，而不是挂在 ``RunTracker.submit`` 上。submit 在
+    Agent 非流式路径上只出现在成功分支和 ``fail()``（只接 ``XingchaError``）里，挂那儿
+    等于「冒出个别的异常就永远留一条」，而总览页上一条不存在的「正在跑」会让管理员
+    永远不敢升级。这里的 ``finally`` 是整条 ``/v1`` 上唯一无条件会走到的地方。
     """
-    limiter: RateLimiter = request.app.state.xc.limiter
+    state = request.app.state.xc
+    limiter: RateLimiter = state.limiter
+    inflight: InflightRegistry = state.inflight
     key = rate_limit_key(principal)
     await limiter.acquire(key)
     request.state.principal = principal
+    # 登记在 acquire 之后：被限流拒掉的请求没在跑，不该出现在「正在跑」里。
+    request.state.inflight_ticket = inflight.enter(token_name=principal.token_name)
     try:
         yield principal
     finally:
+        inflight.leave(request.state.inflight_ticket)
         await limiter.release(key)
 
 

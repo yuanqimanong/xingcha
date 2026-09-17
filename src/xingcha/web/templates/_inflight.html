@@ -1,0 +1,42 @@
+{# 正在跑的调用。**自己轮询自己**：hx-swap="outerHTML" 把整块换掉，所以 hx-* 必须挂在
+   最外层这个 div 上，而且**空的时候这个 div 也得在**——把空态渲染成空字符串会把轮询器
+   连同面板一起换没，之后再有调用进来页面也不会自己回来，只能手动刷新。 #}
+<div id="inflight" hx-get="/admin/inflight" hx-trigger="every 5s" hx-swap="outerHTML">
+{% if inflight %}
+<div class="card mb5">
+  <div class="card-head">
+    <h2>正在跑 <span class="badge warn">{{ inflight|length }}</span></h2>
+    <span class="small muted">每 5 秒自动刷新</span>
+  </div>
+  <div class="card-body flush">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>已跑</th><th>类型</th><th>模型</th><th>调用方</th><th>run_id</th></tr>
+        </thead>
+        <tbody>
+        {% for c in inflight %}
+          <tr>
+            <td class="mono nowrap">{{ c.elapsed }}</td>
+            <td>
+              {%- if c.kind == 'agent' %}<span class="badge info">Agent</span>
+              {%- else %}<span class="badge neutral">直通</span>{% endif %}
+            </td>
+            <td class="mono truncate" title="{{ c.model }}">{{ c.model }}</td>
+            <td class="dim small nowrap">{{ c.token_name }}</td>
+            <td class="mono dim small nowrap">{{ c.run_id or '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="hint mt4">
+      正常停止（一次 Ctrl-C / SIGTERM）会<strong>等这些跑完再退</strong>，用量也会落盘。
+      <strong>再按一次 Ctrl-C、或 docker kill、或直接关窗口，会把它们腰斩。</strong>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="small muted mb5">当前没有正在跑的调用，可以安全重启。</div>
+{% endif %}
+</div>

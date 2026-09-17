@@ -45,6 +45,7 @@ from .foundation.errors import (
 )
 from .obs import tracing as tracing_mod
 from .services import setting as setting_svc
+from .services.inflight import InflightRegistry
 from .services.quota import QuotaService
 from .services.ratelimit import RateLimiter
 from .services.run import RuntimeCache
@@ -74,6 +75,9 @@ class AppState:
             concurrent=settings.rate_limit_concurrent,
         )
         self.usage: UsageBuffer | None = None
+        #: 正在跑的调用。**只在内存里**，因为库里根本没有「进行中」这个状态：
+        #: run 行要等调用结束才写。见 services/inflight.py。
+        self.inflight = InflightRegistry()
         self.quota: QuotaService | None = None
         self.tracing: Any = None
         #: 一次性展示值（目前只有"刚签发的密钥明文"）。**在内存里，不落盘、不进 URL。**

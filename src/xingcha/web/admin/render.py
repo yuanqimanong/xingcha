@@ -127,3 +127,17 @@ def fmt_cost(value: str | None) -> str:
     if d == 0:
         return "0"
     return f"{d:.6f}".rstrip("0").rstrip(".")
+
+
+def fmt_elapsed(seconds: float) -> str:
+    """已跑时长。给「正在跑」面板用。
+
+    不复用 run 表那套 ``{ms} ms``：在飞的调用动辄几十秒到几分钟，``184000 ms`` 要人心算。
+    这个数字唯一的用途是回答「还要等多久才能停」，所以按人读的方式给。
+    """
+    total = int(seconds)
+    if total < 60:
+        return f"{total} 秒"
+    if total < 3600:
+        return f"{total // 60} 分 {total % 60:02d} 秒"
+    return f"{total // 3600} 小时 {total % 3600 // 60:02d} 分"

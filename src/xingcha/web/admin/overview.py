@@ -11,7 +11,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 
 from ...db.models import Run, RunUsage
-from .render import fmt_cost, render
+from .render import fmt_cost, fmt_elapsed, render
 from .runs import recent_runs, run_stats, since
 from .security import (
     require_admin,
@@ -20,6 +20,31 @@ from .security import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
+
+
+def inflight_rows(state: Any) -> list[dict[str, Any]]:
+    """把在飞快照转成模板要的形状。时长在这里格式化，模板不算数。"""
+    return [
+        {
+            "kind": c.kind,
+            "model": c.model,
+            "token_name": c.token_name,
+            "run_id": c.run_id,
+            "elapsed": fmt_elapsed(c.elapsed_seconds),
+        }
+        for c in state.inflight.snapshot()
+    ]
+
+
+@router.get("/inflight")
+async def inflight_panel(request: Request) -> Response:
+    """在飞面板自己轮询自己换的那一块。
+
+    单独一个路由而不是整页刷新：总览页那几个聚合每次都要扫 Run/RunUsage，
+    每 5 秒重算一遍纯属浪费，而这一块只读内存。
+    """
+    await require_admin(request)
+    return render(request, "_inflight.html", {"inflight": inflight_rows(request.app.state.xc)})
 
 
 @router.get("")
@@ -78,6 +103,7 @@ async def overview(request: Request) -> Response:
         request,
         "overview.html",
         {
+            "inflight": inflight_rows(state),
             "today": today,
             "stats": stats,
             "runs": runs,

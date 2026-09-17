@@ -230,6 +230,14 @@ class RunTracker:
         self._submitted = False
         # run_id 要能回到 5xx 的响应体里——那是排障时唯一的抓手
         request.state.run_id = self.rec.id
+        # 给总览页的在飞面板补上「这一条在调什么」。登记与注销不在这里——
+        # 它们挂在 api.v1.authed_and_limited 那个无条件的 finally 上，见那里的注释。
+        state.inflight.describe(
+            getattr(request.state, "inflight_ticket", None),
+            kind=kind,
+            model=model,
+            run_id=self.rec.id,
+        )
 
     def attach_reservation(self, reservation: Any) -> None:
         """把配额预留交给 tracker，由它在提交时结算。"""
