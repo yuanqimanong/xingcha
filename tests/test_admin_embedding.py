@@ -14,19 +14,37 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 from starlette.requests import Request
 from starlette.responses import Response
 
-from xingcha.config import Settings
+from xingcha.config import ENV_PREFIX, Settings
 from xingcha.web.admin import security
 
 PORTAL = "http://43.163.9.107:30800"
 
 
 @pytest.fixture(autouse=True)
-def _reset():
-    """模块级配置，用完必须还原，否则先跑的用例会决定后跑的用例。"""
+def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """模块级配置用完必须还原，而 ``Settings`` 必须在一个干净的世界里构造。
+
+    ``Settings`` 有两条不经过构造参数的输入：``model_config`` 里的 ``env_file=".env"``
+    ——相对路径，按**当前工作目录**解析——以及 ``XINGCHA_`` 前缀的环境变量。两条都会把
+    「没配时是什么样」的断言悄悄换成「这台机器上配了什么」。
+
+    本仓库根目录的 ``.env`` 恰好配了 ``XINGCHA_ADMIN_EMBED_ORIGINS``，于是
+    :func:`test_settings_empty_means_none` 在开发机上必红、在干净的 CI 上却是绿的。
+    这种红最费人：它和你正在改的东西无关，但每次都要重新判断一遍「这条是不是我弄坏的」。
+
+    chdir 到空目录切掉前者，delenv 切掉后者。放 autouse 而不是写进各个用例：以后往这个
+    文件里加用例的人不该需要先知道这件事。
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in [k for k in os.environ if k.startswith(ENV_PREFIX)]:
+        monkeypatch.delenv(name, raising=False)
     yield
     security.configure(())
 
