@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request
@@ -305,3 +307,70 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
     if run_id:
         body["error"]["run_id"] = run_id
     return JSONResponse(status_code=500, content=body)
+
+
+#: Windows Proactor 拆连接时那个假报错的位置。按位置认，不按文案认，见下。
+_TEARDOWN_FRAME = "_call_connection_lost"
+_TEARDOWN_FILE = "proactor_events.py"
+
+
+def is_proactor_teardown_reset(exc: BaseException | None) -> bool:
+    """这条异常是不是 Windows 上拆连接时那声「远程主机强迫关闭了一个现有的连接」。
+
+    CPython 在 Windows 的 ``_ProactorBasePipeTransport._call_connection_lost`` 里裸调
+    ``sock.shutdown(SHUT_RDWR)``，一句 try 都没包（stdlib ``proactor_events.py``）。对端
+    ——上游，或中间的代理 / NAT——已经先 RST 掉这条闲置 keep-alive 连接时，这一调就抛
+    ``WinError 10054``，冒到 asyncio 默认 handler，按 **ERROR** 打出来。
+
+    它是假报错：抛出点在 ``connection_lost`` **之后**的 ``finally`` 里，此时这条连接上没有
+    任何在途请求，响应早已完整收完。selector 那套（Linux / macOS）只 ``close()`` 不
+    ``shutdown()``，所以这是 Windows 独有的。
+
+    连接池那边治不了它：httpcore 的过期回收是惰性的（只在有请求进出池子时才跑），闲置
+    连接会一直躺到对端掐断为止，调 ``keepalive_expiry`` 改不了这个时序。所以只能在这里
+    按异常本身认。
+
+    **按帧认，不按 message 认**：``context["message"]`` 是 asyncio 拼的一句人话，措辞随版本
+    漂；帧名 + 文件名就是这个 bug 的位置本身。宁可漏判也不能误吞——真的
+    ``ConnectionResetError``（上游传输中途断开）必须照常报出来，所以这里要求 traceback 里
+    确实站着 stdlib 的那一帧。
+    """
+    if not isinstance(exc, ConnectionResetError | ConnectionAbortedError):
+        return False
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == _TEARDOWN_FRAME and code.co_filename.endswith(_TEARDOWN_FILE):
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def install_loop_noise_filter(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """给事件循环装上噪音过滤，返回还原函数。
+
+    只吞 :func:`is_proactor_teardown_reset` 认下的那一种，其余**原样交回**原来的 handler
+    （原本没有就交给 ``default_exception_handler``）。不往下链的话，这里就从「过滤一条已知
+    假报错」变成「整个进程的 loop 级异常全静音」——而那类异常恰恰没有第二个地方会报。
+
+    返回的还原函数要在 lifespan 退出时调：``--reload`` 下同一进程反复起停，不还原就会一层
+    层套上去。
+    """
+    previous = loop.get_exception_handler()
+
+    def handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        if is_proactor_teardown_reset(context.get("exception")):
+            # 留一条 DEBUG：真要查「连接到底怎么断的」时，什么痕迹都没有比噪音更难受。
+            log.debug("忽略 Windows 拆连接时的 ConnectionResetError（stdlib 已知问题）")
+            return
+        if previous is None:
+            loop.default_exception_handler(context)
+        else:
+            previous(loop, context)
+
+    loop.set_exception_handler(handler)
+
+    def restore() -> None:
+        loop.set_exception_handler(previous)
+
+    return restore
