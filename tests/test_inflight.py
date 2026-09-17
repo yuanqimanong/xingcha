@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -43,6 +44,16 @@ def fake_request(inflight: InflightRegistry, limiter: RateLimiter) -> Any:
 
 def describe_one(reg: InflightRegistry, ticket: int, model: str = "openai/gpt-4o") -> None:
     reg.describe(ticket, kind="agent", model=model, run_id="run-1")
+
+
+def open_dependency(request: Any) -> AsyncGenerator[Principal, None]:
+    """拿到那个依赖的生成器，且是能 ``athrow`` 的那种静态类型。
+
+    ``authed_and_limited`` 声明的返回类型是 ``AsyncIterator``（FastAPI 里 yield 依赖的
+    惯用写法），而 ``athrow`` 只有 ``AsyncGenerator`` 上才有。这里 cast 一下，而不是去改
+    生产代码的注解——需要 athrow 的是测试，不该让一个测试需求反过来收紧被测函数的签名。
+    """
+    return cast(AsyncGenerator[Principal, None], v1.authed_and_limited(request, PRINCIPAL))
 
 
 # =============================================================================
@@ -108,7 +119,7 @@ async def test_dependency_registers_and_deregisters():
     reg = InflightRegistry()
     request = fake_request(reg, RateLimiter(per_minute=100, concurrent=10))
 
-    gen = v1.authed_and_limited(request, PRINCIPAL)
+    gen = open_dependency(request)
     await gen.__anext__()
     describe_one(reg, request.state.inflight_ticket)
     assert len(reg.snapshot()) == 1
@@ -127,7 +138,7 @@ async def test_dependency_deregisters_when_the_handler_blows_up():
     reg = InflightRegistry()
     request = fake_request(reg, RateLimiter(per_minute=100, concurrent=10))
 
-    gen = v1.authed_and_limited(request, PRINCIPAL)
+    gen = open_dependency(request)
     await gen.__anext__()
     describe_one(reg, request.state.inflight_ticket)
 
@@ -141,7 +152,7 @@ async def test_rate_limited_request_is_never_registered():
     reg = InflightRegistry()
     request = fake_request(reg, RateLimiter(per_minute=0, concurrent=10))
 
-    gen = v1.authed_and_limited(request, PRINCIPAL)
+    gen = open_dependency(request)
     with pytest.raises(QuotaExceeded):
         await gen.__anext__()
     assert reg.snapshot() == []
